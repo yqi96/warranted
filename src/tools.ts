@@ -168,8 +168,16 @@ export function registerTools(server: any, db: Database): void {
     async ({ content }: { content: string }) => {
       try {
         const claim = service.createClaim(db, content);
+        const lines = [
+          `Created claim #${claim.id}: ${claim.content}`,
+          ``,
+          `Next: this claim has no warrants yet. To build the reasoning chain:`,
+          `  1. create_ground — provide evidence (or derive from existing claims via ref_claim_id)`,
+          `  2. create_warrant — link the claim to its grounds with an inference rule`,
+          `  3. create_backing (optional) — support the warrant's credibility`,
+        ];
         return {
-          content: [{ type: "text", text: `Created claim #${claim.id}: ${claim.content}` }],
+          content: [{ type: "text", text: lines.join("\n") }],
         };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };

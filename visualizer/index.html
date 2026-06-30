@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Toulmin 论证可视化</title>
+  <script src="https://unpkg.com/cytoscape@3.30.0/dist/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+  <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: row; background: #1a1a2e; color: #eee; }
+
+    /* 左侧过滤面板 */
+    #filter-panel { width: 240px; min-width: 150px; max-width: 500px; background: #16213e; padding: 20px; overflow-y: auto; border-right: 1px solid #0f3460; flex: 0 0 auto; }
+    #filter-panel h2 { font-size: 14px; color: #94a3b8; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+    .filter-group { margin-bottom: 24px; }
+    .filter-item { display: flex; align-items: center; padding: 8px 0; cursor: pointer; }
+    .filter-item input { margin-right: 10px; }
+    .filter-item .color-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
+    .filter-item .count { margin-left: auto; color: #64748b; font-size: 12px; }
+    #search-input { width: 100%; padding: 8px 12px; background: #0f3460; border: 1px solid #1e4976; border-radius: 6px; color: #eee; font-size: 14px; }
+    #search-input::placeholder { color: #64748b; }
+    #search-input:focus { outline: none; border-color: #3b82f6; }
+    .layout-option { display: flex; align-items: center; padding: 6px 0; cursor: pointer; }
+    .layout-option input { margin-right: 8px; }
+    .stats-box { background: #0f3460; border-radius: 8px; padding: 12px; font-size: 12px; }
+    .stats-row { display: flex; justify-content: space-between; padding: 4px 0; }
+
+    /* 中央图区域 */
+    #cy-container { flex: 1 1 auto; min-width: 200px; position: relative; overflow: hidden; }
+    #cy { width: 100%; height: 100%; }
+    #toolbar { position: absolute; top: 16px; left: 16px; display: flex; gap: 8px; z-index: 10; }
+    #toolbar button { padding: 8px 16px; background: #16213e; border: 1px solid #0f3460; border-radius: 6px; color: #eee; cursor: pointer; font-size: 13px; }
+    #toolbar button:hover { background: #1e4976; }
+    #empty-state { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #64748b; text-align: center; }
+
+    /* 右侧详情面板 */
+    #detail-panel { width: 0; min-width: 0; background: #16213e; overflow: hidden; border-left: none; flex: 0 0 auto; display: none; }
+    #detail-panel.open { width: 320px; min-width: 150px; display: block; border-left: 1px solid #0f3460; }
+    #detail-content { padding: 20px; width: 100%; overflow-y: auto; height: 100%; }
+    #detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    #detail-header h3 { font-size: 16px; }
+    #close-detail { background: none; border: none; color: #94a3b8; font-size: 20px; cursor: pointer; }
+    .detail-section { margin-bottom: 16px; }
+    .detail-section h4 { font-size: 12px; color: #94a3b8; margin-bottom: 8px; text-transform: uppercase; }
+    .detail-field { padding: 8px 0; border-bottom: 1px solid #0f3460; }
+    .detail-field .label { font-size: 11px; color: #64748b; }
+    .detail-field .value { font-size: 14px; margin-top: 2px; word-break: break-word; }
+    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+    .status-proposed { background: #374151; color: #9ca3af; }
+    .status-supported { background: #065f46; color: #6ee7b7; }
+    .status-validated { background: #1e40af; color: #93c5fd; box-shadow: 0 0 8px #3b82f6; }
+    .status-disputed { background: #92400e; color: #fcd34d; }
+    .status-refuted { background: #7f1d1d; color: #fca5a5; }
+    .edge-list { list-style: none; }
+    .edge-list li { padding: 6px 0; font-size: 13px; cursor: pointer; color: #93c5fd; }
+    .edge-list li:hover { text-decoration: underline; }
+    .attachment-list { list-style: none; }
+    .attachment-list li { padding: 4px 0; font-size: 12px; color: #64748b; }
+    .type-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+
+    /* 上传区域 */
+    .upload-area { border: 2px dashed #1e4976; border-radius: 8px; padding: 16px; text-align: center; cursor: pointer; transition: all 0.2s; }
+    .upload-area:hover { border-color: #3b82f6; background: rgba(59, 130, 246, 0.05); }
+    .upload-area.dragover { border-color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
+    .upload-icon { font-size: 24px; margin-bottom: 8px; }
+    .upload-text { font-size: 12px; color: #94a3b8; }
+    .upload-text strong { color: #3b82f6; }
+    #upload-input { display: none; }
+    .upload-status { margin-top: 8px; font-size: 11px; padding: 4px 8px; border-radius: 4px; display: none; }
+    .upload-status.success { display: block; background: #065f46; color: #6ee7b7; }
+    .upload-status.error { display: block; background: #7f1d1d; color: #fca5a5; }
+    .upload-status.loading { display: block; background: #1e40af; color: #93c5fd; }
+
+    /* 可拖拽分隔条 */
+    .resizer { width: 4px; background: #0f3460; cursor: col-resize; transition: background 0.2s; flex-shrink: 0; }
+    .resizer:hover, .resizer.dragging { background: #3b82f6; }
+    .resizer::after { content: ''; display: block; width: 100%; height: 100%; }
+    .resizer.hidden { display: none; }
+  </style>
+</head>
+<body>
+  <!-- 左侧过滤面板 -->
+  <div id="filter-panel">
+    <div class="filter-group">
+      <h2>节点类型</h2>
+      <label class="filter-item">
+        <input type="checkbox" data-type="claim" checked>
+        <span class="color-dot" style="background:#3b82f6"></span>
+        <span>Claim</span>
+        <span class="count" id="count-claim">0</span>
+      </label>
+      <label class="filter-item">
+        <input type="checkbox" data-type="ground" checked>
+        <span class="color-dot" style="background:#10b981"></span>
+        <span>Ground</span>
+        <span class="count" id="count-ground">0</span>
+      </label>
+      <label class="filter-item">
+        <input type="checkbox" data-type="warrant" checked>
+        <span class="color-dot" style="background:#f59e0b"></span>
+        <span>Warrant</span>
+        <span class="count" id="count-warrant">0</span>
+      </label>
+      <label class="filter-item">
+        <input type="checkbox" data-type="backing" checked>
+        <span class="color-dot" style="background:#8b5cf6"></span>
+        <span>Backing</span>
+        <span class="count" id="count-backing">0</span>
+      </label>
+      <label class="filter-item">
+        <input type="checkbox" data-type="qualifier" checked>
+        <span class="color-dot" style="background:#06b6d4"></span>
+        <span>Qualifier</span>
+        <span class="count" id="count-qualifier">0</span>
+      </label>
+      <label class="filter-item">
+        <input type="checkbox" data-type="rebuttal" checked>
+        <span class="color-dot" style="background:#ef4444"></span>
+        <span>Rebuttal</span>
+        <span class="count" id="count-rebuttal">0</span>
+      </label>
+    </div>
+
+    <div class="filter-group">
+      <h2>搜索</h2>
+      <input type="text" id="search-input" placeholder="输入关键词搜索...">
+    </div>
+
+    <div class="filter-group">
+      <h2>布局</h2>
+      <label class="layout-option">
+        <input type="radio" name="layout" value="dagre" checked>
+        <span>层次布局 (Dagre)</span>
+      </label>
+      <label class="layout-option">
+        <input type="radio" name="layout" value="cose">
+        <span>力导向布局 (Cose)</span>
+      </label>
+      <label class="layout-option">
+        <input type="radio" name="layout" value="breadthfirst">
+        <span>同心圆布局</span>
+      </label>
+    </div>
+
+    <div class="filter-group">
+      <h2>统计</h2>
+      <div class="stats-box" id="stats-box">
+        <div class="stats-row"><span>总计</span><span id="stat-total">0</span></div>
+      </div>
+    </div>
+
+    <div class="filter-group">
+      <h2>数据库</h2>
+      <div class="upload-area" id="upload-area">
+        <div class="upload-icon">📁</div>
+        <div class="upload-text">点击或拖拽 <strong>.db</strong> 文件集<br><small style="color:#64748b">支持 .db + .db-wal + .db-shm</small></div>
+      </div>
+      <input type="file" id="upload-input" accept=".db,.sqlite,.db-wal,.db-shm" multiple>
+      <div class="upload-status" id="upload-status"></div>
+    </div>
+  </div>
+
+  <!-- 左侧分隔条 -->
+  <div class="resizer" id="resizer-left"></div>
+
+  <!-- 中央图区域 -->
+  <div id="cy-container">
+    <div id="toolbar">
+      <button onclick="refreshGraph()">刷新</button>
+      <button onclick="cy.fit()">适应</button>
+      <button onclick="cy.center()">居中</button>
+    </div>
+    <div id="cy"></div>
+    <div id="empty-state" style="display:none">
+      <p style="font-size:48px;margin-bottom:16px">📊</p>
+      <p>暂无论证数据</p>
+      <p style="font-size:12px;margin-top:8px">使用 MCP 工具创建节点后刷新</p>
+    </div>
+  </div>
+
+  <!-- 右侧分隔条 -->
+  <div class="resizer hidden" id="resizer-right"></div>
+
+  <!-- 右侧详情面板 -->
+  <div id="detail-panel">
+    <div id="detail-content"></div>
+  </div>
+
+  <script>
+    // ==========================================================================
+    // 配置
+    // ==========================================================================
+    const TYPE_COLORS = {
+      claim: '#3b82f6',
+      ground: '#10b981',
+      warrant: '#f59e0b',
+      backing: '#8b5cf6',
+      qualifier: '#06b6d4',
+      rebuttal: '#ef4444'
+    };
+
+    const TYPE_SHAPES = {
+      claim: 'round-rectangle',
+      ground: 'diamond',
+      warrant: 'hexagon',
+      backing: 'tag',
+      qualifier: 'round-triangle',
+      rebuttal: 'ellipse'
+    };
+
+    const EDGE_STYLES = {
+      supports: { color: '#3b82f6', style: 'solid', width: 2 },
+      based_on: { color: '#10b981', style: 'solid', width: 1.5 },
+      reinforces: { color: '#8b5cf6', style: 'dashed', width: 1.5 },
+      qualifies: { color: '#06b6d4', style: 'dotted', width: 1 },
+      challenges: { color: '#ef4444', style: 'dashed', width: 2 },
+      derives_from: { color: '#6b7280', style: 'dotted', width: 1.5 }
+    };
+
+    // ==========================================================================
+    // 全局状态
+    // ==========================================================================
+    let cy = null;
+    let graphData = { nodes: [], edges: [], stats: {} };
+    let selectedNode = null;
+
+    // ==========================================================================
+    // 初始化 Cytoscape
+    // ==========================================================================
+    function initCytoscape() {
+      cy = cytoscape({
+        container: document.getElementById('cy'),
+        style: [
+          {
+            selector: 'node',
+            style: {
+              'background-color': ele => TYPE_COLORS[ele.data('type')] || '#666',
+              'shape': ele => TYPE_SHAPES[ele.data('type')] || 'ellipse',
+              'label': ele => truncate(ele.data('content'), 30),
+              'color': '#fff',
+              'text-valign': 'center',
+              'text-halign': 'center',
+              'font-size': '11px',
+              'width': ele => ele.data('type') === 'claim' ? 180 : 140,
+              'height': ele => ele.data('type') === 'claim' ? 60 : 50,
+              'border-width': ele => getNodeBorderWidth(ele),
+              'border-color': ele => darken(TYPE_COLORS[ele.data('type')] || '#666'),
+              'border-style': ele => getNodeBorderStyle(ele),
+              'opacity': ele => getNodeOpacity(ele),
+              'text-wrap': 'ellipsis',
+              'text-max-width': '120px'
+            }
+          },
+          {
+            selector: 'node:selected',
+            style: {
+              'border-width': 4,
+              'border-color': '#fff',
+              'overlay-padding': 6,
+              'overlay-color': '#3b82f6',
+              'overlay-opacity': 0.2
+            }
+          },
+          {
+            selector: 'node.highlighted',
+            style: {
+              'border-width': 4,
+              'border-color': '#fbbf24',
+              'shadow-blur': 10,
+              'shadow-color': '#fbbf24',
+              'shadow-opacity': 0.8
+            }
+          },
+          {
+            selector: 'node.faded',
+            style: { 'opacity': 0.3 }
+          },
+          {
+            selector: 'edge',
+            style: {
+              'width': ele => EDGE_STYLES[ele.data('type')]?.width || 1.5,
+              'line-color': ele => EDGE_STYLES[ele.data('type')]?.color || '#666',
+              'target-arrow-color': ele => EDGE_STYLES[ele.data('type')]?.color || '#666',
+              'target-arrow-shape': ele => ele.data('type') === 'challenges' ? 'vee' : 'triangle',
+              'curve-style': 'bezier',
+              'line-style': ele => EDGE_STYLES[ele.data('type')]?.style || 'solid',
+              'arrow-scale': 1.2
+            }
+          },
+          {
+            selector: 'edge.faded',
+            style: { 'opacity': 0.2 }
+          }
+        ],
+        layout: { name: 'dagre', rankDir: 'TB', nodeSep: 50, rankSep: 80 },
+        wheelSensitivity: 0.3
+      });
+
+      // 点击节点
+      cy.on('tap', 'node', function(evt) {
+        const node = evt.target;
+        selectNode(node);
+        highlightNeighbors(node);
+      });
+
+      // 点击空白取消选择
+      cy.on('tap', function(evt) {
+        if (evt.target === cy) {
+          clearSelection();
+        }
+      });
+    }
+
+    // ==========================================================================
+    // 节点样式辅助
+    // ==========================================================================
+    function getNodeBorderWidth(ele) {
+      if (ele.data('type') !== 'claim') return 2;
+      const status = ele.data('data')?.status;
+      if (status === 'supported' || status === 'validated' || status === 'disputed') return 3;
+      return 2;
+    }
+
+    function getNodeBorderStyle(ele) {
+      if (ele.data('type') !== 'claim') return 'solid';
+      const status = ele.data('data')?.status;
+      if (status === 'disputed' || status === 'refuted') return 'dashed';
+      return 'solid';
+    }
+
+    function getNodeOpacity(ele) {
+      if (ele.data('type') !== 'claim') return 1;
+      const status = ele.data('data')?.status;
+      if (status === 'refuted') return 0.6;
+      return 1;
+    }
+
+    // ==========================================================================
+    // 数据加载
+    // ==========================================================================
+    async function loadGraph() {
+      const types = getSelectedTypes();
+      const params = types.length < 6 ? `?types=${types.join(',')}` : '';
+      const res = await fetch(`/api/graph${params}`);
+      graphData = await res.json();
+      renderGraph();
+      updateCounts();
+    }
+
+    function renderGraph() {
+      const elements = [];
+
+      // 添加节点
+      for (const node of graphData.nodes) {
+        elements.push({
+          data: {
+            id: String(node.id),
+            type: node.type,
+            content: node.content,
+            data: node.data,
+            created_at: node.created_at,
+            updated_at: node.updated_at
+          }
+        });
+      }
+
+      // 添加边
+      for (const edge of graphData.edges) {
+        elements.push({
+          data: {
+            id: edge.id,
+            source: String(edge.source),
+            target: String(edge.target),
+            type: edge.type
+          }
+        });
+      }
+
+      cy.elements().remove();
+      cy.add(elements);
+
+      // 应用布局
+      applyLayout();
+
+      // 显示/隐藏空状态
+      document.getElementById('empty-state').style.display = elements.length === 0 ? 'block' : 'none';
+    }
+
+    function applyLayout() {
+      const layoutName = document.querySelector('input[name="layout"]:checked').value;
+      let options = { name: layoutName, animate: true, animationDuration: 300 };
+
+      if (layoutName === 'dagre') {
+        options.rankDir = 'TB';
+        options.nodeSep = 50;
+        options.rankSep = 80;
+      }
+
+      cy.layout(options).run();
+    }
+
+    // ==========================================================================
+    // 过滤与搜索
+    // ==========================================================================
+    function getSelectedTypes() {
+      const checkboxes = document.querySelectorAll('#filter-panel input[data-type]');
+      const types = [];
+      checkboxes.forEach(cb => { if (cb.checked) types.push(cb.dataset.type); });
+      return types;
+    }
+
+    function updateCounts() {
+      const stats = graphData.stats;
+      for (const type of ['claim', 'ground', 'warrant', 'backing', 'qualifier', 'rebuttal']) {
+        const el = document.getElementById(`count-${type}`);
+        if (el) el.textContent = stats[type] || 0;
+      }
+      const total = Object.values(stats).reduce((a, b) => a + b, 0);
+      document.getElementById('stat-total').textContent = total;
+    }
+
+    async function searchNodes(keyword) {
+      if (!keyword) {
+        cy.elements().removeClass('highlighted faded');
+        return;
+      }
+      const res = await fetch(`/api/search?q=${encodeURIComponent(keyword)}`);
+      const nodes = await res.json();
+      const matchIds = new Set(nodes.map(n => String(n.id)));
+
+      cy.nodes().forEach(node => {
+        if (matchIds.has(node.id())) {
+          node.addClass('highlighted').removeClass('faded');
+        } else {
+          node.addClass('faded').removeClass('highlighted');
+        }
+      });
+    }
+
+    // ==========================================================================
+    // 节点选择与详情
+    // ==========================================================================
+    function selectNode(node) {
+      selectedNode = node;
+      showDetail(node.data());
+    }
+
+    function clearSelection() {
+      selectedNode = null;
+      cy.elements().removeClass('highlighted faded');
+      document.getElementById('detail-panel').classList.remove('open');
+      document.getElementById('resizer-right').classList.add('hidden');
+    }
+
+    function highlightNeighbors(node) {
+      const neighborhood = node.neighborhood();
+      cy.elements().addClass('faded');
+      node.removeClass('faded');
+      neighborhood.removeClass('faded');
+    }
+
+    function showDetail(data) {
+      const panel = document.getElementById('detail-panel');
+      const content = document.getElementById('detail-content');
+      const resizer = document.getElementById('resizer-right');
+
+      resizer.classList.remove('hidden');
+
+      let html = `
+        <div id="detail-header">
+          <h3><span class="type-tag" style="background:${TYPE_COLORS[data.type]}">${data.type}</span> #${data.id}</h3>
+          <button id="close-detail" onclick="clearSelection()">×</button>
+        </div>
+        <div class="detail-section">
+          <h4>内容</h4>
+          <div class="detail-field"><div class="value">${escapeHtml(data.content)}</div></div>
+        </div>
+      `;
+
+      // 类型特有属性
+      if (data.type === 'claim' && data.data?.status) {
+        html += `
+          <div class="detail-section">
+            <h4>状态</h4>
+            <div class="detail-field"><span class="status-badge status-${data.data.status}">${data.data.status}</span></div>
+          </div>
+        `;
+      }
+
+      if (data.type === 'ground') {
+        html += `
+          <div class="detail-section">
+            <h4>属性</h4>
+            <div class="detail-field"><div class="label">来源</div><div class="value">${data.data?.source || '-'}</div></div>
+            <div class="detail-field"><div class="label">验证状态</div><div class="value">${data.data?.verification || '-'}</div></div>
+            ${data.data?.ref_claim_id ? `<div class="detail-field"><div class="label">引用 Claim</div><div class="value">#${data.data.ref_claim_id}</div></div>` : ''}
+          </div>
+        `;
+      }
+
+      if (data.type === 'warrant') {
+        html += `
+          <div class="detail-section">
+            <h4>关联</h4>
+            <div class="detail-field"><div class="label">Claim ID</div><div class="value">#${data.data?.claim_id || '-'}</div></div>
+            <div class="detail-field"><div class="label">Ground IDs</div><div class="value">${(data.data?.ground_ids || []).map(id => '#' + id).join(', ') || '-'}</div></div>
+          </div>
+        `;
+      }
+
+      if (data.type === 'backing') {
+        html += `
+          <div class="detail-section">
+            <h4>关联</h4>
+            <div class="detail-field"><div class="label">Warrant ID</div><div class="value">#${data.data?.warrant_id || '-'}</div></div>
+          </div>
+        `;
+      }
+
+      if (data.type === 'qualifier') {
+        html += `
+          <div class="detail-section">
+            <h4>关联</h4>
+            <div class="detail-field"><div class="label">Claim ID</div><div class="value">#${data.data?.claim_id || '-'}</div></div>
+          </div>
+        `;
+      }
+
+      if (data.type === 'rebuttal') {
+        html += `
+          <div class="detail-section">
+            <h4>关联</h4>
+            <div class="detail-field"><div class="label">Target ID</div><div class="value">#${data.data?.target_id || '-'}</div></div>
+            <div class="detail-field"><div class="label">Target Type</div><div class="value">${data.data?.target_type || '-'}</div></div>
+          </div>
+        `;
+      }
+
+      // 关联边
+      const node = cy.getElementById(String(data.id));
+      const edges = node.connectedEdges();
+      if (edges.length > 0) {
+        html += `<div class="detail-section"><h4>关联边</h4><ul class="edge-list">`;
+        edges.forEach(edge => {
+          const isSource = edge.source().id() === String(data.id);
+          const otherId = isSource ? edge.target().id() : edge.source().id();
+          const arrow = isSource ? '→' : '←';
+          const otherNode = cy.getElementById(otherId);
+          const otherContent = truncate(otherNode.data('content'), 20);
+          html += `<li onclick="focusNode('${otherId}')">${arrow} ${edge.data('type')} #${otherId} (${otherContent})</li>`;
+        });
+        html += `</ul></div>`;
+      }
+
+      // 附件
+      const attachments = data.data?.attachments;
+      if (attachments && attachments.length > 0) {
+        html += `<div class="detail-section"><h4>附件</h4><ul class="attachment-list">`;
+        attachments.forEach(a => { html += `<li>📎 ${a}</li>`; });
+        html += `</ul></div>`;
+      }
+
+      // 时间
+      html += `
+        <div class="detail-section">
+          <h4>时间</h4>
+          <div class="detail-field"><div class="label">创建</div><div class="value">${data.created_at}</div></div>
+          <div class="detail-field"><div class="label">更新</div><div class="value">${data.updated_at}</div></div>
+        </div>
+      `;
+
+      content.innerHTML = html;
+      panel.classList.add('open');
+    }
+
+    function focusNode(id) {
+      const node = cy.getElementById(id);
+      if (node.length) {
+        cy.animate({ center: { eles: node }, zoom: 1.5 }, { duration: 300 });
+        selectNode(node);
+        highlightNeighbors(node);
+      }
+    }
+
+    // ==========================================================================
+    // 工具函数
+    // ==========================================================================
+    function truncate(str, len) {
+      if (!str) return '';
+      return str.length > len ? str.slice(0, len) + '...' : str;
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function darken(hex) {
+      const r = parseInt(hex.slice(1, 3), 16) * 0.7;
+      const g = parseInt(hex.slice(3, 5), 16) * 0.7;
+      const b = parseInt(hex.slice(5, 7), 16) * 0.7;
+      return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+    }
+
+    function refreshGraph() { loadGraph(); }
+
+    // ==========================================================================
+    // 数据库上传
+    // ==========================================================================
+    const uploadArea = document.getElementById('upload-area');
+    const uploadInput = document.getElementById('upload-input');
+    const uploadStatus = document.getElementById('upload-status');
+
+    uploadArea.addEventListener('click', () => uploadInput.click());
+
+    uploadArea.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      uploadArea.classList.add('dragover');
+    });
+
+    uploadArea.addEventListener('dragleave', () => {
+      uploadArea.classList.remove('dragover');
+    });
+
+    uploadArea.addEventListener('drop', (e) => {
+      e.preventDefault();
+      uploadArea.classList.remove('dragover');
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) handleUpload(files);
+    });
+
+    uploadInput.addEventListener('change', (e) => {
+      const files = Array.from(e.target.files);
+      if (files.length > 0) handleUpload(files);
+    });
+
+    async function handleUpload(files) {
+      // 检查是否有 .db 文件
+      const hasDb = files.some(f => f.name.endsWith('.db') || f.name.endsWith('.sqlite'));
+      if (!hasDb) {
+        showUploadStatus('error', '请选择 .db 或 .sqlite 文件');
+        return;
+      }
+
+      const fileNames = files.map(f => f.name).join(', ');
+      showUploadStatus('loading', `正在上传 ${files.length} 个文件...`);
+
+      try {
+        const formData = new FormData();
+        for (const file of files) {
+          formData.append('files', file);
+        }
+
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        const result = await res.json();
+
+        if (result.success) {
+          const total = Object.values(result.stats).reduce((a, b) => a + b, 0);
+          showUploadStatus('success', `✓ ${result.fileCount} 个文件, ${total} 个节点`);
+          loadGraph();
+        } else {
+          showUploadStatus('error', result.error || '上传失败');
+        }
+      } catch (err) {
+        showUploadStatus('error', '上传失败: ' + err.message);
+      }
+    }
+
+    function showUploadStatus(type, message) {
+      uploadStatus.className = 'upload-status ' + type;
+      uploadStatus.textContent = message;
+    }
+
+    // ==========================================================================
+    // 事件绑定
+    // ==========================================================================
+    document.querySelectorAll('#filter-panel input[data-type]').forEach(cb => {
+      cb.addEventListener('change', () => loadGraph());
+    });
+
+    document.querySelectorAll('input[name="layout"]').forEach(radio => {
+      radio.addEventListener('change', () => applyLayout());
+    });
+
+    let searchTimeout;
+    document.getElementById('search-input').addEventListener('input', (e) => {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => searchNodes(e.target.value), 300);
+    });
+
+    // ==========================================================================
+    // 可拖拽分隔条
+    // ==========================================================================
+    function initResizer(resizerId, panelId, direction) {
+      const resizer = document.getElementById(resizerId);
+      const panel = document.getElementById(panelId);
+      let startX, startWidth;
+
+      resizer.addEventListener('mousedown', (e) => {
+        startX = e.clientX;
+        startWidth = panel.offsetWidth;
+        resizer.classList.add('dragging');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+
+        const onMouseMove = (e) => {
+          const diff = e.clientX - startX;
+          const newWidth = direction === 'left' 
+            ? startWidth + diff 
+            : startWidth - diff;
+          const clampedWidth = Math.max(150, Math.min(500, newWidth));
+          panel.style.width = clampedWidth + 'px';
+          
+          // 更新详情面板内容宽度
+          if (panelId === 'detail-panel') {
+            const content = document.getElementById('detail-content');
+            content.style.width = clampedWidth + 'px';
+          }
+        };
+
+        const onMouseUp = () => {
+          resizer.classList.remove('dragging');
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+          document.removeEventListener('mousemove', onMouseMove);
+          document.removeEventListener('mouseup', onMouseUp);
+          // 拖拽结束后重新调整图的大小
+          if (cy) cy.resize();
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+      });
+    }
+
+    initResizer('resizer-left', 'filter-panel', 'left');
+    initResizer('resizer-right', 'detail-panel', 'right');
+
+    // ==========================================================================
+    // 初始化
+    // ==========================================================================
+    initCytoscape();
+    loadGraph();
+
+    // 窗口大小变化时自动调整图的大小
+    window.addEventListener('resize', () => {
+      if (cy) cy.resize();
+    });
+  </script>
+</body>
+</html>

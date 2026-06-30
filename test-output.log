@@ -1,0 +1,201 @@
+============================================================
+Tool: create_claim
+Input: {
+  "content": "ScaleOpt 收敛速度是 Adam 的 2 倍"
+}
+------------------------------------------------------------
+Output:
+Created claim #1: ScaleOpt 收敛速度是 Adam 的 2 倍
+
+Next: this claim has no warrants yet. To build the reasoning chain:
+  1. create_ground — provide evidence (or derive from existing claims via ref_claim_id)
+  2. create_warrant — link the claim to its grounds with an inference rule
+  3. create_backing (optional) — support the warrant's credibility
+
+============================================================
+Tool: create_ground
+Input: {
+  "content": "ResNet-50: 45 vs 90 epoch (2.0×)",
+  "source": "literature",
+  "verification": "pending",
+  "attachments": [
+    "/papers/scaleopt.pdf"
+  ]
+}
+------------------------------------------------------------
+Output:
+Created ground #2: ResNet-50: 45 vs 90 epoch (2.0×)
+
+============================================================
+Tool: create_ground
+Input: {
+  "content": "ViT-B: 80 vs 165 epoch (2.1×)",
+  "source": "literature",
+  "verification": "pending"
+}
+------------------------------------------------------------
+Output:
+Created ground #3: ViT-B: 80 vs 165 epoch (2.1×)
+
+============================================================
+Tool: create_warrant
+Input: {
+  "claim_id": 1,
+  "content": "CNN 和 ViT 均显示 2 倍加速 → 非偶然",
+  "ground_ids": [
+    2,
+    3
+  ]
+}
+------------------------------------------------------------
+Output:
+Created warrant #4: CNN 和 ViT 均显示 2 倍加速 → 非偶然
+
+============================================================
+Tool: create_backing
+Input: {
+  "warrant_id": 4,
+  "content": "跨架构一致性是评估泛化性的标准方法论",
+  "attachments": [
+    "/papers/methodology.pdf"
+  ]
+}
+------------------------------------------------------------
+Output:
+Created backing #5: 跨架构一致性是评估泛化性的标准方法论
+
+============================================================
+Tool: create_qualifier
+Input: {
+  "claim_id": 1,
+  "content": "仅在 ImageNet 上验证"
+}
+------------------------------------------------------------
+Output:
+Created qualifier #6: 仅在 ImageNet 上验证
+
+============================================================
+Tool: create_rebuttal
+Input: {
+  "target_id": 1,
+  "target_type": "claim",
+  "content": "ResNet 上实际只有 1.8× 加速"
+}
+------------------------------------------------------------
+Output:
+Created rebuttal #7: ResNet 上实际只有 1.8× 加速
+
+============================================================
+Tool: update_node
+Input: {
+  "node_id": 2,
+  "content": "ResNet-50: 50 vs 90 epoch (1.8×，弱于论文声称)",
+  "source": "observed",
+  "verification": "verified"
+}
+------------------------------------------------------------
+Output:
+Updated [ground #2] ResNet-50: 50 vs 90 epoch (1.8×，弱于论文声称) (source: observed, verification: verified)
+
+============================================================
+Tool: update_node
+Input: {
+  "node_id": 1,
+  "status": "disputed"
+}
+------------------------------------------------------------
+Output:
+Updated [claim #1] ScaleOpt 收敛速度是 Adam 的 2 倍 (status: disputed)
+
+============================================================
+Tool: list_claims
+Input: {}
+------------------------------------------------------------
+Output:
+#1 [disputed] ScaleOpt 收敛速度是 Adam 的 2 倍
+
+============================================================
+Tool: get_argument
+Input: {
+  "node_id": 1
+}
+------------------------------------------------------------
+Output:
+## Claim #1
+Content: ScaleOpt 收敛速度是 Adam 的 2 倍
+Status: disputed
+Qualifier: 仅在 ImageNet 上验证
+
+### Warrant #4
+CNN 和 ViT 均显示 2 倍加速 → 非偶然
+Grounds:
+  - [#2] ResNet-50: 50 vs 90 epoch (1.8×，弱于论文声称) (observed/verified)
+  - [#3] ViT-B: 80 vs 165 epoch (2.1×) (literature/pending)
+Backings:
+  - [#5] 跨架构一致性是评估泛化性的标准方法论
+
+### Rebuttals
+- [#7] (claim) ResNet 上实际只有 1.8× 加速
+
+============================================================
+Tool: get_stats
+Input: {}
+------------------------------------------------------------
+Output:
+## Argument Statistics
+
+Claims: 1
+  - disputed: 1
+
+Grounds: 2
+  - observed: 1
+  - literature: 1
+  - verified: 1
+  - pending: 1
+
+Warrants: 1
+Backings: 1
+Qualifiers: 1
+Rebuttals: 1
+  - claim: 1
+
+============================================================
+Tool: search_nodes
+Input: {
+  "keyword": "ResNet"
+}
+------------------------------------------------------------
+Output:
+[ground #2] ResNet-50: 50 vs 90 epoch (1.8×，弱于论文声称) (source: observed, verification: verified)
+[rebuttal #7] ResNet 上实际只有 1.8× 加速
+
+============================================================
+Tool: delete_node
+Input: {
+  "node_id": 2,
+  "cascade": false
+}
+------------------------------------------------------------
+Output:
+Deleted node #2
+
+============================================================
+Tool: delete_node
+Input: {
+  "node_id": 1,
+  "cascade": false
+}
+------------------------------------------------------------
+Output:
+Error: Deleting a Claim requires cascade=true. This prevents orphaned Warrants, Backings, Qualifiers, and Rebuttals.
+
+============================================================
+Tool: delete_node
+Input: {
+  "node_id": 1,
+  "cascade": true
+}
+------------------------------------------------------------
+Output:
+Deleted node #1
+

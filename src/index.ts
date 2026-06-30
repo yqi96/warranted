@@ -7,20 +7,26 @@
  *
  * Usage:
  *   bun src/index.ts [--db-path ./toulmin.db]
+ *
+ * 默认数据库路径：.toulmin/argument.db（项目目录下，支持跨 Session 恢复）
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { openDatabase } from "./db.ts";
 import { registerTools } from "./tools.ts";
+import { mkdirSync } from "fs";
+import { dirname } from "path";
 
 // =============================================================================
 // CLI 参数解析
 // =============================================================================
 
+const DEFAULT_DB_PATH = ".toulmin/argument.db";
+
 function parseArgs(): { dbPath: string } {
   const args = process.argv.slice(2);
-  let dbPath = ":memory:";
+  let dbPath = DEFAULT_DB_PATH;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--db-path" && args[i + 1]) {
@@ -38,6 +44,12 @@ function parseArgs(): { dbPath: string } {
 
 async function main() {
   const { dbPath } = parseArgs();
+
+  // 确保数据库目录存在（文件数据库时）
+  if (dbPath !== ":memory:") {
+    const dir = dirname(dbPath);
+    mkdirSync(dir, { recursive: true });
+  }
 
   // 打开数据库
   const db = openDatabase(dbPath);

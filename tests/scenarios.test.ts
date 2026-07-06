@@ -57,7 +57,7 @@ describe("场景 1：论文复现", () => {
     });
 
     // 阶段 2：复现实验后更新 Ground
-    const updatedG1 = service.updateNode(db, g1.id, {
+    const { node: updatedG1 } = service.updateNode(db, g1.id, {
       content: "ResNet-50: ScaleOpt 50 epoch vs Adam 90 epoch (1.8×，弱于论文声称的 2.0×)",
       source: "observed",
       verification: "verified",

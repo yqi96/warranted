@@ -444,7 +444,7 @@ export function registerTools(server: any, db: Database): void {
     },
     withLog("update_node", async (opts: any) => {
       try {
-        const updated = service.updateNode(db, opts.node_id, {
+        const { node, warnings } = service.updateNode(db, opts.node_id, {
           content: opts.content,
           attachments: opts.attachments,
           status: opts.status,
@@ -453,8 +453,12 @@ export function registerTools(server: any, db: Database): void {
           ground_ids: opts.ground_ids,
           qualifier: opts.qualifier,
         });
+        let text = `Updated ${formatNode(node)}`;
+        if (warnings.length > 0) {
+          text += "\n\n" + warnings.join("\n");
+        }
         return {
-          content: [{ type: "text", text: `Updated ${formatNode(updated)}` }],
+          content: [{ type: "text", text }],
         };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };

@@ -274,8 +274,8 @@ describe("createRebuttal", () => {
 describe("updateNode", () => {
   test("更新 Claim content", () => {
     const claim = makeClaim(db, "原始内容");
-    const updated = service.updateNode(db, claim.id, { content: "更新内容" });
-    expect((updated as any).content).toBe("更新内容");
+    const { node } = service.updateNode(db, claim.id, { content: "更新内容" });
+    expect((node as any).content).toBe("更新内容");
   });
 
   test("更新 Claim status", () => {
@@ -283,14 +283,14 @@ describe("updateNode", () => {
     // 构建 Warrant + verified Ground 以满足 A1
     const g = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
     makeWarrant(db, claim.id, [g.id]);
-    const updated = service.updateNode(db, claim.id, { status: "validated" });
-    expect((updated as any).status).toBe("validated");
+    const { node } = service.updateNode(db, claim.id, { status: "validated" });
+    expect((node as any).status).toBe("validated");
   });
 
   test("更新 Ground attachments", () => {
     const ground = makeGround(db);
-    const updated = service.updateNode(db, ground.id, { attachments: ["/new.csv"] });
-    expect((updated as any).attachments).toEqual(["/new.csv"]);
+    const { node } = service.updateNode(db, ground.id, { attachments: ["/new.csv"] });
+    expect((node as any).attachments).toEqual(["/new.csv"]);
   });
 
   test("更新 Warrant ground_ids with add", () => {
@@ -299,9 +299,9 @@ describe("updateNode", () => {
     const g2 = makeGround(db, { content: "G2" });
     const warrant = makeWarrant(db, claim.id, [g1.id]);
 
-    const updated = service.updateNode(db, warrant.id, { ground_ids: { add: [g2.id] } });
-    expect((updated as any).groundIds).toContain(g1.id);
-    expect((updated as any).groundIds).toContain(g2.id);
+    const { node } = service.updateNode(db, warrant.id, { ground_ids: { add: [g2.id] } });
+    expect((node as any).groundIds).toContain(g1.id);
+    expect((node as any).groundIds).toContain(g2.id);
   });
 
   test("更新 Warrant ground_ids with remove", () => {
@@ -310,20 +310,20 @@ describe("updateNode", () => {
     const g2 = makeGround(db, { content: "G2" });
     const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
 
-    const updated = service.updateNode(db, warrant.id, { ground_ids: { remove: [g1.id] } });
-    expect((updated as any).groundIds).toEqual([g2.id]);
+    const { node } = service.updateNode(db, warrant.id, { ground_ids: { remove: [g1.id] } });
+    expect((node as any).groundIds).toEqual([g2.id]);
   });
 
   test("更新 Ground source", () => {
     const ground = makeGround(db, { source: "literature" });
-    const updated = service.updateNode(db, ground.id, { source: "observed" });
-    expect((updated as any).source).toBe("observed");
+    const { node } = service.updateNode(db, ground.id, { source: "observed" });
+    expect((node as any).source).toBe("observed");
   });
 
   test("更新 Ground verification", () => {
     const ground = makeGround(db, { verification: "pending" });
-    const updated = service.updateNode(db, ground.id, { verification: "verified", attachments: ["/data.csv"] });
-    expect((updated as any).verification).toBe("verified");
+    const { node } = service.updateNode(db, ground.id, { verification: "verified", attachments: ["/data.csv"] });
+    expect((node as any).verification).toBe("verified");
   });
 
   test("更新不存在节点抛出 NotFoundError", () => {
@@ -685,8 +685,8 @@ describe("审查规则: Claim 状态转换", () => {
     const claim = makeClaim(db);
     const ground = makeGround(db, { content: "G", verification: "verified" });
     makeWarrant(db, claim.id, [ground.id]);
-    const updated = service.updateNode(db, claim.id, { status: "supported" });
-    expect((updated as any).status).toBe("supported");
+    const { node } = service.updateNode(db, claim.id, { status: "supported" });
+    expect((node as any).status).toBe("supported");
   });
 
   test("A1: 无 Warrant 时不能标记 validated", () => {
@@ -709,8 +709,8 @@ describe("审查规则: Claim 状态转换", () => {
     const claim = makeClaim(db);
     const ground = makeGround(db, { content: "G", verification: "verified", attachments: ["/data.csv"] });
     makeWarrant(db, claim.id, [ground.id]);
-    const updated = service.updateNode(db, claim.id, { status: "validated" });
-    expect((updated as any).status).toBe("validated");
+    const { node } = service.updateNode(db, claim.id, { status: "validated" });
+    expect((node as any).status).toBe("validated");
   });
 
   test("A3: 无 Rebuttal 时不能标记 disputed", () => {
@@ -723,8 +723,8 @@ describe("审查规则: Claim 状态转换", () => {
   test("A3: 有 Rebuttal 时可以标记 disputed", () => {
     const claim = makeClaim(db);
     makeRebuttal(db, claim.id);
-    const updated = service.updateNode(db, claim.id, { status: "disputed" });
-    expect((updated as any).status).toBe("disputed");
+    const { node } = service.updateNode(db, claim.id, { status: "disputed" });
+    expect((node as any).status).toBe("disputed");
   });
 
   test("A4: 无 Rebuttal 时不能标记 refuted", () => {
@@ -737,8 +737,8 @@ describe("审查规则: Claim 状态转换", () => {
   test("A4: 有 Rebuttal 时可以标记 refuted", () => {
     const claim = makeClaim(db);
     makeRebuttal(db, claim.id);
-    const updated = service.updateNode(db, claim.id, { status: "refuted" });
-    expect((updated as any).status).toBe("refuted");
+    const { node } = service.updateNode(db, claim.id, { status: "refuted" });
+    expect((node as any).status).toBe("refuted");
   });
 });
 
@@ -757,8 +757,8 @@ describe("审查规则: Warrant 完整性", () => {
     const g1 = makeGround(db, { content: "G1" });
     const g2 = makeGround(db, { content: "G2" });
     const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
-    const updated = service.updateNode(db, warrant.id, { ground_ids: { remove: [g1.id] } });
-    expect((updated as any).groundIds).toEqual([g2.id]);
+    const { node } = service.updateNode(db, warrant.id, { ground_ids: { remove: [g1.id] } });
+    expect((node as any).groundIds).toEqual([g2.id]);
   });
 });
 
@@ -880,11 +880,28 @@ describe("审查规则: Ground 验证留痕", () => {
 
   test("H1: verified Ground 有 attachments 时可以通过 updateNode 设置", () => {
     const ground = makeGround(db, { verification: "pending" });
-    const updated = service.updateNode(db, ground.id, {
+    const { node } = service.updateNode(db, ground.id, {
       verification: "verified",
       attachments: ["/scripts/run.sh", "/logs/result.txt"],
     });
-    expect((updated as any).verification).toBe("verified");
-    expect((updated as any).attachments).toEqual(["/scripts/run.sh", "/logs/result.txt"]);
+    expect((node as any).verification).toBe("verified");
+    expect((node as any).attachments).toEqual(["/scripts/run.sh", "/logs/result.txt"]);
+  });
+
+  test("H2: verified Ground 退回 pending 时弹出警告", () => {
+    const claim = makeClaim(db);
+    const ground = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
+    const warrant = makeWarrant(db, claim.id, [ground.id]);
+    const { warnings } = service.updateNode(db, ground.id, { verification: "pending" });
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain("Ground #" + ground.id);
+    expect(warnings[0]).toContain("#" + warrant.id);
+    expect(warnings[0]).toContain("previously verified");
+  });
+
+  test("H2: verified Ground 无 Warrant 引用时退回无警告", () => {
+    const ground = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
+    const { warnings } = service.updateNode(db, ground.id, { verification: "pending" });
+    expect(warnings.length).toBe(0);
   });
 });

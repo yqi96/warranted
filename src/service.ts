@@ -637,14 +637,15 @@ export function getStats(db: Database): Stats {
 // 修改操作
 // =============================================================================
 
-/** 更新节点 */
+/** 更新节点，返回节点和警告 */
 export function updateNode(
   db: Database,
   nodeId: number,
   params: UpdateNodeParams
-): ToulminNode {
+): { node: ToulminNode; warnings: string[] } {
   const row = assertNodeExists(repo.getNodeById(db, nodeId), nodeId);
   const data = JSON.parse(row.data);
+  const warnings: string[] = [];
 
   // 更新 content
   if (params.content !== undefined) {
@@ -731,6 +732,7 @@ export function updateNode(
     if (row.type !== "ground") {
       throw new ValidationError("Only Ground nodes have verification");
     }
+    const prevVerification = data.verification;
     data.verification = params.verification;
 
     // H1: verified Ground 必须有 attachments
@@ -740,6 +742,15 @@ export function updateNode(
         throw new ValidationError(
           `Cannot mark Ground #${nodeId} as "verified": verified Grounds must have attachments. Provide scripts, logs, or other evidence files via the attachments parameter.`
         );
+      }
+    }
+
+    // H2: verified → 非 verified 时警告
+    if (prevVerification === "verified" && params.verification !== "verified") {
+      const usingWarrants = findWarrantsUsingGround(db, nodeId);
+      if (usingWarrants.length > 0) {
+        const wids = usingWarrants.map(w => `#${w.id}`).join(", ");
+        warnings.push(WARNINGS.revertGroundVerification(nodeId, wids));
       }
     }
   }
@@ -785,7 +796,7 @@ export function updateNode(
   // 执行更新
   const content = params.content !== undefined ? params.content : row.content;
   const updated = repo.updateNodeFields(db, nodeId, { content, data });
-  return toNode(assertNodeExists(updated, nodeId));
+  return { node: toNode(assertNodeExists(updated, nodeId)), warnings };
 }
 
 // =============================================================================

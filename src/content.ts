@@ -36,7 +36,7 @@ export const ELEMENTS = {
     ].join(" "),
     source: "Evidence source: 'observed' (independently produced), 'hypothesis' (to be verified), or 'literature' (from published work).",
     verification: "Has this evidence been independently verified?",
-    attachments: "File paths supporting this ground. Grounds with ref_claim_id (chain reasoning) do not need attachments. Other grounds MUST have a README explaining: what the ground states, how the evidence was produced, and where the files come from. Files alone without explanation are not enough — the README is the ground's provenance record.",
+    attachments: "File paths supporting this ground. Grounds with ref_claim_id (chain reasoning) do not need attachments. Other grounds MUST have a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this ground — explaining: what the ground states, how the evidence was produced, and where the files come from. Files alone without explanation are not enough — the document is the ground's provenance record.",
     refClaimId: "Use an existing Claim as a Ground for chain reasoning (Claim A's conclusion becomes Claim B's evidence). Mutually exclusive with content/source/verification/attachments — the Ground's content is auto-derived from the referenced Claim.",
   },
 
@@ -96,7 +96,7 @@ export const HINTS = {
 
   groundPending:
     "Hint: This is a hypothesis to verify. Verification work requires documentation: " +
-    "a README explaining what the ground states and how evidence was produced, plus supporting files. " +
+    "a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this ground — explaining what the ground states and how evidence was produced, plus supporting files. " +
     "Without these, the Ground cannot pass acceptance.",
 } as const;
 
@@ -122,4 +122,11 @@ export const WARNINGS = {
     `Warning: Warrant #${nodeId} supported Claim #${claimId} (status: "${status}"). ` +
     `The Claim's support structure has been weakened. ` +
     `Please review whether the Claim's status is still appropriate.`,
+
+  /** H2: Ground 从 verified 退回 */
+  revertGroundVerification: (nodeId: number, wids: string) =>
+    `Warning: Ground #${nodeId} was previously verified but is now being reverted. ` +
+    `Warrants ${wids} reference this Ground. ` +
+    `Claims depending on these Warrants may no longer satisfy the "supported" criteria. ` +
+    `Please review whether the related Claims' status is still appropriate.`,
 } as const;

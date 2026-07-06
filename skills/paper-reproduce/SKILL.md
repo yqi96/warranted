@@ -34,13 +34,13 @@ Use `get_argument` to review the graph. Verify each node:
 ```
 hypothesis + pending
     ↓ Design and execute verification
-    Task: Obtain data → Write scripts → Run → Save outputs + README
+    Task: Obtain data → Write scripts → Run → Save outputs + description document (an independent narrative specific to this ground)
     ↓ Results are reproducible
     observed + verified + attachments
 ```
 
 - Can verify → `update_node(source="observed", verification="verified", attachments=[...])`
-- Cannot verify (data unavailable, method opaque, results diverge) → Keep `hypothesis + pending`. Add a README explaining what prevented verification. This is a valid scientific outcome — the goal is honest documentation, not forced success.
+- Cannot verify (data unavailable, method opaque, results diverge) → Keep `hypothesis + pending`. Add a description document explaining what prevented verification. This is a valid scientific outcome — the goal is honest documentation, not forced success.
 
 **Claim adjudication** (conclusion assessment):
 

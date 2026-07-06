@@ -132,7 +132,7 @@ Ground ──> Claim (ref_claim_id)  链式推理：引用已有 Claim 作为证
 | 类型 | 关键属性 |
 |------|---------|
 | **Claim** | content, qualifier（力度词，可选）, status (`proposed` → `supported` → `validated` / `disputed` / `refuted`) |
-| **Ground** | content, attachments（含 README）, source (`literature` / `observed` / `hypothesis`), verification (`verified` / `pending`) |
+| **Ground** | content, attachments（含说明文档）, source (`literature` / `observed` / `hypothesis`), verification (`verified` / `pending`) |
 | **Warrant** | content, claim_id, ground_ids |
 | **Backing** | content, warrant_id |
 | **Rebuttal** | content, target_id, target_type (`claim` / `warrant`) |
@@ -145,7 +145,7 @@ create_ground(
   content="实验数据：准确率95%",
   source="observed",
   verification="verified",
-  attachments=["/results/exp.csv", "/results/README.md"]
+  attachments=["/results/exp.csv", "/results/ground-accuracy.md"]
 )
 ```
 
@@ -179,7 +179,7 @@ create_warrant(claim_id=1, content="多架构一致 → 非偶然",
 # 4. 复现实验后更新证据
 update_node(node_id=1, content="ResNet: 50 vs 90 (1.8×)",
             source="observed", verification="verified",
-            attachments=["/results/resnet/README.md"])
+            attachments=["/results/resnet/ground-resnet.md"])
 
 # 5. 综合判定
 update_node(node_id=1, status="disputed")
@@ -198,7 +198,7 @@ create_ground(content="多样性收益应随数据规模递减",
 # 3. 实验验证后更新
 update_node(node_id=1, content="实测：500→50K 单调递减",
             source="observed", verification="verified",
-            attachments=["/results/augmentation/README.md"])
+            attachments=["/results/augmentation/ground-augmentation.md"])
 
 # 4. 判定
 update_node(node_id=1, status="supported")

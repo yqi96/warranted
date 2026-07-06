@@ -13,7 +13,6 @@ import type {
   GroundNode,
   WarrantNode,
   BackingNode,
-  QualifierNode,
   RebuttalNode,
   ClaimStatus,
   GroundSource,
@@ -37,7 +36,9 @@ import {
   CascadeRequiredError,
   TypeMismatchError,
   MutuallyExclusiveModeError,
+  StatusTransitionError,
 } from "./errors.ts";
+import { WARNINGS } from "./content.ts";
 
 // =============================================================================
 // 辅助函数
@@ -97,19 +98,6 @@ function toBackingNode(row: NodeRow): BackingNode {
   };
 }
 
-function toQualifierNode(row: NodeRow): QualifierNode {
-  const data = JSON.parse(row.data);
-  return {
-    id: row.id,
-    type: "qualifier",
-    content: row.content,
-    attachments: data.attachments || [],
-    claimId: data.claim_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
 function toRebuttalNode(row: NodeRow): RebuttalNode {
   const data = JSON.parse(row.data);
   return {
@@ -131,7 +119,6 @@ function toNode(row: NodeRow): ToulminNode {
     case "ground": return toGroundNode(row);
     case "warrant": return toWarrantNode(row);
     case "backing": return toBackingNode(row);
-    case "qualifier": return toQualifierNode(row);
     case "rebuttal": return toRebuttalNode(row);
     default: throw new ValidationError(`Unknown node type: ${row.type}`);
   }
@@ -149,15 +136,69 @@ function assertNodeType(row: NodeRow, expectedType: string): void {
 }
 
 // =============================================================================
+// 审查辅助函数
+// =============================================================================
+
+/** 查找引用某 Ground 的所有 Warrants */
+function findWarrantsUsingGround(db: Database, groundId: number): NodeRow[] {
+  const allWarrants = repo.listNodesByType(db, "warrant");
+  return allWarrants.filter(w => {
+    const wData = JSON.parse(w.data);
+    return (wData.ground_ids || []).includes(groundId);
+  });
+}
+
+/** 检查 Claim 或其 Warrants 是否有 Rebuttal */
+function hasRebuttals(db: Database, claimId: number): boolean {
+  const claimRebuttals = repo.findRebuttalsByTarget(db, claimId, "claim");
+  if (claimRebuttals.length > 0) return true;
+  const warrantRows = repo.findWarrantsByClaim(db, claimId);
+  for (const w of warrantRows) {
+    const warrantRebuttals = repo.findRebuttalsByTarget(db, w.id, "warrant");
+    if (warrantRebuttals.length > 0) return true;
+  }
+  return false;
+}
+
+/** 检测链式推理循环：检查从 startId 出发沿现有链是否能到达 targetId */
+function canReachThroughChain(db: Database, startId: number, targetId: number): boolean {
+  const visited = new Set<number>();
+  const queue = [startId];
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    if (visited.has(currentId)) continue;
+    visited.add(currentId);
+    if (currentId === targetId) return true;
+    const warrants = repo.findWarrantsByClaim(db, currentId);
+    for (const w of warrants) {
+      const wData = JSON.parse(w.data);
+      const groundIds: number[] = wData.ground_ids || [];
+      for (const gid of groundIds) {
+        const gRow = repo.getNodeById(db, gid);
+        if (!gRow || gRow.type !== "ground") continue;
+        const gData = JSON.parse(gRow.data);
+        const refId = gData.ref_claim_id;
+        if (refId !== null && refId !== undefined && !visited.has(refId)) {
+          queue.push(refId);
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// =============================================================================
 // 创建操作
 // =============================================================================
 
 /** 创建 Claim */
-export function createClaim(db: Database, content: string): ClaimNode {
+export function createClaim(db: Database, content: string, qualifier?: string | null): ClaimNode {
   if (!content || !content.trim()) {
     throw new ValidationError("Claim content cannot be empty");
   }
-  const row = repo.insertNode(db, "claim", content.trim(), { status: "proposed" });
+  const data: Record<string, unknown> = { status: "proposed" };
+  if (qualifier) data.qualifier = qualifier;
+  const row = repo.insertNode(db, "claim", content.trim(), data);
   return toClaimNode(row);
 }
 
@@ -251,6 +292,28 @@ export function createWarrant(
     assertNodeType(groundRow, "ground");
   }
 
+  // B1: Warrant 必须有至少一个 Ground
+  if (gIds.length === 0) {
+    throw new ValidationError("A Warrant must link at least one Ground. Provide ground_ids.");
+  }
+
+  // E1: 循环链式推理检测
+  // 检查 Warrant 的 Grounds 中是否有 ref_claim_id 能回到 claimId
+  for (const gid of gIds) {
+    const gRow = repo.getNodeById(db, gid);
+    if (!gRow || gRow.type !== "ground") continue;
+    const gData = JSON.parse(gRow.data);
+    const refId = gData.ref_claim_id;
+    if (refId !== null && refId !== undefined) {
+      // 从 refId 出发沿链遍历，检查是否能回到 claimId
+      if (canReachThroughChain(db, refId, claimId)) {
+        throw new ValidationError(
+          `Circular chain reasoning detected: Claim #${claimId} would reference itself through Ground #${gid}.`
+        );
+      }
+    }
+  }
+
   const row = repo.insertNode(db, "warrant", content.trim(), {
     claim_id: claimId,
     ground_ids: gIds,
@@ -276,36 +339,23 @@ export function createBacking(
   const warrantRow = assertNodeExists(repo.getNodeById(db, warrantId), warrantId);
   assertNodeType(warrantRow, "warrant");
 
+  // G2: 不能为 refuted Claim 的 Warrant 创建 Backing
+  const wData = JSON.parse(warrantRow.data);
+  const claimRow = repo.getNodeById(db, wData.claim_id);
+  if (claimRow) {
+    const claimData = JSON.parse(claimRow.data);
+    if (claimData.status === "refuted") {
+      throw new ValidationError(
+        `Cannot create Backing for Warrant #${warrantId}: its Claim #${wData.claim_id} is refuted. Adding support to a refuted argument is not meaningful.`
+      );
+    }
+  }
+
   const row = repo.insertNode(db, "backing", content.trim(), {
     attachments: attachments || [],
     warrant_id: warrantId,
   });
   return toBackingNode(row);
-}
-
-/** 创建 Qualifier */
-export function createQualifier(
-  db: Database,
-  opts: {
-    content: string;
-    claimId: number;
-    attachments?: string[];
-  }
-): QualifierNode {
-  const { content, claimId, attachments } = opts;
-
-  if (!content || !content.trim()) {
-    throw new ValidationError("Qualifier content cannot be empty");
-  }
-
-  const claimRow = assertNodeExists(repo.getNodeById(db, claimId), claimId);
-  assertNodeType(claimRow, "claim");
-
-  const row = repo.insertNode(db, "qualifier", content.trim(), {
-    attachments: attachments || [],
-    claim_id: claimId,
-  });
-  return toQualifierNode(row);
 }
 
 /** 创建 Rebuttal */
@@ -327,6 +377,16 @@ export function createRebuttal(
   const targetRow = assertNodeExists(repo.getNodeById(db, targetId), targetId);
   if (targetRow.type !== targetType) {
     throw new TypeMismatchError(targetId, targetType, targetRow.type);
+  }
+
+  // F1: 不能 rebut 已 refuted 的 Claim
+  if (targetType === "claim") {
+    const targetData = JSON.parse(targetRow.data);
+    if (targetData.status === "refuted") {
+      throw new ValidationError(
+        `Cannot create Rebuttal targeting Claim #${targetId}: already refuted. No further rebuttal is needed.`
+      );
+    }
   }
 
   const row = repo.insertNode(db, "rebuttal", content.trim(), {
@@ -371,11 +431,9 @@ export function getArgument(db: Database, nodeId: number): ArgumentResult {
 function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
   const claim = toClaimNode(claimRow);
 
-  // Qualifier
-  const qualifierRows = repo.findQualifiersByClaim(db, claim.id);
-  const qualifier = qualifierRows.length > 0
-    ? { id: qualifierRows[0].id, content: qualifierRows[0].content, attachments: JSON.parse(qualifierRows[0].data).attachments || [] }
-    : null;
+  // Qualifier (now a Claim attribute)
+  const claimData = JSON.parse(claimRow.data);
+  const qualifier = claimData.qualifier || null;
 
   // Warrants + their Grounds and Backings
   const warrantRows = repo.findWarrantsByClaim(db, claim.id);
@@ -424,7 +482,7 @@ function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
     };
   });
 
-  return { claim: { ...claim, qualifier }, warrants, rebuttals };
+  return { claim: { ...claim, qualifier }, warrants, rebuttals } as ClaimArgument;
 }
 
 function getWarrantArgument(db: Database, warrantRow: NodeRow): WarrantArgument {
@@ -503,7 +561,7 @@ function getNodeArgument(db: Database, row: NodeRow): NodeArgument {
           claim_content: claimRow?.content || "",
         };
       });
-  } else if (row.type === "backing" || row.type === "qualifier" || row.type === "rebuttal") {
+  } else if (row.type === "backing" || row.type === "rebuttal") {
     result.node.attachments = data.attachments || [];
   }
 
@@ -570,7 +628,7 @@ export function getStats(db: Database): Stats {
     grounds: { total: counts.ground, by_source: bySource, by_verification: byVerification },
     warrants: { total: counts.warrant },
     backings: { total: counts.backing },
-    qualifiers: { total: counts.qualifier },
+    qualifiers: { total: 0 },
     rebuttals: { total: counts.rebuttal, by_target_type: byTargetType },
   };
 }
@@ -593,7 +651,7 @@ export function updateNode(
     data.content = params.content;
   }
 
-  // 更新 attachments（Ground/Backing/Qualifier/Rebuttal）
+  // 更新 attachments（Ground/Backing/Rebuttal）
   if (params.attachments !== undefined) {
     if (row.type === "claim" || row.type === "warrant") {
       throw new ValidationError(`${row.type} nodes do not have attachments`);
@@ -610,6 +668,53 @@ export function updateNode(
     if (!validStatuses.includes(params.status)) {
       throw new ValidationError(`Invalid status: ${params.status}`);
     }
+
+    // A1: →supported 或 →validated 需至少一个 Warrant 且其 Grounds 全部 verified
+    if (params.status === "supported" || params.status === "validated") {
+      const warrants = repo.findWarrantsByClaim(db, nodeId);
+      if (warrants.length === 0) {
+        throw new StatusTransitionError(
+          `Cannot mark Claim #${nodeId} as "supported": Claim has no Warrants. Create a Warrant with verified Grounds first.`
+        );
+      }
+      let hasValidWarrant = false;
+      for (const w of warrants) {
+        const wData = JSON.parse(w.data);
+        const gIds: number[] = wData.ground_ids || [];
+        if (gIds.length === 0) continue;
+        const allVerified = gIds.every(gid => {
+          const gRow = repo.getNodeById(db, gid);
+          if (!gRow) return false;
+          const gData = JSON.parse(gRow.data);
+          return gData.verification === "verified";
+        });
+        if (allVerified) hasValidWarrant = true;
+      }
+      if (!hasValidWarrant) {
+        throw new StatusTransitionError(
+          `Cannot mark Claim #${nodeId} as "${params.status}": no Warrant has all Grounds verified. Verify the Grounds first.`
+        );
+      }
+    }
+
+    // A3: →disputed 需存在 Rebuttal
+    if (params.status === "disputed") {
+      if (!hasRebuttals(db, nodeId)) {
+        throw new StatusTransitionError(
+          `Cannot mark Claim #${nodeId} as "disputed": no Rebuttals exist targeting this Claim or its Warrants. Create a Rebuttal first.`
+        );
+      }
+    }
+
+    // A4: →refuted 需存在 Rebuttal
+    if (params.status === "refuted") {
+      if (!hasRebuttals(db, nodeId)) {
+        throw new StatusTransitionError(
+          `Cannot mark Claim #${nodeId} as "refuted": no Rebuttals exist to justify refutation.`
+        );
+      }
+    }
+
     data.status = params.status;
   }
 
@@ -627,6 +732,16 @@ export function updateNode(
       throw new ValidationError("Only Ground nodes have verification");
     }
     data.verification = params.verification;
+
+    // H1: verified Ground 必须有 attachments
+    if (params.verification === "verified") {
+      const finalAttachments = data.attachments || [];
+      if (finalAttachments.length === 0) {
+        throw new ValidationError(
+          `Cannot mark Ground #${nodeId} as "verified": verified Grounds must have attachments. Provide scripts, logs, or other evidence files via the attachments parameter.`
+        );
+      }
+    }
   }
 
   // 更新 ground_ids（Warrant only）
@@ -648,8 +763,23 @@ export function updateNode(
 
     if (params.ground_ids.remove) {
       const removeIds = params.ground_ids.remove;
-      data.ground_ids = currentIds.filter((id: number) => !removeIds.includes(id));
+      const remaining = currentIds.filter((id: number) => !removeIds.includes(id));
+      // B3: 不能清空 Warrant 的所有 Grounds
+      if (remaining.length === 0) {
+        throw new ValidationError(
+          `Cannot remove all Grounds from Warrant #${nodeId}. A Warrant must have at least one Ground.`
+        );
+      }
+      data.ground_ids = remaining;
     }
+  }
+
+  // 更新 qualifier（Claim only）
+  if (params.qualifier !== undefined) {
+    if (row.type !== "claim") {
+      throw new ValidationError("Only Claim nodes have qualifier");
+    }
+    data.qualifier = params.qualifier;
   }
 
   // 执行更新
@@ -662,43 +792,52 @@ export function updateNode(
 // 删除操作
 // =============================================================================
 
-/** 删除节点 */
+/** 删除节点，返回警告信息数组 */
 export function deleteNode(
   db: Database,
   nodeId: number,
   cascade: boolean = false
-): void {
+): string[] {
   const row = assertNodeExists(repo.getNodeById(db, nodeId), nodeId);
+  const warnings: string[] = [];
 
   switch (row.type) {
     case "claim": {
       if (!cascade) {
         throw new CascadeRequiredError();
       }
+      // D2 警告: 检查是否被 Ground(ref_claim_id) 链式引用
+      const refGrounds = repo.findGroundsByRefClaim(db, nodeId);
+      if (refGrounds.length > 0) {
+        const gids = refGrounds.map(g => g.id).join(", ");
+        warnings.push(WARNINGS.deleteClaimReferencedByGround(nodeId, gids));
+      }
       // 删除绑定的 Warrants（及其 Backings）
       const warrants = repo.findWarrantsByClaim(db, nodeId);
       for (const w of warrants) {
-        // 删除 Warrant 的 Backings
         const backings = repo.findBackingsByWarrant(db, w.id);
         for (const b of backings) {
           repo.deleteNodeById(db, b.id);
         }
-        // 删除指向 Warrant 的 Rebuttals
         const rebuttals = repo.findRebuttalsByTarget(db, w.id, "warrant");
         for (const r of rebuttals) {
           repo.deleteNodeById(db, r.id);
         }
         repo.deleteNodeById(db, w.id);
       }
-      // 删除 Qualifiers
-      const qualifiers = repo.findQualifiersByClaim(db, nodeId);
-      for (const q of qualifiers) {
-        repo.deleteNodeById(db, q.id);
-      }
       // 删除指向 Claim 的 Rebuttals
       const rebuttals = repo.findRebuttalsByTarget(db, nodeId, "claim");
       for (const r of rebuttals) {
         repo.deleteNodeById(db, r.id);
+      }
+      // D4: 清理链式引用 Grounds
+      for (const g of refGrounds) {
+        repo.removeGroundFromAllWarrants(db, g.id);
+        const gRebuttals = repo.findRebuttalsByTarget(db, g.id);
+        for (const r of gRebuttals) {
+          repo.deleteNodeById(db, r.id);
+        }
+        repo.deleteNodeById(db, g.id);
       }
       // 删除 Claim 本身
       repo.deleteNodeById(db, nodeId);
@@ -706,6 +845,12 @@ export function deleteNode(
     }
 
     case "ground": {
+      // D1 警告: 检查是否被 Warrant 引用
+      const usingWarrants = findWarrantsUsingGround(db, nodeId);
+      if (usingWarrants.length > 0) {
+        const wids = usingWarrants.map(w => `#${w.id}`).join(", ");
+        warnings.push(WARNINGS.deleteGroundReferencedByWarrant(nodeId, wids));
+      }
       // 从所有 Warrant 的 ground_ids 中移除
       repo.removeGroundFromAllWarrants(db, nodeId);
       // 删除指向该 Ground 的 Rebuttals
@@ -718,6 +863,17 @@ export function deleteNode(
     }
 
     case "warrant": {
+      // D3 警告: 检查 Claim 是否非 proposed
+      const wData = JSON.parse(row.data);
+      const claimId = wData.claim_id;
+      const claimRow = repo.getNodeById(db, claimId);
+      if (claimRow) {
+        const claimData = JSON.parse(claimRow.data);
+        const claimStatus = claimData.status || "proposed";
+        if (claimStatus !== "proposed") {
+          warnings.push(WARNINGS.deleteWarrantSupportingClaim(nodeId, claimId, claimStatus));
+        }
+      }
       // 级联删除 Backings
       const backings = repo.findBackingsByWarrant(db, nodeId);
       for (const b of backings) {
@@ -733,7 +889,6 @@ export function deleteNode(
     }
 
     case "backing":
-    case "qualifier":
     case "rebuttal": {
       repo.deleteNodeById(db, nodeId);
       break;
@@ -742,4 +897,6 @@ export function deleteNode(
     default:
       throw new ValidationError(`Unknown node type: ${row.type}`);
   }
+
+  return warnings;
 }

@@ -11,7 +11,6 @@ import type {
   GroundNode,
   WarrantNode,
   BackingNode,
-  QualifierNode,
   RebuttalNode,
   ClaimStatus,
   GroundSource,
@@ -165,31 +164,6 @@ export function makeBacking(
   };
 }
 
-/** 创建 Qualifier 节点 */
-export function makeQualifier(
-  db: Database,
-  claimId: number,
-  content: string = "Test qualifier",
-  attachments: string[] = []
-): QualifierNode {
-  const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({ attachments, claim_id: claimId });
-  const stmt = db.prepare(
-    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('qualifier', ?, ?, ?, ?)"
-  );
-  const result = stmt.run(content, data, now, now);
-  const id = result.lastInsertRowid as number;
-  return {
-    id,
-    type: "qualifier",
-    content,
-    attachments,
-    claimId,
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
 /** 创建 Rebuttal 节点 */
 export function makeRebuttal(
   db: Database,
@@ -227,16 +201,19 @@ export interface SeedResult {
   ground2: GroundNode;
   warrant: WarrantNode;
   backing: BackingNode;
-  qualifier: QualifierNode;
 }
 
 /**
  * 创建一个完整的论证结构用于测试：
- * Claim ← Warrant(ground1, ground2) ← Backing
- * Claim ← Qualifier
+ * Claim(qualifier="仅在图像分类任务上验证") ← Warrant(ground1, ground2) ← Backing
  */
 export function seedBasicArgument(db: Database): SeedResult {
   const claim = makeClaim(db, "核心主张：方法A优于方法B");
+  // Set qualifier on the claim via repo
+  const claimData = JSON.parse(db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id)!.data);
+  claimData.qualifier = "仅在图像分类任务上验证";
+  db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(claimData), claim.id);
+  const updatedClaim = { ...claim } as any;
   const ground1 = makeGround(db, {
     content: "实验数据：方法A准确率95%",
     source: "observed",
@@ -261,12 +238,5 @@ export function seedBasicArgument(db: Database): SeedResult {
     "跨数据集一致性验证方法论",
     ["/papers/methodology.pdf"]
   );
-  const qualifier = makeQualifier(
-    db,
-    claim.id,
-    "仅在图像分类任务上验证",
-    ["/data/benchmark_config.json"]
-  );
-
-  return { claim, ground1, ground2, warrant, backing, qualifier };
+  return { claim: updatedClaim, ground1, ground2, warrant, backing };
 }

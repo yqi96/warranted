@@ -4,755 +4,1141 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Toulmin 论证可视化</title>
-  <script src="https://unpkg.com/cytoscape@3.30.0/dist/cytoscape.min.js"></script>
-  <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
-  <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: row; background: #1a1a2e; color: #eee; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: row; background: #0f172a; color: #e2e8f0; }
 
-    /* 左侧过滤面板 */
-    #filter-panel { width: 240px; min-width: 150px; max-width: 500px; background: #16213e; padding: 20px; overflow-y: auto; border-right: 1px solid #0f3460; flex: 0 0 auto; }
-    #filter-panel h2 { font-size: 14px; color: #94a3b8; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
-    .filter-group { margin-bottom: 24px; }
-    .filter-item { display: flex; align-items: center; padding: 8px 0; cursor: pointer; }
-    .filter-item input { margin-right: 10px; }
-    .filter-item .color-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
-    .filter-item .count { margin-left: auto; color: #64748b; font-size: 12px; }
-    #search-input { width: 100%; padding: 8px 12px; background: #0f3460; border: 1px solid #1e4976; border-radius: 6px; color: #eee; font-size: 14px; }
-    #search-input::placeholder { color: #64748b; }
-    #search-input:focus { outline: none; border-color: #3b82f6; }
-    .layout-option { display: flex; align-items: center; padding: 6px 0; cursor: pointer; }
-    .layout-option input { margin-right: 8px; }
-    .stats-box { background: #0f3460; border-radius: 8px; padding: 12px; font-size: 12px; }
-    .stats-row { display: flex; justify-content: space-between; padding: 4px 0; }
+    /* ── 左侧面板 ── */
+    #filter-panel { width: 240px; min-width: 150px; max-width: 500px; background: #1e293b; padding: 20px; overflow-y: auto; border-right: 1px solid #334155; flex: 0 0 auto; }
+    #filter-panel h2 { font-size: 11px; color: #94a3b8; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600; }
+    .filter-group { margin-bottom: 22px; }
+    .filter-item { display: flex; align-items: center; padding: 5px 0; cursor: pointer; font-size: 13px; transition: opacity 0.2s; }
+    .filter-item:hover { opacity: 0.8; }
+    .filter-item input[type="checkbox"] { appearance: none; width: 16px; height: 16px; border: 2px solid #475569; border-radius: 4px; margin-right: 10px; cursor: pointer; position: relative; flex-shrink: 0; }
+    .filter-item input[type="checkbox"]:checked { border-color: #3b82f6; background: #3b82f6; }
+    .filter-item input[type="checkbox"]:checked::after { content: '✓'; position: absolute; top: -2px; left: 2px; font-size: 11px; color: #fff; font-weight: bold; }
+    .filter-item .color-dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
+    .filter-item .count { margin-left: auto; color: #64748b; font-size: 11px; background: #0f172a; padding: 1px 6px; border-radius: 8px; }
+    #search-input { width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #e2e8f0; font-size: 13px; transition: border-color 0.2s; }
+    #search-input::placeholder { color: #475569; }
+    #search-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15); }
+    .layout-option { display: flex; align-items: center; padding: 5px 0; cursor: pointer; font-size: 13px; }
+    .layout-option input[type="radio"] { appearance: none; width: 14px; height: 14px; border: 2px solid #475569; border-radius: 50%; margin-right: 8px; cursor: pointer; position: relative; flex-shrink: 0; }
+    .layout-option input[type="radio"]:checked { border-color: #3b82f6; }
+    .layout-option input[type="radio"]:checked::after { content: ''; position: absolute; top: 2px; left: 2px; width: 6px; height: 6px; background: #3b82f6; border-radius: 50%; }
 
-    /* 中央图区域 */
-    #cy-container { flex: 1 1 auto; min-width: 200px; position: relative; overflow: hidden; }
+    /* ── 统计与进度 ── */
+    .stats-box { background: #0f172a; border-radius: 8px; padding: 12px; font-size: 12px; border: 1px solid #1e293b; }
+    .stats-row { display: flex; justify-content: space-between; padding: 3px 0; color: #94a3b8; }
+    .stats-row span:last-child { color: #e2e8f0; font-weight: 500; }
+    .progress-section { margin-top: 12px; }
+    .progress-item { margin-bottom: 10px; }
+    .progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+    .progress-name { font-size: 11px; color: #94a3b8; }
+    .progress-count { font-size: 11px; font-weight: 600; }
+    .progress-track { background: #1e293b; border-radius: 4px; height: 6px; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+    .progress-fill.ground { background: linear-gradient(90deg, #22c55e, #16a34a); }
+    .progress-fill.claim { background: linear-gradient(90deg, #3b82f6, #6366f1); }
+
+    /* ── 图例 ── */
+    .legend-row { display: flex; align-items: center; gap: 7px; font-size: 11px; color: #94a3b8; padding: 3px 0; }
+    .legend-diamond { width: 10px; height: 10px; transform: rotate(45deg); flex-shrink: 0; border-radius: 1px; }
+    .legend-rect { width: 12px; height: 9px; border-radius: 3px; flex-shrink: 0; }
+    .legend-hex { width: 12px; height: 10px; flex-shrink: 0; clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%); }
+
+    /* ── 实时状态指示器 ── */
+    #live-status { display: flex; align-items: center; gap: 7px; padding: 6px 10px; background: #0f172a; border-radius: 8px; margin-bottom: 16px; font-size: 11px; border: 1px solid #1e293b; }
+    #live-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; transition: background 0.4s; }
+    #live-text { transition: color 0.4s; }
+    @keyframes livePulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+    .live-dot-on { background: #22c55e !important; animation: livePulse 2.2s ease-in-out infinite; }
+    .live-dot-err { background: #f59e0b !important; animation: none !important; }
+    .db-switch { display: flex; flex-direction: column; gap: 6px; }
+    .db-current { font-size: 10px; color: #475569; word-break: break-all; padding: 5px 8px; background: #0f172a; border-radius: 6px; border: 1px solid #1e293b; min-height: 28px; }
+    .db-current span { color: #64748b; }
+    #db-path-input { width: 100%; padding: 7px 10px; background: #0f172a; border: 1px solid #334155; border-radius: 7px; color: #e2e8f0; font-size: 12px; font-family: monospace; }
+    #db-path-input::placeholder { color: #475569; }
+    #db-path-input:focus { outline: none; border-color: #3b82f6; }
+    #db-switch-btn { width: 100%; padding: 7px; background: #1d4ed8; border: none; border-radius: 7px; color: #fff; font-size: 12px; cursor: pointer; transition: background 0.2s; }
+    #db-switch-btn:hover { background: #2563eb; }
+    .db-status { font-size: 11px; padding: 4px 8px; border-radius: 6px; display: none; }
+    .db-status.success { display: block; background: #064e3b; color: #6ee7b7; }
+    .db-status.error { display: block; background: #7f1d1d; color: #fca5a5; }
+
+    /* ── 分隔条 ── */
+    .resizer { width: 4px; background: #1e293b; cursor: col-resize; transition: background 0.2s; flex-shrink: 0; }
+    .resizer:hover, .resizer.dragging { background: #3b82f6; }
+    .resizer.hidden { display: none; }
+
+    /* ── 画布 ── */
+    #cy-container { flex: 1 1 auto; min-width: 200px; position: relative; overflow: hidden; background: #0f172a; }
     #cy { width: 100%; height: 100%; }
-    #toolbar { position: absolute; top: 16px; left: 16px; display: flex; gap: 8px; z-index: 10; }
-    #toolbar button { padding: 8px 16px; background: #16213e; border: 1px solid #0f3460; border-radius: 6px; color: #eee; cursor: pointer; font-size: 13px; }
-    #toolbar button:hover { background: #1e4976; }
-    #empty-state { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #64748b; text-align: center; }
+    #cy svg { width: 100%; height: 100%; }
+    #toolbar { position: absolute; top: 16px; left: 16px; display: flex; gap: 6px; z-index: 10; }
+    #toolbar button { padding: 6px 14px; background: rgba(30,41,59,0.92); border: 1px solid #334155; border-radius: 8px; color: #cbd5e1; cursor: pointer; font-size: 12px; backdrop-filter: blur(8px); transition: all 0.2s; }
+    #toolbar button:hover { background: #334155; color: #f1f5f9; border-color: #475569; }
+    #empty-state { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #475569; text-align: center; }
 
-    /* 右侧详情面板 */
-    #detail-panel { width: 0; min-width: 0; background: #16213e; overflow: hidden; border-left: none; flex: 0 0 auto; display: none; }
-    #detail-panel.open { width: 320px; min-width: 150px; display: block; border-left: 1px solid #0f3460; }
+    /* ── 详情面板 ── */
+    #detail-panel { width: 0; min-width: 0; background: #1e293b; overflow: hidden; border-left: none; flex: 0 0 auto; display: none; }
+    #detail-panel.open { width: 340px; min-width: 150px; display: block; border-left: 1px solid #334155; }
     #detail-content { padding: 20px; width: 100%; overflow-y: auto; height: 100%; }
     #detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-    #detail-header h3 { font-size: 16px; }
-    #close-detail { background: none; border: none; color: #94a3b8; font-size: 20px; cursor: pointer; }
-    .detail-section { margin-bottom: 16px; }
-    .detail-section h4 { font-size: 12px; color: #94a3b8; margin-bottom: 8px; text-transform: uppercase; }
-    .detail-field { padding: 8px 0; border-bottom: 1px solid #0f3460; }
+    #detail-header h3 { font-size: 15px; font-weight: 600; }
+    #close-detail { background: none; border: none; color: #94a3b8; font-size: 20px; cursor: pointer; transition: color 0.2s; }
+    #close-detail:hover { color: #f1f5f9; }
+    .detail-section { margin-bottom: 14px; }
+    .detail-section h4 { font-size: 11px; color: #64748b; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+    .detail-field { padding: 7px 0; border-bottom: 1px solid #0f172a; }
     .detail-field .label { font-size: 11px; color: #64748b; }
-    .detail-field .value { font-size: 14px; margin-top: 2px; word-break: break-word; }
-    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
-    .status-proposed { background: #374151; color: #9ca3af; }
-    .status-supported { background: #065f46; color: #6ee7b7; }
-    .status-validated { background: #1e40af; color: #93c5fd; box-shadow: 0 0 8px #3b82f6; }
-    .status-disputed { background: #92400e; color: #fcd34d; }
+    .detail-field .value { font-size: 13px; margin-top: 3px; word-break: break-word; color: #e2e8f0; line-height: 1.5; }
+    .status-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .status-proposed { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+    .status-supported { background: #064e3b; color: #6ee7b7; }
+    .status-validated { background: #1e3a5f; color: #93c5fd; }
+    .status-disputed { background: #78350f; color: #fcd34d; }
     .status-refuted { background: #7f1d1d; color: #fca5a5; }
+    .veri-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .veri-verified { background: #052e16; color: #4ade80; border: 1px solid #166534; }
+    .veri-pending  { background: #1c1917; color: #a8a29e; border: 1px solid #44403c; }
     .edge-list { list-style: none; }
-    .edge-list li { padding: 6px 0; font-size: 13px; cursor: pointer; color: #93c5fd; }
-    .edge-list li:hover { text-decoration: underline; }
-    .attachment-list { list-style: none; }
-    .attachment-list li { padding: 4px 0; font-size: 12px; color: #64748b; }
-    .type-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+    .edge-list li { padding: 5px 8px; font-size: 12px; cursor: pointer; color: #93c5fd; border-radius: 6px; transition: background 0.2s; }
+    .edge-list li:hover { background: rgba(59,130,246,0.1); }
+    .type-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #fff; }
 
-    /* 上传区域 */
-    .upload-area { border: 2px dashed #1e4976; border-radius: 8px; padding: 16px; text-align: center; cursor: pointer; transition: all 0.2s; }
-    .upload-area:hover { border-color: #3b82f6; background: rgba(59, 130, 246, 0.05); }
-    .upload-area.dragover { border-color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
-    .upload-icon { font-size: 24px; margin-bottom: 8px; }
-    .upload-text { font-size: 12px; color: #94a3b8; }
-    .upload-text strong { color: #3b82f6; }
-    #upload-input { display: none; }
-    .upload-status { margin-top: 8px; font-size: 11px; padding: 4px 8px; border-radius: 4px; display: none; }
-    .upload-status.success { display: block; background: #065f46; color: #6ee7b7; }
-    .upload-status.error { display: block; background: #7f1d1d; color: #fca5a5; }
-    .upload-status.loading { display: block; background: #1e40af; color: #93c5fd; }
+    /* ── 浮动 Tooltip ── */
+    #tooltip { position: fixed; background: rgba(15,23,42,0.97); border: 1px solid #334155; border-radius: 10px; padding: 11px 14px; font-size: 12px; max-width: 340px; color: #e2e8f0; z-index: 2000; pointer-events: none; display: none; box-shadow: 0 6px 24px rgba(0,0,0,0.5); line-height: 1.55; }
+    #tooltip .tt-type { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; font-weight: 600; }
+    #tooltip .tt-content { word-break: break-word; }
+    #tooltip .tt-meta { margin-top: 7px; font-size: 11px; display: flex; gap: 8px; flex-wrap: wrap; }
+    #tooltip .tt-chip { padding: 1px 7px; border-radius: 8px; font-size: 10px; font-weight: 600; }
 
-    /* 可拖拽分隔条 */
-    .resizer { width: 4px; background: #0f3460; cursor: col-resize; transition: background 0.2s; flex-shrink: 0; }
-    .resizer:hover, .resizer.dragging { background: #3b82f6; }
-    .resizer::after { content: ''; display: block; width: 100%; height: 100%; }
-    .resizer.hidden { display: none; }
+    /* ── D3 图形 ── */
+    .link { fill: none; stroke-opacity: 0.65; }
+    .link-cross { stroke-dasharray: 5,3; stroke-opacity: 0.4; }
+    .node-group { cursor: pointer; }
+    .node-label { fill: #cbd5e1; font-size: 11px; pointer-events: none; }
+    .node-type-label { fill: rgba(255,255,255,0.75); font-size: 9px; pointer-events: none; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; }
+    .node-icon { fill: rgba(255,255,255,0.9); font-size: 11px; pointer-events: none; font-weight: 700; }
   </style>
 </head>
 <body>
-  <!-- 左侧过滤面板 -->
-  <div id="filter-panel">
-    <div class="filter-group">
-      <h2>节点类型</h2>
-      <label class="filter-item">
-        <input type="checkbox" data-type="claim" checked>
-        <span class="color-dot" style="background:#3b82f6"></span>
-        <span>Claim</span>
-        <span class="count" id="count-claim">0</span>
-      </label>
-      <label class="filter-item">
-        <input type="checkbox" data-type="ground" checked>
-        <span class="color-dot" style="background:#10b981"></span>
-        <span>Ground</span>
-        <span class="count" id="count-ground">0</span>
-      </label>
-      <label class="filter-item">
-        <input type="checkbox" data-type="warrant" checked>
-        <span class="color-dot" style="background:#f59e0b"></span>
-        <span>Warrant</span>
-        <span class="count" id="count-warrant">0</span>
-      </label>
-      <label class="filter-item">
-        <input type="checkbox" data-type="backing" checked>
-        <span class="color-dot" style="background:#8b5cf6"></span>
-        <span>Backing</span>
-        <span class="count" id="count-backing">0</span>
-      </label>
-      <label class="filter-item">
-        <input type="checkbox" data-type="qualifier" checked>
-        <span class="color-dot" style="background:#06b6d4"></span>
-        <span>Qualifier</span>
-        <span class="count" id="count-qualifier">0</span>
-      </label>
-      <label class="filter-item">
-        <input type="checkbox" data-type="rebuttal" checked>
-        <span class="color-dot" style="background:#ef4444"></span>
-        <span>Rebuttal</span>
-        <span class="count" id="count-rebuttal">0</span>
-      </label>
-    </div>
 
-    <div class="filter-group">
-      <h2>搜索</h2>
-      <input type="text" id="search-input" placeholder="输入关键词搜索...">
-    </div>
+<!-- ════════ 左侧控制面板 ════════ -->
+<div id="filter-panel">
+  <div id="live-status">
+    <span id="live-dot"></span>
+    <span id="live-text" style="color:#64748b">连接中…</span>
+  </div>
+  <div class="filter-group">
+    <h2>节点类型</h2>
+    <label class="filter-item"><input type="checkbox" data-type="claim" checked><span class="color-dot" style="background:#3b82f6"></span><span>Claim</span><span class="count" id="count-claim">0</span></label>
+    <label class="filter-item"><input type="checkbox" data-type="ground" checked><span class="color-dot" style="background:#10b981"></span><span>Ground</span><span class="count" id="count-ground">0</span></label>
+    <label class="filter-item"><input type="checkbox" data-type="warrant" checked><span class="color-dot" style="background:#f59e0b"></span><span>Warrant</span><span class="count" id="count-warrant">0</span></label>
+    <label class="filter-item"><input type="checkbox" data-type="backing" checked><span class="color-dot" style="background:#8b5cf6"></span><span>Backing</span><span class="count" id="count-backing">0</span></label>
+    <label class="filter-item"><input type="checkbox" data-type="rebuttal" checked><span class="color-dot" style="background:#ef4444"></span><span>Rebuttal</span><span class="count" id="count-rebuttal">0</span></label>
+  </div>
 
-    <div class="filter-group">
-      <h2>布局</h2>
-      <label class="layout-option">
-        <input type="radio" name="layout" value="dagre" checked>
-        <span>层次布局 (Dagre)</span>
-      </label>
-      <label class="layout-option">
-        <input type="radio" name="layout" value="cose">
-        <span>力导向布局 (Cose)</span>
-      </label>
-      <label class="layout-option">
-        <input type="radio" name="layout" value="breadthfirst">
-        <span>同心圆布局</span>
-      </label>
-    </div>
+  <div class="filter-group">
+    <h2>搜索</h2>
+    <input type="text" id="search-input" placeholder="输入关键词搜索…">
+  </div>
 
-    <div class="filter-group">
-      <h2>统计</h2>
-      <div class="stats-box" id="stats-box">
-        <div class="stats-row"><span>总计</span><span id="stat-total">0</span></div>
+  <div class="filter-group">
+    <h2>布局</h2>
+    <label class="layout-option"><input type="radio" name="layout" value="tree" checked><span>树形布局</span></label>
+    <label class="layout-option"><input type="radio" name="layout" value="force"><span>力导向布局</span></label>
+  </div>
+
+  <div class="filter-group">
+    <h2>统计</h2>
+    <div class="stats-box">
+      <div class="stats-row"><span>总节点</span><span id="stat-total">0</span></div>
+      <div class="progress-section">
+        <div class="progress-item">
+          <div class="progress-header">
+            <span class="progress-name">证据验证</span>
+            <span class="progress-count" id="ground-progress-label" style="color:#22c55e">0/0</span>
+          </div>
+          <div class="progress-track"><div class="progress-fill ground" id="ground-progress-bar" style="width:0%"></div></div>
+        </div>
+        <div class="progress-item">
+          <div class="progress-header">
+            <span class="progress-name">结论支撑</span>
+            <span class="progress-count" id="claim-progress-label" style="color:#3b82f6">0/0</span>
+          </div>
+          <div class="progress-track"><div class="progress-fill claim" id="claim-progress-bar" style="width:0%"></div></div>
+        </div>
       </div>
     </div>
+  </div>
 
-    <div class="filter-group">
-      <h2>数据库</h2>
-      <div class="upload-area" id="upload-area">
-        <div class="upload-icon">📁</div>
-        <div class="upload-text">点击或拖拽 <strong>.db</strong> 文件集<br><small style="color:#64748b">支持 .db + .db-wal + .db-shm</small></div>
-      </div>
-      <input type="file" id="upload-input" accept=".db,.sqlite,.db-wal,.db-shm" multiple>
-      <div class="upload-status" id="upload-status"></div>
+  <div class="filter-group">
+    <h2>图例</h2>
+    <div class="legend-row"><div class="legend-diamond" style="background:#22c55e;border:1.5px solid #16a34a"></div><span>Ground — 已验证 ✓</span></div>
+    <div class="legend-row"><div class="legend-diamond" style="background:#374151;border:1.5px dashed #6b7280"></div><span>Ground — 待验证 ⋯</span></div>
+    <div class="legend-row"><div class="legend-diamond" style="background:#2563eb;border:1.5px solid #1d4ed8"></div><span>Ground — 链式引用 →</span></div>
+    <div class="legend-row" style="margin-top:4px"><div class="legend-rect" style="background:#3b82f6;border:2px solid #34d399"></div><span>Claim — supported</span></div>
+    <div class="legend-row"><div class="legend-rect" style="background:#3b82f6;border:2px solid #3b82f6"></div><span>Claim — proposed</span></div>
+    <div class="legend-row" style="margin-top:4px"><div class="legend-hex" style="background:#f59e0b"></div><span>Warrant</span></div>
+    <div class="legend-row" style="margin-top:4px;gap:5px">
+      <div style="width:28px;height:2px;background:#a855f7;border-top:2px dashed #a855f7;flex-shrink:0;margin-top:4px"></div>
+      <span>链式引用连接</span>
     </div>
   </div>
 
-  <!-- 左侧分隔条 -->
-  <div class="resizer" id="resizer-left"></div>
-
-  <!-- 中央图区域 -->
-  <div id="cy-container">
-    <div id="toolbar">
-      <button onclick="refreshGraph()">刷新</button>
-      <button onclick="cy.fit()">适应</button>
-      <button onclick="cy.center()">居中</button>
-    </div>
-    <div id="cy"></div>
-    <div id="empty-state" style="display:none">
-      <p style="font-size:48px;margin-bottom:16px">📊</p>
-      <p>暂无论证数据</p>
-      <p style="font-size:12px;margin-top:8px">使用 MCP 工具创建节点后刷新</p>
+  <div class="filter-group">
+    <h2>数据库</h2>
+    <div class="db-switch">
+      <div class="db-current"><span>当前：</span><span id="db-current-path">加载中…</span></div>
+      <input type="text" id="db-path-input" placeholder="输入 .toulmin 目录绝对路径">
+      <button id="db-switch-btn">切换</button>
+      <div class="db-status" id="db-status"></div>
     </div>
   </div>
+</div>
 
-  <!-- 右侧分隔条 -->
-  <div class="resizer hidden" id="resizer-right"></div>
+<div class="resizer" id="resizer-left"></div>
 
-  <!-- 右侧详情面板 -->
-  <div id="detail-panel">
-    <div id="detail-content"></div>
+<!-- ════════ 画布区 ════════ -->
+<div id="cy-container">
+  <div id="toolbar">
+    <button onclick="refreshGraph()">⟳ 刷新</button>
+    <button onclick="fitGraph()">◎ 适应</button>
+    <button onclick="centerGraph()">⊕ 居中</button>
   </div>
+  <div id="cy"></div>
+  <div id="empty-state" style="display:none">
+    <p style="font-size:48px;margin-bottom:16px">📊</p>
+    <p>暂无论证数据</p>
+    <p style="font-size:12px;margin-top:8px">使用 MCP 工具创建节点后刷新</p>
+  </div>
+</div>
 
-  <script>
-    // ==========================================================================
-    // 配置
-    // ==========================================================================
-    const TYPE_COLORS = {
-      claim: '#3b82f6',
-      ground: '#10b981',
-      warrant: '#f59e0b',
-      backing: '#8b5cf6',
-      qualifier: '#06b6d4',
-      rebuttal: '#ef4444'
-    };
+<div class="resizer hidden" id="resizer-right"></div>
 
-    const TYPE_SHAPES = {
-      claim: 'round-rectangle',
-      ground: 'diamond',
-      warrant: 'hexagon',
-      backing: 'tag',
-      qualifier: 'round-triangle',
-      rebuttal: 'ellipse'
-    };
+<!-- ════════ 详情面板 ════════ -->
+<div id="detail-panel"><div id="detail-content"></div></div>
 
-    const EDGE_STYLES = {
-      supports: { color: '#3b82f6', style: 'solid', width: 2 },
-      based_on: { color: '#10b981', style: 'solid', width: 1.5 },
-      reinforces: { color: '#8b5cf6', style: 'dashed', width: 1.5 },
-      qualifies: { color: '#06b6d4', style: 'dotted', width: 1 },
-      challenges: { color: '#ef4444', style: 'dashed', width: 2 },
-      derives_from: { color: '#6b7280', style: 'dotted', width: 1.5 }
-    };
+<!-- ════════ 浮动 Tooltip ════════ -->
+<div id="tooltip">
+  <div class="tt-type" id="tt-type"></div>
+  <div class="tt-content" id="tt-content"></div>
+  <div class="tt-meta" id="tt-meta"></div>
+</div>
 
-    // ==========================================================================
-    // 全局状态
-    // ==========================================================================
-    let cy = null;
-    let graphData = { nodes: [], edges: [], stats: {} };
-    let selectedNode = null;
+<script>
+// ══════════════════════════════════════════════════════════
+// 配置
+// ══════════════════════════════════════════════════════════
+const TYPE_COLORS = {
+  claim: '#3b82f6', ground: '#10b981', warrant: '#f59e0b',
+  backing: '#8b5cf6', rebuttal: '#ef4444'
+};
+const TYPE_SIZES = {
+  claim: 28, ground: 16, warrant: 20,
+  backing: 15, rebuttal: 17
+};
+const EDGE_COLORS = {
+  supports: '#3b82f6', based_on: '#10b981', reinforces: '#8b5cf6',
+  challenges: '#ef4444', derives_from: '#64748b'
+};
 
-    // ==========================================================================
-    // 初始化 Cytoscape
-    // ==========================================================================
-    function initCytoscape() {
-      cy = cytoscape({
-        container: document.getElementById('cy'),
-        style: [
-          {
-            selector: 'node',
-            style: {
-              'background-color': ele => TYPE_COLORS[ele.data('type')] || '#666',
-              'shape': ele => TYPE_SHAPES[ele.data('type')] || 'ellipse',
-              'label': ele => truncate(ele.data('content'), 30),
-              'color': '#fff',
-              'text-valign': 'center',
-              'text-halign': 'center',
-              'font-size': '11px',
-              'width': ele => ele.data('type') === 'claim' ? 180 : 140,
-              'height': ele => ele.data('type') === 'claim' ? 60 : 50,
-              'border-width': ele => getNodeBorderWidth(ele),
-              'border-color': ele => darken(TYPE_COLORS[ele.data('type')] || '#666'),
-              'border-style': ele => getNodeBorderStyle(ele),
-              'opacity': ele => getNodeOpacity(ele),
-              'text-wrap': 'ellipsis',
-              'text-max-width': '120px'
-            }
-          },
-          {
-            selector: 'node:selected',
-            style: {
-              'border-width': 4,
-              'border-color': '#fff',
-              'overlay-padding': 6,
-              'overlay-color': '#3b82f6',
-              'overlay-opacity': 0.2
-            }
-          },
-          {
-            selector: 'node.highlighted',
-            style: {
-              'border-width': 4,
-              'border-color': '#fbbf24',
-              'shadow-blur': 10,
-              'shadow-color': '#fbbf24',
-              'shadow-opacity': 0.8
-            }
-          },
-          {
-            selector: 'node.faded',
-            style: { 'opacity': 0.3 }
-          },
-          {
-            selector: 'edge',
-            style: {
-              'width': ele => EDGE_STYLES[ele.data('type')]?.width || 1.5,
-              'line-color': ele => EDGE_STYLES[ele.data('type')]?.color || '#666',
-              'target-arrow-color': ele => EDGE_STYLES[ele.data('type')]?.color || '#666',
-              'target-arrow-shape': ele => ele.data('type') === 'challenges' ? 'vee' : 'triangle',
-              'curve-style': 'bezier',
-              'line-style': ele => EDGE_STYLES[ele.data('type')]?.style || 'solid',
-              'arrow-scale': 1.2
-            }
-          },
-          {
-            selector: 'edge.faded',
-            style: { 'opacity': 0.2 }
-          }
-        ],
-        layout: { name: 'dagre', rankDir: 'TB', nodeSep: 50, rankSep: 80 },
-        wheelSensitivity: 0.3
-      });
+// ══════════════════════════════════════════════════════════
+// 全局状态
+// ══════════════════════════════════════════════════════════
+let svg, g, zoomBehavior, simulation;
+let graphData = { nodes: [], edges: [], stats: {} };
+let selectedNodeId = null;
+let nodeMap = new Map();
+let currentLayout = 'tree';
 
-      // 点击节点
-      cy.on('tap', 'node', function(evt) {
-        const node = evt.target;
-        selectNode(node);
-        highlightNeighbors(node);
-      });
+// ══════════════════════════════════════════════════════════
+// Tooltip 管理
+// ══════════════════════════════════════════════════════════
+const ttEl = document.getElementById('tooltip');
+const ttType = document.getElementById('tt-type');
+const ttContent = document.getElementById('tt-content');
+const ttMeta = document.getElementById('tt-meta');
+let ttTimeout;
 
-      // 点击空白取消选择
-      cy.on('tap', function(evt) {
-        if (evt.target === cy) {
-          clearSelection();
-        }
-      });
+function showTooltip(event, nodeData) {
+  clearTimeout(ttTimeout);
+  const data = (currentLayout === 'tree') ? nodeData.data : nodeData;
+  ttType.textContent = data.type.toUpperCase() + '  #' + data.id;
+  ttType.style.color = TYPE_COLORS[data.type] || '#94a3b8';
+  ttContent.textContent = data.content || '';
+  ttMeta.innerHTML = '';
+  if (data.type === 'claim' && data.data?.status) {
+    const chip = document.createElement('span');
+    chip.className = 'tt-chip status-' + data.data.status;
+    chip.textContent = data.data.status;
+    ttMeta.appendChild(chip);
+  }
+  if (data.type === 'ground') {
+    const veri = data.data?.verification;
+    const src = data.data?.source;
+    if (veri) {
+      const chip = document.createElement('span');
+      chip.className = 'tt-chip veri-' + veri;
+      chip.textContent = veri === 'verified' ? '✓ verified' : '⋯ pending';
+      ttMeta.appendChild(chip);
+    }
+    if (src) {
+      const chip = document.createElement('span');
+      chip.className = 'tt-chip';
+      chip.style.cssText = 'background:#1e293b;color:#94a3b8;border:1px solid #334155';
+      chip.textContent = src;
+      ttMeta.appendChild(chip);
+    }
+    if (data.data?.ref_claim_id) {
+      const chip = document.createElement('span');
+      chip.className = 'tt-chip';
+      chip.style.cssText = 'background:#1e3a5f;color:#93c5fd;border:1px solid #2563eb';
+      chip.textContent = '→ Claim #' + data.data.ref_claim_id;
+      ttMeta.appendChild(chip);
+    }
+  }
+  positionTooltip(event);
+  ttEl.style.display = 'block';
+}
+
+function hideTooltip() {
+  ttTimeout = setTimeout(() => { ttEl.style.display = 'none'; }, 120);
+}
+
+function positionTooltip(event) {
+  const pad = 14;
+  let x = event.clientX + pad, y = event.clientY + pad;
+  const tw = ttEl.offsetWidth || 320, th = ttEl.offsetHeight || 100;
+  if (x + tw > window.innerWidth - 8) x = event.clientX - tw - pad;
+  if (y + th > window.innerHeight - 8) y = event.clientY - th - pad;
+  ttEl.style.left = Math.max(8, x) + 'px';
+  ttEl.style.top  = Math.max(8, y) + 'px';
+}
+
+document.addEventListener('mousemove', e => {
+  if (ttEl.style.display === 'block') positionTooltip(e);
+});
+
+// ══════════════════════════════════════════════════════════
+// 初始化
+// ══════════════════════════════════════════════════════════
+function initGraph() {
+  svg = d3.select('#cy').append('svg').attr('width', '100%').attr('height', '100%');
+  const defs = svg.append('defs');
+
+  Object.entries(EDGE_COLORS).forEach(([type, color]) => {
+    defs.append('marker').attr('id', `arrow-${type}`)
+      .attr('viewBox', '0 -5 10 10').attr('refX', 10).attr('refY', 0)
+      .attr('markerWidth', 7).attr('markerHeight', 7).attr('orient', 'auto')
+      .append('path').attr('d', 'M0,-4L8,0L0,4Z').attr('fill', color);
+  });
+  // Chain: ref-claim → sub-claim arrow (derives_from)
+  defs.append('marker').attr('id', 'arrow-chain')
+    .attr('viewBox', '0 -5 10 10').attr('refX', 10).attr('refY', 0)
+    .attr('markerWidth', 7).attr('markerHeight', 7).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,-4L8,0L0,4Z').attr('fill', '#a855f7');
+
+  const shadow = defs.append('filter').attr('id', 'shadow').attr('x','-50%').attr('y','-50%').attr('width','200%').attr('height','200%');
+  shadow.append('feDropShadow').attr('dx',0).attr('dy',2).attr('stdDeviation',3).attr('flood-color','rgba(0,0,0,0.4)');
+
+  const glow = defs.append('filter').attr('id', 'glow').attr('x','-60%').attr('y','-60%').attr('width','220%').attr('height','220%');
+  glow.append('feGaussianBlur').attr('stdDeviation', 6).attr('result', 'blur');
+  const gm = glow.append('feMerge');
+  gm.append('feMergeNode').attr('in', 'blur');
+  gm.append('feMergeNode').attr('in', 'SourceGraphic');
+
+  zoomBehavior = d3.zoom().scaleExtent([0.04, 5]).on('zoom', e => g.attr('transform', e.transform));
+  svg.call(zoomBehavior);
+  svg.on('click', function(e) { if (e.target === this || e.target.tagName === 'svg') clearSelection(); });
+
+  g = svg.append('g');
+  g.append('g').attr('class', 'links-layer');
+  g.append('g').attr('class', 'cross-links-layer');
+  g.append('g').attr('class', 'nodes-layer');
+
+  simulation = d3.forceSimulation()
+    .force('charge', d3.forceManyBody().strength(-400).distanceMax(500))
+    .force('link', d3.forceLink().id(d => d.id).distance(120).strength(0.4))
+    .force('collision', d3.forceCollide().radius(d => (TYPE_SIZES[d.type] || 18) + 14))
+    .force('center', d3.forceCenter(0, 0).strength(0.03))
+    .on('tick', forceTicked);
+  simulation.stop();
+}
+
+// ══════════════════════════════════════════════════════════
+// 节点形状绘制（tree layout）
+// ══════════════════════════════════════════════════════════
+function drawNodeShape(el, d) {
+  const data = (currentLayout === 'tree') ? d.data : d;
+  const color = TYPE_COLORS[data.type] || '#64748b';
+  const size  = TYPE_SIZES[data.type] || 18;
+  const dark  = d3.color(color).darker(0.4);
+
+  if (data.type === 'claim') {
+    const status = data.data?.status;
+    let stroke = dark, sw = 2, dash = 'none';
+    if (status === 'supported' || status === 'validated') { stroke = '#34d399'; sw = 3; }
+    else if (status === 'disputed') { stroke = '#fbbf24'; sw = 2.5; dash = '5,2'; }
+    else if (status === 'refuted')  { stroke = '#f87171'; sw = 2.5; dash = '5,2'; }
+    el.append('rect').attr('class', 'node-shape')
+      .attr('x', -size * 1.6).attr('y', -size * 0.72)
+      .attr('width', size * 3.2).attr('height', size * 1.44)
+      .attr('rx', 9).attr('ry', 9)
+      .attr('fill', color).attr('stroke', stroke).attr('stroke-width', sw)
+      .attr('stroke-dasharray', dash).attr('filter', 'url(#shadow)');
+    // 状态小角标
+    if (status === 'supported') {
+      el.append('circle').attr('cx', size * 1.4).attr('cy', -size * 0.6).attr('r', 5)
+        .attr('fill', '#34d399').attr('stroke', '#064e3b').attr('stroke-width', 1);
+      el.append('text').attr('x', size * 1.4).attr('y', -size * 0.6 + 4)
+        .attr('text-anchor', 'middle').attr('fill', '#064e3b')
+        .attr('font-size', '7px').attr('font-weight', '800').text('✓');
+    }
+    el.append('text').attr('class', 'node-type-label').attr('text-anchor', 'middle').attr('dy', 4)
+      .text('C#' + data.id);
+
+  } else if (data.type === 'ground') {
+    const isVerified = data.data?.verification === 'verified';
+    const isChain    = !!data.data?.ref_claim_id;
+    const s = size;
+    const fill   = isVerified ? '#22c55e' : isChain ? '#2563eb' : '#374151';
+    const stroke  = isVerified ? '#16a34a' : isChain ? '#1d4ed8' : '#6b7280';
+    const sdash   = isVerified ? 'none' : isChain ? 'none' : '3,2.5';
+    const sw      = isVerified || isChain ? 2 : 1.5;
+    el.append('path').attr('class', 'node-shape')
+      .attr('d', `M0,${-s*1.1} L${s*1.35},0 L0,${s*1.1} L${-s*1.35},0 Z`)
+      .attr('fill', fill).attr('stroke', stroke).attr('stroke-width', sw)
+      .attr('stroke-dasharray', sdash).attr('filter', 'url(#shadow)');
+    const icon = isVerified ? '✓' : isChain ? '→' : '·';
+    el.append('text').attr('class', 'node-icon').attr('text-anchor', 'middle').attr('dy', 4)
+      .attr('font-size', isVerified ? '11px' : '10px').text(icon);
+
+  } else if (data.type === 'warrant') {
+    const s = size, a = s * 0.87, b = s * 0.5;
+    el.append('path').attr('class', 'node-shape')
+      .attr('d', `M${-a},${-b} L${a},${-b} L${s},0 L${a},${b} L${-a},${b} L${-s},0 Z`)
+      .attr('fill', color).attr('stroke', dark).attr('stroke-width', 2).attr('filter', 'url(#shadow)');
+    el.append('text').attr('class', 'node-type-label').attr('text-anchor', 'middle').attr('dy', 4).text('W');
+
+  } else if (data.type === 'rebuttal') {
+    const s = size;
+    el.append('path').attr('class', 'node-shape')
+      .attr('d', `M0,${-s} L${s},${s*0.7} L${-s},${s*0.7} Z`)
+      .attr('fill', color).attr('stroke', dark).attr('stroke-width', 2).attr('filter', 'url(#shadow)');
+    el.append('text').attr('class', 'node-type-label').attr('text-anchor', 'middle').attr('dy', 8).text('R');
+
+  } else {
+    // backing
+    el.append('circle').attr('class', 'node-shape')
+      .attr('r', size).attr('fill', color).attr('stroke', dark).attr('stroke-width', 2).attr('filter', 'url(#shadow)');
+    el.append('text').attr('class', 'node-type-label').attr('text-anchor', 'middle').attr('dy', 4).text('B');
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// 构建树结构
+// ══════════════════════════════════════════════════════════
+function buildForest(nodes, edges) {
+  const nodeById = new Map(nodes.map(n => [String(n.id), n]));
+
+  // Primary structural maps
+  const warrantsByClaim  = new Map(nodes.map(n => [String(n.id), []]));
+  const groundsByWarrant = new Map(nodes.map(n => [String(n.id), []]));
+  const refClaimByGround = new Map(); // chain ground id → referenced claim id
+  const referencedClaims = new Set(); // claims used as chain grounds by other claims
+
+  // Extra children (backing/rebuttal) attached to a node
+  const extrasOf = new Map(nodes.map(n => [String(n.id), []]));
+
+  edges.filter(e => e.type === 'supports').forEach(e => {
+    // claim (source) supports warrant (target) → warrant is child of claim in tree
+    const cid = String(e.source), wid = String(e.target);
+    if (warrantsByClaim.has(cid)) warrantsByClaim.get(cid).push(wid);
+  });
+  edges.filter(e => e.type === 'based_on').forEach(e => {
+    // ground (source) based_on warrant (target) → ground is child of warrant in tree
+    const gid = String(e.source), wid = String(e.target);
+    if (groundsByWarrant.has(wid)) groundsByWarrant.get(wid).push(gid);
+  });
+  edges.filter(e => e.type === 'derives_from').forEach(e => {
+    // ref_claim (source) derives_from chain_ground (target)
+    // → ref_claim is a sub-tree child of the chain ground in tree
+    const refCid = String(e.source), gid = String(e.target);
+    refClaimByGround.set(gid, refCid);
+    referencedClaims.add(refCid); // ref_claim is not a root
+  });
+  edges.filter(e => e.type === 'reinforces').forEach(e => {
+    const wid = String(e.source), bid = String(e.target);
+    if (extrasOf.has(wid)) extrasOf.get(wid).push(bid);
+  });
+  edges.filter(e => e.type === 'challenges').forEach(e => {
+    const tid = String(e.source), rid = String(e.target);
+    if (extrasOf.has(tid)) extrasOf.get(tid).push(rid);
+  });
+
+  // Root claims: claim nodes that are NOT referenced as chain grounds by any other claim
+  const allClaimIds = nodes.filter(n => n.type === 'claim').map(n => String(n.id));
+  const rootIds = allClaimIds.filter(c => !referencedClaims.has(c));
+  const finalRoots = rootIds.length ? rootIds : (allClaimIds.length ? [allClaimIds[0]] : []);
+
+  const visitedClaims = new Set();
+
+  function buildLeaf(nodeId) {
+    const n = nodeById.get(nodeId);
+    if (!n) return null;
+    const h = { id: nodeId, type: n.type, content: n.content, data: n.data, created_at: n.created_at, updated_at: n.updated_at };
+    const kids = (extrasOf.get(nodeId) || []).map(buildLeaf).filter(Boolean);
+    if (kids.length) h.children = kids;
+    return h;
+  }
+
+  function buildClaimNode(claimId) {
+    if (visitedClaims.has(claimId)) return null;
+    visitedClaims.add(claimId);
+    const cn = nodeById.get(claimId);
+    if (!cn) return null;
+    const h = { id: claimId, type: 'claim', content: cn.content, data: cn.data, created_at: cn.created_at, updated_at: cn.updated_at, children: [] };
+
+    // rebuttals directly on this claim
+    for (const kid of extrasOf.get(claimId) || []) {
+      const kh = buildLeaf(kid);
+      if (kh) h.children.push(kh);
     }
 
-    // ==========================================================================
-    // 节点样式辅助
-    // ==========================================================================
-    function getNodeBorderWidth(ele) {
-      if (ele.data('type') !== 'claim') return 2;
-      const status = ele.data('data')?.status;
-      if (status === 'supported' || status === 'validated' || status === 'disputed') return 3;
-      return 2;
-    }
+    // warrants belonging to this claim
+    for (const wid of warrantsByClaim.get(claimId) || []) {
+      const wn = nodeById.get(wid);
+      if (!wn) continue;
+      const wh = { id: wid, type: 'warrant', content: wn.content, data: wn.data, created_at: wn.created_at, updated_at: wn.updated_at, children: [] };
 
-    function getNodeBorderStyle(ele) {
-      if (ele.data('type') !== 'claim') return 'solid';
-      const status = ele.data('data')?.status;
-      if (status === 'disputed' || status === 'refuted') return 'dashed';
-      return 'solid';
-    }
-
-    function getNodeOpacity(ele) {
-      if (ele.data('type') !== 'claim') return 1;
-      const status = ele.data('data')?.status;
-      if (status === 'refuted') return 0.6;
-      return 1;
-    }
-
-    // ==========================================================================
-    // 数据加载
-    // ==========================================================================
-    async function loadGraph() {
-      const types = getSelectedTypes();
-      const params = types.length < 6 ? `?types=${types.join(',')}` : '';
-      const res = await fetch(`/api/graph${params}`);
-      graphData = await res.json();
-      renderGraph();
-      updateCounts();
-    }
-
-    function renderGraph() {
-      const elements = [];
-
-      // 添加节点
-      for (const node of graphData.nodes) {
-        elements.push({
-          data: {
-            id: String(node.id),
-            type: node.type,
-            content: node.content,
-            data: node.data,
-            created_at: node.created_at,
-            updated_at: node.updated_at
-          }
-        });
+      // backings for this warrant
+      for (const kid of extrasOf.get(wid) || []) {
+        const kh = buildLeaf(kid);
+        if (kh) wh.children.push(kh);
       }
 
-      // 添加边
-      for (const edge of graphData.edges) {
-        elements.push({
-          data: {
-            id: edge.id,
-            source: String(edge.source),
-            target: String(edge.target),
-            type: edge.type
-          }
-        });
-      }
+      // grounds for this warrant
+      for (const gid of groundsByWarrant.get(wid) || []) {
+        const gn = nodeById.get(gid);
+        if (!gn) continue;
+        const gh = { id: gid, type: 'ground', content: gn.content, data: gn.data, created_at: gn.created_at, updated_at: gn.updated_at, children: [] };
 
-      cy.elements().remove();
-      cy.add(elements);
-
-      // 应用布局
-      applyLayout();
-
-      // 显示/隐藏空状态
-      document.getElementById('empty-state').style.display = elements.length === 0 ? 'block' : 'none';
-    }
-
-    function applyLayout() {
-      const layoutName = document.querySelector('input[name="layout"]:checked').value;
-      let options = { name: layoutName, animate: true, animationDuration: 300 };
-
-      if (layoutName === 'dagre') {
-        options.rankDir = 'TB';
-        options.nodeSep = 50;
-        options.rankSep = 80;
-      }
-
-      cy.layout(options).run();
-    }
-
-    // ==========================================================================
-    // 过滤与搜索
-    // ==========================================================================
-    function getSelectedTypes() {
-      const checkboxes = document.querySelectorAll('#filter-panel input[data-type]');
-      const types = [];
-      checkboxes.forEach(cb => { if (cb.checked) types.push(cb.dataset.type); });
-      return types;
-    }
-
-    function updateCounts() {
-      const stats = graphData.stats;
-      for (const type of ['claim', 'ground', 'warrant', 'backing', 'qualifier', 'rebuttal']) {
-        const el = document.getElementById(`count-${type}`);
-        if (el) el.textContent = stats[type] || 0;
-      }
-      const total = Object.values(stats).reduce((a, b) => a + b, 0);
-      document.getElementById('stat-total').textContent = total;
-    }
-
-    async function searchNodes(keyword) {
-      if (!keyword) {
-        cy.elements().removeClass('highlighted faded');
-        return;
-      }
-      const res = await fetch(`/api/search?q=${encodeURIComponent(keyword)}`);
-      const nodes = await res.json();
-      const matchIds = new Set(nodes.map(n => String(n.id)));
-
-      cy.nodes().forEach(node => {
-        if (matchIds.has(node.id())) {
-          node.addClass('highlighted').removeClass('faded');
-        } else {
-          node.addClass('faded').removeClass('highlighted');
-        }
-      });
-    }
-
-    // ==========================================================================
-    // 节点选择与详情
-    // ==========================================================================
-    function selectNode(node) {
-      selectedNode = node;
-      showDetail(node.data());
-    }
-
-    function clearSelection() {
-      selectedNode = null;
-      cy.elements().removeClass('highlighted faded');
-      document.getElementById('detail-panel').classList.remove('open');
-      document.getElementById('resizer-right').classList.add('hidden');
-    }
-
-    function highlightNeighbors(node) {
-      const neighborhood = node.neighborhood();
-      cy.elements().addClass('faded');
-      node.removeClass('faded');
-      neighborhood.removeClass('faded');
-    }
-
-    function showDetail(data) {
-      const panel = document.getElementById('detail-panel');
-      const content = document.getElementById('detail-content');
-      const resizer = document.getElementById('resizer-right');
-
-      resizer.classList.remove('hidden');
-
-      let html = `
-        <div id="detail-header">
-          <h3><span class="type-tag" style="background:${TYPE_COLORS[data.type]}">${data.type}</span> #${data.id}</h3>
-          <button id="close-detail" onclick="clearSelection()">×</button>
-        </div>
-        <div class="detail-section">
-          <h4>内容</h4>
-          <div class="detail-field"><div class="value">${escapeHtml(data.content)}</div></div>
-        </div>
-      `;
-
-      // 类型特有属性
-      if (data.type === 'claim' && data.data?.status) {
-        html += `
-          <div class="detail-section">
-            <h4>状态</h4>
-            <div class="detail-field"><span class="status-badge status-${data.data.status}">${data.data.status}</span></div>
-          </div>
-        `;
-      }
-
-      if (data.type === 'ground') {
-        html += `
-          <div class="detail-section">
-            <h4>属性</h4>
-            <div class="detail-field"><div class="label">来源</div><div class="value">${data.data?.source || '-'}</div></div>
-            <div class="detail-field"><div class="label">验证状态</div><div class="value">${data.data?.verification || '-'}</div></div>
-            ${data.data?.ref_claim_id ? `<div class="detail-field"><div class="label">引用 Claim</div><div class="value">#${data.data.ref_claim_id}</div></div>` : ''}
-          </div>
-        `;
-      }
-
-      if (data.type === 'warrant') {
-        html += `
-          <div class="detail-section">
-            <h4>关联</h4>
-            <div class="detail-field"><div class="label">Claim ID</div><div class="value">#${data.data?.claim_id || '-'}</div></div>
-            <div class="detail-field"><div class="label">Ground IDs</div><div class="value">${(data.data?.ground_ids || []).map(id => '#' + id).join(', ') || '-'}</div></div>
-          </div>
-        `;
-      }
-
-      if (data.type === 'backing') {
-        html += `
-          <div class="detail-section">
-            <h4>关联</h4>
-            <div class="detail-field"><div class="label">Warrant ID</div><div class="value">#${data.data?.warrant_id || '-'}</div></div>
-          </div>
-        `;
-      }
-
-      if (data.type === 'qualifier') {
-        html += `
-          <div class="detail-section">
-            <h4>关联</h4>
-            <div class="detail-field"><div class="label">Claim ID</div><div class="value">#${data.data?.claim_id || '-'}</div></div>
-          </div>
-        `;
-      }
-
-      if (data.type === 'rebuttal') {
-        html += `
-          <div class="detail-section">
-            <h4>关联</h4>
-            <div class="detail-field"><div class="label">Target ID</div><div class="value">#${data.data?.target_id || '-'}</div></div>
-            <div class="detail-field"><div class="label">Target Type</div><div class="value">${data.data?.target_type || '-'}</div></div>
-          </div>
-        `;
-      }
-
-      // 关联边
-      const node = cy.getElementById(String(data.id));
-      const edges = node.connectedEdges();
-      if (edges.length > 0) {
-        html += `<div class="detail-section"><h4>关联边</h4><ul class="edge-list">`;
-        edges.forEach(edge => {
-          const isSource = edge.source().id() === String(data.id);
-          const otherId = isSource ? edge.target().id() : edge.source().id();
-          const arrow = isSource ? '→' : '←';
-          const otherNode = cy.getElementById(otherId);
-          const otherContent = truncate(otherNode.data('content'), 20);
-          html += `<li onclick="focusNode('${otherId}')">${arrow} ${edge.data('type')} #${otherId} (${otherContent})</li>`;
-        });
-        html += `</ul></div>`;
-      }
-
-      // 附件
-      const attachments = data.data?.attachments;
-      if (attachments && attachments.length > 0) {
-        html += `<div class="detail-section"><h4>附件</h4><ul class="attachment-list">`;
-        attachments.forEach(a => { html += `<li>📎 ${a}</li>`; });
-        html += `</ul></div>`;
-      }
-
-      // 时间
-      html += `
-        <div class="detail-section">
-          <h4>时间</h4>
-          <div class="detail-field"><div class="label">创建</div><div class="value">${data.created_at}</div></div>
-          <div class="detail-field"><div class="label">更新</div><div class="value">${data.updated_at}</div></div>
-        </div>
-      `;
-
-      content.innerHTML = html;
-      panel.classList.add('open');
-    }
-
-    function focusNode(id) {
-      const node = cy.getElementById(id);
-      if (node.length) {
-        cy.animate({ center: { eles: node }, zoom: 1.5 }, { duration: 300 });
-        selectNode(node);
-        highlightNeighbors(node);
-      }
-    }
-
-    // ==========================================================================
-    // 工具函数
-    // ==========================================================================
-    function truncate(str, len) {
-      if (!str) return '';
-      return str.length > len ? str.slice(0, len) + '...' : str;
-    }
-
-    function escapeHtml(str) {
-      if (!str) return '';
-      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    function darken(hex) {
-      const r = parseInt(hex.slice(1, 3), 16) * 0.7;
-      const g = parseInt(hex.slice(3, 5), 16) * 0.7;
-      const b = parseInt(hex.slice(5, 7), 16) * 0.7;
-      return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
-    }
-
-    function refreshGraph() { loadGraph(); }
-
-    // ==========================================================================
-    // 数据库上传
-    // ==========================================================================
-    const uploadArea = document.getElementById('upload-area');
-    const uploadInput = document.getElementById('upload-input');
-    const uploadStatus = document.getElementById('upload-status');
-
-    uploadArea.addEventListener('click', () => uploadInput.click());
-
-    uploadArea.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      uploadArea.classList.add('dragover');
-    });
-
-    uploadArea.addEventListener('dragleave', () => {
-      uploadArea.classList.remove('dragover');
-    });
-
-    uploadArea.addEventListener('drop', (e) => {
-      e.preventDefault();
-      uploadArea.classList.remove('dragover');
-      const files = Array.from(e.dataTransfer.files);
-      if (files.length > 0) handleUpload(files);
-    });
-
-    uploadInput.addEventListener('change', (e) => {
-      const files = Array.from(e.target.files);
-      if (files.length > 0) handleUpload(files);
-    });
-
-    async function handleUpload(files) {
-      // 检查是否有 .db 文件
-      const hasDb = files.some(f => f.name.endsWith('.db') || f.name.endsWith('.sqlite'));
-      if (!hasDb) {
-        showUploadStatus('error', '请选择 .db 或 .sqlite 文件');
-        return;
-      }
-
-      const fileNames = files.map(f => f.name).join(', ');
-      showUploadStatus('loading', `正在上传 ${files.length} 个文件...`);
-
-      try {
-        const formData = new FormData();
-        for (const file of files) {
-          formData.append('files', file);
+        // Chain ground: expand referenced claim as sub-tree child
+        const refCid = refClaimByGround.get(gid);
+        if (refCid) {
+          const sub = buildClaimNode(refCid);
+          if (sub) gh.children.push(sub);
         }
 
-        const res = await fetch('/api/upload', {
-          method: 'POST',
-          body: formData
-        });
-
-        const result = await res.json();
-
-        if (result.success) {
-          const total = Object.values(result.stats).reduce((a, b) => a + b, 0);
-          showUploadStatus('success', `✓ ${result.fileCount} 个文件, ${total} 个节点`);
-          loadGraph();
-        } else {
-          showUploadStatus('error', result.error || '上传失败');
-        }
-      } catch (err) {
-        showUploadStatus('error', '上传失败: ' + err.message);
+        if (!gh.children.length) delete gh.children;
+        wh.children.push(gh);
       }
+
+      if (!wh.children.length) delete wh.children;
+      h.children.push(wh);
     }
 
-    function showUploadStatus(type, message) {
-      uploadStatus.className = 'upload-status ' + type;
-      uploadStatus.textContent = message;
-    }
+    if (!h.children.length) delete h.children;
+    return h;
+  }
 
-    // ==========================================================================
-    // 事件绑定
-    // ==========================================================================
-    document.querySelectorAll('#filter-panel input[data-type]').forEach(cb => {
-      cb.addEventListener('change', () => loadGraph());
-    });
+  const forests = finalRoots.map(buildClaimNode).filter(Boolean);
 
-    document.querySelectorAll('input[name="layout"]').forEach(radio => {
-      radio.addEventListener('change', () => applyLayout());
-    });
+  const inTree = new Set();
+  function collectIds(h) { inTree.add(h.id); (h.children || []).forEach(collectIds); }
+  forests.forEach(collectIds);
+  nodes.forEach(n => {
+    if (!inTree.has(String(n.id)))
+      forests.push({ id: String(n.id), type: n.type, content: n.content, data: n.data, created_at: n.created_at, updated_at: n.updated_at });
+  });
+  return { forests, crossLinks: [] };
+}
 
-    let searchTimeout;
-    document.getElementById('search-input').addEventListener('input', (e) => {
-      clearTimeout(searchTimeout);
-      searchTimeout = setTimeout(() => searchNodes(e.target.value), 300);
-    });
+// ══════════════════════════════════════════════════════════
+// 渲染入口
+// ══════════════════════════════════════════════════════════
+function renderGraph() {
+  currentLayout = document.querySelector('input[name="layout"]:checked').value;
+  document.getElementById('empty-state').style.display = graphData.nodes.length === 0 ? 'block' : 'none';
+  if (currentLayout === 'tree') { simulation.stop(); renderTreeLayout(); }
+  else renderForceLayout();
+}
 
-    // ==========================================================================
-    // 可拖拽分隔条
-    // ==========================================================================
-    function initResizer(resizerId, panelId, direction) {
-      const resizer = document.getElementById(resizerId);
-      const panel = document.getElementById(panelId);
-      let startX, startWidth;
+// ══════════════════════════════════════════════════════════
+// 树形布局
+// ══════════════════════════════════════════════════════════
+function renderTreeLayout() {
+  const { forests } = buildForest(graphData.nodes, graphData.edges);
+  if (!forests.length) {
+    g.selectAll('.links-layer, .cross-links-layer, .nodes-layer').selectAll('*').remove();
+    return;
+  }
 
-      resizer.addEventListener('mousedown', (e) => {
-        startX = e.clientX;
-        startWidth = panel.offsetWidth;
-        resizer.classList.add('dragging');
-        document.body.style.cursor = 'col-resize';
-        document.body.style.userSelect = 'none';
+  // Generous spacing for the 6-level deep claim hierarchy
+  const nodeSepH = 230, levelH = 170, treeSep = 140;
+  let offsetX = 0;
+  const allNodes = [], allLinks = [];
 
-        const onMouseMove = (e) => {
-          const diff = e.clientX - startX;
-          const newWidth = direction === 'left' 
-            ? startWidth + diff 
-            : startWidth - diff;
-          const clampedWidth = Math.max(150, Math.min(500, newWidth));
-          panel.style.width = clampedWidth + 'px';
-          
-          // 更新详情面板内容宽度
-          if (panelId === 'detail-panel') {
-            const content = document.getElementById('detail-content');
-            content.style.width = clampedWidth + 'px';
-          }
-        };
-
-        const onMouseUp = () => {
-          resizer.classList.remove('dragging');
-          document.body.style.cursor = '';
-          document.body.style.userSelect = '';
-          document.removeEventListener('mousemove', onMouseMove);
-          document.removeEventListener('mouseup', onMouseUp);
-          // 拖拽结束后重新调整图的大小
-          if (cy) cy.resize();
-        };
-
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
+  forests.forEach(rootData => {
+    const root = d3.hierarchy(rootData);
+    const treeLayout = d3.tree()
+      .nodeSize([nodeSepH, levelH])
+      .separation((a, b) => {
+        // Sub-claims (level 3) and their descendants need extra room
+        if (a.data.type === 'claim' && b.data.type === 'claim') return 1.4;
+        if (a.data.type === 'ground' && b.data.type === 'ground' &&
+            a.data.data?.ref_claim_id && b.data.data?.ref_claim_id) return 1.6;
+        return a.parent === b.parent ? 1.0 : 1.3;
       });
-    }
+    treeLayout(root);
+    const dx = offsetX;
+    root.each(node => { node.x += dx; allNodes.push(node); });
+    root.links().forEach(link => allLinks.push(link));
+    // Compute width of this tree for next offset
+    const xs = allNodes.slice(allNodes.length - root.descendants().length).map(n => n.x);
+    const minX = d3.min(xs) || 0, maxX = d3.max(xs) || 0;
+    offsetX += (maxX - minX) + treeSep + nodeSepH;
+  });
 
-    initResizer('resizer-left', 'filter-panel', 'left');
-    initResizer('resizer-right', 'detail-panel', 'right');
+  nodeMap = new Map(allNodes.map(n => [n.data.id, n.data]));
 
-    // ==========================================================================
-    // 初始化
-    // ==========================================================================
-    initCytoscape();
-    loadGraph();
+  // Determine edge style based on source→target node types
+  // Edge directions: Claim→Warrant(supports), Ground→Warrant(based_on), Claim→Rebuttal, Warrant→Backing, Claim→Ground(chain)
+  function linkStroke(d) {
+    const sType = d.source.data.type, tType = d.target.data.type;
+    if (sType === 'claim'   && tType === 'warrant') return '#3b82f6'; // claim → warrant (supports)
+    if (sType === 'warrant' && tType === 'ground')  return '#10b981'; // warrant → ground (based_on)
+    if (sType === 'ground'  && tType === 'claim')   return '#a855f7'; // ground → chain claim (derives_from)
+    const t = tType;
+    return EDGE_COLORS[t==='backing'?'reinforces':t==='rebuttal'?'challenges':'supports'] || '#475569';
+  }
+  function linkWidth(d) {
+    const sType = d.source.data.type, tType = d.target.data.type;
+    if (sType === 'claim') return 3;
+    if (sType === 'ground' && tType === 'claim') return 2.5;
+    return 1.8;
+  }
+  function linkDash(d) {
+    if (d.source.data.type === 'ground' && d.target.data.type === 'claim') return '10,5';
+    return 'none';
+  }
+  function linkMarker(d) {
+    if (d.source.data.type === 'ground' && d.target.data.type === 'claim') return 'url(#arrow-chain)';
+    const t = d.target.data.type;
+    const et = t==='backing'?'reinforces':t==='rebuttal'?'challenges':t==='ground'?'based_on':'supports';
+    return `url(#arrow-${et})`;
+  }
 
-    // 窗口大小变化时自动调整图的大小
-    window.addEventListener('resize', () => {
-      if (cy) cy.resize();
+  // 链接
+  const linkSel = g.select('.links-layer').selectAll('.link').data(allLinks, d => `${d.source.data.id}-${d.target.data.id}`);
+  linkSel.exit().transition().duration(250).style('opacity',0).remove();
+  const linkEnter = linkSel.enter().append('path').attr('class','link')
+    .attr('stroke', linkStroke)
+    .attr('stroke-width', linkWidth)
+    .attr('stroke-dasharray', linkDash)
+    .attr('marker-end', linkMarker)
+    .style('opacity',0);
+  linkEnter.transition().duration(400).style('opacity',1);
+  linkEnter.merge(linkSel).attr('d', d3.linkVertical().x(d=>d.x).y(d=>d.y));
+
+  // 节点
+  const nodeSel = g.select('.nodes-layer').selectAll('.node-group').data(allNodes, d => d.data.id);
+  nodeSel.exit().transition().duration(250).style('opacity',0).remove();
+
+  const nodeEnter = nodeSel.enter().append('g').attr('class','node-group')
+    .attr('transform', d => `translate(${d.x},${d.y})`).style('opacity',0);
+  nodeEnter.transition().duration(400).style('opacity',1);
+
+  nodeEnter.each(function(d) {
+    const el = d3.select(this);
+    drawNodeShape(el, d);
+    const s = TYPE_SIZES[d.data.type] || 18;
+    const labelY = d.data.type === 'claim' ? s * 0.72 + 15 : s * 1.1 + 14;
+    el.append('text').attr('class','node-label')
+      .attr('text-anchor','middle').attr('dy', labelY)
+      .text(truncate(d.data.content, 42));
+  });
+
+  const nodeMerge = nodeEnter.merge(nodeSel);
+  nodeMerge.attr('transform', d => `translate(${d.x},${d.y})`);
+
+  nodeMerge
+    .on('click', function(event, d) {
+      event.stopPropagation();
+      selectNodeById(d.data.id);
+      highlightTreeNeighbors(d);
+    })
+    .on('mouseenter', function(event, d) {
+      d3.select(this).select('.node-shape').attr('filter','url(#glow)');
+      showTooltip(event, d);
+    })
+    .on('mouseleave', function(event, d) {
+      d3.select(this).select('.node-shape').attr('filter', selectedNodeId === d.data.id ? 'url(#glow)' : 'url(#shadow)');
+      hideTooltip();
     });
-  </script>
+
+  setTimeout(() => fitGraph(), 100);
+}
+
+// ══════════════════════════════════════════════════════════
+// 力导向布局
+// ══════════════════════════════════════════════════════════
+function renderForceLayout() {
+  g.select('.cross-links-layer').selectAll('*').remove();
+
+  const nodes = graphData.nodes.map(n => ({ ...n, id: String(n.id), x: n.x||0, y: n.y||0 }));
+  const edges = graphData.edges.map(e => ({ ...e, source: String(e.source), target: String(e.target) }));
+  nodeMap = new Map(nodes.map(n => [n.id, n]));
+
+  const linkSel = g.select('.links-layer').selectAll('.link').data(edges, d => d.id);
+  linkSel.exit().transition().duration(250).style('opacity',0).remove();
+  const linkEnter = linkSel.enter().append('path').attr('class','link')
+    .attr('stroke', d => EDGE_COLORS[d.type]||'#475569')
+    .attr('stroke-width', d => d.type==='supports'||d.type==='challenges' ? 2 : 1.5)
+    .attr('stroke-dasharray', d => d.type==='reinforces'||d.type==='challenges' ? '6,3' : d.type==='derives_from' ? '2,3' : 'none')
+    .attr('marker-end', d => `url(#arrow-${d.type})`)
+    .style('opacity',0);
+  linkEnter.transition().duration(400).style('opacity',1);
+  const linkMerge = linkEnter.merge(linkSel);
+
+  const nodeSel = g.select('.nodes-layer').selectAll('.node-group').data(nodes, d => d.id);
+  nodeSel.exit().transition().duration(250).style('opacity',0).remove();
+  const nodeEnter = nodeSel.enter().append('g').attr('class','node-group').style('opacity',0);
+  nodeEnter.transition().duration(400).style('opacity',1);
+
+  nodeEnter.each(function(d) {
+    const el = d3.select(this);
+    drawNodeShape(el, d);
+    const s = TYPE_SIZES[d.type] || 18;
+    el.append('text').attr('class','node-label').attr('text-anchor','middle').attr('dy', s + 16).text(truncate(d.content, 30));
+  });
+
+  const nodeMerge = nodeEnter.merge(nodeSel);
+  nodeMerge
+    .on('click', function(event, d) { event.stopPropagation(); selectNodeById(d.id); highlightNeighbors(d.id); })
+    .on('mouseenter', function(event, d) {
+      d3.select(this).select('.node-shape').attr('filter','url(#glow)');
+      showTooltip(event, d);
+    })
+    .on('mouseleave', function(event, d) {
+      d3.select(this).select('.node-shape').attr('filter', selectedNodeId===d.id ? 'url(#glow)' : 'url(#shadow)');
+      hideTooltip();
+    })
+    .call(d3.drag().on('start', dragStarted).on('drag', dragged).on('end', dragEnded));
+
+  simulation.nodes(nodes);
+  simulation.force('link').links(edges);
+  simulation.alpha(0.8).restart();
+  renderForceLayout._linkMerge = linkMerge;
+  renderForceLayout._nodeMerge = nodeMerge;
+}
+
+function forceTicked() {
+  const lm = renderForceLayout._linkMerge;
+  const nm = renderForceLayout._nodeMerge;
+  if (!lm || !nm) return;
+  lm.attr('d', d => {
+    const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+    const dr = Math.sqrt(dx*dx + dy*dy) * 1.5;
+    return `M${d.source.x},${d.source.y}A${dr},${dr} 0 0,1 ${d.target.x},${d.target.y}`;
+  });
+  nm.attr('transform', d => `translate(${d.x},${d.y})`);
+}
+
+function dragStarted(event, d) { if (!event.active) simulation.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; }
+function dragged(event, d)     { d.fx=event.x; d.fy=event.y; }
+function dragEnded(event, d)   { if (!event.active) simulation.alphaTarget(0); d.fx=null; d.fy=null; }
+
+// ══════════════════════════════════════════════════════════
+// 数据加载
+// ══════════════════════════════════════════════════════════
+async function loadGraph() {
+  const types = getSelectedTypes();
+  const params = types.length < 5 ? `?types=${types.join(',')}` : '';
+  const res = await fetch(`/api/graph${params}`);
+  graphData = await res.json();
+  renderGraph();
+  updateCounts();
+}
+
+function getSelectedTypes() {
+  const types = [];
+  document.querySelectorAll('#filter-panel input[data-type]').forEach(cb => { if (cb.checked) types.push(cb.dataset.type); });
+  return types;
+}
+
+function updateCounts() {
+  const nodes = graphData.nodes;
+  const grounds = nodes.filter(n => n.type === 'ground');
+  const claims  = nodes.filter(n => n.type === 'claim');
+  const verifiedGrounds  = grounds.filter(n => n.data?.verification === 'verified').length;
+  const supportedClaims  = claims.filter(n => ['supported','validated'].includes(n.data?.status)).length;
+
+  const s = graphData.stats;
+  for (const t of ['claim','ground','warrant','backing','rebuttal']) {
+    const el = document.getElementById(`count-${t}`);
+    if (el) el.textContent = s[t] || 0;
+  }
+  document.getElementById('stat-total').textContent = Object.values(s).reduce((a,b) => a+b, 0);
+
+  const gTotal = grounds.length, cTotal = claims.length;
+  const gPct = gTotal ? Math.round(verifiedGrounds/gTotal*100) : 0;
+  const cPct = cTotal ? Math.round(supportedClaims/cTotal*100) : 0;
+
+  document.getElementById('ground-progress-label').textContent = `${verifiedGrounds}/${gTotal} (${gPct}%)`;
+  document.getElementById('ground-progress-bar').style.width = gPct + '%';
+  document.getElementById('claim-progress-label').textContent = `${supportedClaims}/${cTotal} (${cPct}%)`;
+  document.getElementById('claim-progress-bar').style.width = cPct + '%';
+}
+
+// ══════════════════════════════════════════════════════════
+// 搜索
+// ══════════════════════════════════════════════════════════
+async function searchNodes(keyword) {
+  if (!keyword) {
+    g.selectAll('.node-group').transition().duration(300).style('opacity',1);
+    g.selectAll('.node-shape').attr('filter','url(#shadow)');
+    g.selectAll('.link').transition().duration(300).style('opacity',1);
+    return;
+  }
+  const res = await fetch(`/api/search?q=${encodeURIComponent(keyword)}`);
+  const hits = await res.json();
+  const matchIds = new Set(hits.map(n => String(n.id)));
+  g.selectAll('.node-group').transition().duration(300).style('opacity', d => {
+    const id = currentLayout==='tree' ? d.data.id : d.id;
+    return matchIds.has(id) ? 1 : 0.1;
+  });
+  g.selectAll('.link').transition().duration(300).style('opacity', 0.08);
+}
+
+// ══════════════════════════════════════════════════════════
+// 选择 & 高亮
+// ══════════════════════════════════════════════════════════
+function selectNodeById(id) {
+  selectedNodeId = id;
+  const node = nodeMap.get(id);
+  if (node) showDetail(node);
+  g.selectAll('.node-shape').attr('filter', d => {
+    const nid = currentLayout==='tree' ? d.data?.id : d.id;
+    return nid === id ? 'url(#glow)' : 'url(#shadow)';
+  });
+}
+
+function clearSelection() {
+  selectedNodeId = null;
+  g.selectAll('.node-group').transition().duration(300).style('opacity',1);
+  g.selectAll('.node-shape').attr('filter','url(#shadow)');
+  g.selectAll('.link').transition().duration(300).style('opacity',1);
+  document.getElementById('detail-panel').classList.remove('open');
+  document.getElementById('resizer-right').classList.add('hidden');
+}
+
+function highlightTreeNeighbors(hierarchyNode) {
+  const id = hierarchyNode.data.id;
+  const connected = new Set([id]);
+  if (hierarchyNode.parent) connected.add(hierarchyNode.parent.data.id);
+  (hierarchyNode.children||[]).forEach(c => connected.add(c.data.id));
+  if (hierarchyNode.parent) (hierarchyNode.parent.children||[]).forEach(c => connected.add(c.data.id));
+
+  g.selectAll('.node-group').transition().duration(300).style('opacity', d => connected.has(d.data.id) ? 1 : 0.12);
+  g.selectAll('.link').transition().duration(300).style('opacity', d =>
+    (d.source.data.id===id || d.target.data.id===id) ? 1 : 0.05);
+}
+
+function highlightNeighbors(id) {
+  const connected = new Set([id]);
+  const edges = simulation.force('link').links();
+  edges.forEach(e => {
+    const s = typeof e.source==='object' ? e.source.id : e.source;
+    const t = typeof e.target==='object' ? e.target.id : e.target;
+    if (s===id) connected.add(t);
+    if (t===id) connected.add(s);
+  });
+  g.selectAll('.node-group').transition().duration(300).style('opacity', d => connected.has(d.id) ? 1 : 0.12);
+  g.selectAll('.link').transition().duration(300).style('opacity', d => {
+    const s = typeof d.source==='object' ? d.source.id : d.source;
+    const t = typeof d.target==='object' ? d.target.id : d.target;
+    return (s===id||t===id) ? 1 : 0.05;
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+// 详情面板
+// ══════════════════════════════════════════════════════════
+function showDetail(data) {
+  const panel = document.getElementById('detail-panel');
+  const content = document.getElementById('detail-content');
+  document.getElementById('resizer-right').classList.remove('hidden');
+
+  const tagColor = TYPE_COLORS[data.type] || '#475569';
+  let html = `<div id="detail-header">
+    <h3><span class="type-tag" style="background:${tagColor}">${data.type}</span> &nbsp;#${data.id}</h3>
+    <button id="close-detail" onclick="clearSelection()">×</button>
+  </div>`;
+
+  html += `<div class="detail-section"><h4>内容</h4><div class="detail-field"><div class="value">${escapeHtml(data.content)}</div></div></div>`;
+
+  if (data.type === 'claim') {
+    const status = data.data?.status || 'proposed';
+    html += `<div class="detail-section"><h4>状态</h4><div class="detail-field"><span class="status-badge status-${status}">${status}</span></div></div>`;
+    if (data.data?.qualifier) {
+      html += `<div class="detail-section"><h4>Qualifier</h4><div class="detail-field"><div class="value">${escapeHtml(data.data.qualifier)}</div></div></div>`;
+    }
+  }
+
+  if (data.type === 'ground') {
+    const veri = data.data?.verification || 'pending';
+    const src  = data.data?.source || '-';
+    html += `<div class="detail-section"><h4>属性</h4>
+      <div class="detail-field"><div class="label">验证状态</div><div class="value"><span class="veri-badge veri-${veri}">${veri==='verified'?'✓ verified':'⋯ pending'}</span></div></div>
+      <div class="detail-field"><div class="label">来源类型</div><div class="value">${escapeHtml(src)}</div></div>
+      ${data.data?.ref_claim_id ? `<div class="detail-field"><div class="label">引用 Claim</div><div class="value" style="color:#93c5fd">→ #${data.data.ref_claim_id}</div></div>` : ''}
+    </div>`;
+  }
+
+  if (data.type === 'warrant') {
+    html += `<div class="detail-section"><h4>关联</h4>
+      <div class="detail-field"><div class="label">所属 Claim</div><div class="value">#${data.data?.claim_id||'-'}</div></div>
+      <div class="detail-field"><div class="label">关联 Grounds</div><div class="value">${(data.data?.ground_ids||[]).map(i=>'#'+i).join(', ')||'-'}</div></div>
+    </div>`;
+  }
+
+  if (data.type === 'backing')   html += `<div class="detail-section"><h4>关联</h4><div class="detail-field"><div class="label">所属 Warrant</div><div class="value">#${data.data?.warrant_id||'-'}</div></div></div>`;
+  if (data.type === 'rebuttal')  html += `<div class="detail-section"><h4>关联</h4><div class="detail-field"><div class="label">目标节点</div><div class="value">#${data.data?.target_id||'-'} (${data.data?.target_type||'-'})</div></div></div>`;
+
+  // 连接边
+  let connEdges = [];
+  if (currentLayout === 'tree') {
+    g.select('.links-layer').selectAll('.link').each(function(d) {
+      if (d.source.data.id===String(data.id)||d.target.data.id===String(data.id)) connEdges.push(d);
+    });
+  } else {
+    simulation.force('link').links().forEach(e => {
+      const s = typeof e.source==='object'?e.source.id:e.source;
+      const t = typeof e.target==='object'?e.target.id:e.target;
+      if (s===String(data.id)||t===String(data.id)) connEdges.push(e);
+    });
+  }
+  if (connEdges.length) {
+    html += `<div class="detail-section"><h4>关联边</h4><ul class="edge-list">`;
+    connEdges.forEach(e => {
+      const sid = currentLayout==='tree' ? e.source.data.id : (typeof e.source==='object'?e.source.id:e.source);
+      const tid = currentLayout==='tree' ? e.target.data.id : (typeof e.target==='object'?e.target.id:e.target);
+      const isSource = sid===String(data.id);
+      const otherId = isSource?tid:sid;
+      const arrow = isSource?'→':'←';
+      const other = nodeMap.get(otherId);
+      const edgeType = currentLayout==='tree'
+        ? inferTreeEdgeType(e.source.data.type, e.target.data.type)
+        : e.type;
+      html += `<li onclick="focusNode('${otherId}')">${arrow} ${edgeType} #${otherId}<br><span style="color:#64748b;font-size:11px">${escapeHtml(truncate(other?.content||'',32))}</span></li>`;
+    });
+    html += `</ul></div>`;
+  }
+
+  if (data.data?.attachments?.length) {
+    html += `<div class="detail-section"><h4>附件</h4><ul class="attachment-list">`;
+    data.data.attachments.forEach(a => { html += `<li style="padding:4px 0;font-size:12px;color:#64748b">📎 ${a}</li>`; });
+    html += `</ul></div>`;
+  }
+
+  html += `<div class="detail-section"><h4>时间</h4>
+    <div class="detail-field"><div class="label">创建</div><div class="value">${data.created_at||'-'}</div></div>
+    <div class="detail-field"><div class="label">更新</div><div class="value">${data.updated_at||'-'}</div></div>
+  </div>`;
+
+  content.innerHTML = html;
+  panel.classList.add('open');
+}
+
+function focusNode(id) {
+  const node = nodeMap.get(id);
+  if (!node) return;
+  const container = document.getElementById('cy');
+  const rect = container.getBoundingClientRect();
+  const scale = 1.3;
+
+  if (currentLayout === 'tree') {
+    let tx = null, ty = null;
+    g.select('.nodes-layer').selectAll('.node-group').each(function(d) {
+      if (d.data.id === id) { tx=d.x; ty=d.y; }
+    });
+    if (tx !== null)
+      svg.transition().duration(500).call(zoomBehavior.transform,
+        d3.zoomIdentity.translate(rect.width/2 - tx*scale, rect.height/2 - ty*scale).scale(scale));
+  } else {
+    svg.transition().duration(500).call(zoomBehavior.transform,
+      d3.zoomIdentity.translate(rect.width/2 - node.x*scale, rect.height/2 - node.y*scale).scale(scale));
+  }
+  selectNodeById(id);
+  if (currentLayout==='tree') {
+    g.select('.nodes-layer').selectAll('.node-group').each(function(d) {
+      if (d.data.id===id) highlightTreeNeighbors(d);
+    });
+  } else highlightNeighbors(id);
+}
+
+// ══════════════════════════════════════════════════════════
+// 工具函数
+// ══════════════════════════════════════════════════════════
+function truncate(s, l) { return (!s)?'': s.length>l ? s.slice(0,l)+'…' : s; }
+function escapeHtml(s) { return (!s)?'': s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function inferTreeEdgeType(sType, tType) {
+  if (sType === 'claim'   && tType === 'warrant')   return 'supports';
+  if (sType === 'warrant' && tType === 'ground')    return 'based_on';
+  if (sType === 'ground'  && tType === 'claim')     return 'derives_from';
+  if (sType === 'warrant' && tType === 'backing')   return 'reinforces';
+  if (tType === 'rebuttal') return 'challenges';
+  return 'connects';
+}
+function refreshGraph() { loadGraph(); }
+
+function fitGraph() {
+  const container = document.getElementById('cy');
+  const rect = container.getBoundingClientRect();
+  const allX = [], allY = [];
+  g.select('.nodes-layer').selectAll('.node-group').each(function(d) {
+    const x = d.x;
+    const y = d.y;
+    const s = (TYPE_SIZES[currentLayout==='tree' ? d.data.type : d.type]||18) + 40;
+    allX.push(x-s, x+s); allY.push(y-s, y+s);
+  });
+  if (!allX.length) return;
+  const minX=d3.min(allX), maxX=d3.max(allX), minY=d3.min(allY), maxY=d3.max(allY);
+  const w=maxX-minX, h=maxY-minY;
+  const scale = Math.min(rect.width/w, rect.height/h, 2) * 0.82;
+  const cx=(minX+maxX)/2, cy=(minY+maxY)/2;
+  svg.transition().duration(500).call(zoomBehavior.transform,
+    d3.zoomIdentity.translate(rect.width/2 - cx*scale, rect.height/2 - cy*scale).scale(scale));
+}
+
+function centerGraph() {
+  const container = document.getElementById('cy');
+  const rect = container.getBoundingClientRect();
+  svg.transition().duration(300).call(zoomBehavior.transform,
+    d3.zoomIdentity.translate(rect.width/2, rect.height/2));
+}
+
+// ══════════════════════════════════════════════════════════
+// 数据库切换
+// ══════════════════════════════════════════════════════════
+const dbPathInput = document.getElementById('db-path-input');
+const dbSwitchBtn = document.getElementById('db-switch-btn');
+const dbStatusEl  = document.getElementById('db-status');
+const dbCurrentEl = document.getElementById('db-current-path');
+
+async function loadCurrentDb() {
+  try {
+    const res = await fetch('/api/current-db');
+    const { dir } = await res.json();
+    dbCurrentEl.textContent = dir;
+  } catch { dbCurrentEl.textContent = '未知'; }
+}
+
+function showDbStatus(type, msg) {
+  dbStatusEl.className = 'db-status ' + type;
+  dbStatusEl.textContent = msg;
+  if (type === 'success') setTimeout(() => { dbStatusEl.className = 'db-status'; }, 3000);
+}
+
+dbSwitchBtn.addEventListener('click', async () => {
+  const dir = dbPathInput.value.trim();
+  if (!dir) { showDbStatus('error', '请输入目录路径'); return; }
+  dbSwitchBtn.disabled = true;
+  try {
+    const res = await fetch('/api/switch-db', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir }) });
+    const result = await res.json();
+    if (result.success) {
+      showDbStatus('success', '✓ 已切换');
+      dbCurrentEl.textContent = dir;
+      dbPathInput.value = '';
+    } else {
+      showDbStatus('error', result.error || '切换失败');
+    }
+  } catch (err) {
+    showDbStatus('error', '切换失败: ' + err.message);
+  } finally {
+    dbSwitchBtn.disabled = false;
+  }
+});
+
+dbPathInput.addEventListener('keydown', e => { if (e.key === 'Enter') dbSwitchBtn.click(); });
+loadCurrentDb();
+
+// ══════════════════════════════════════════════════════════
+// 键盘快捷键
+// ══════════════════════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') clearSelection();
+  if ((e.key === 'r' || e.key === 'R') && !e.ctrlKey && !e.metaKey) refreshGraph();
+  if (e.key === 'f' || e.key === 'F') fitGraph();
+});
+
+// ══════════════════════════════════════════════════════════
+// 事件绑定
+// ══════════════════════════════════════════════════════════
+document.querySelectorAll('#filter-panel input[data-type]').forEach(cb => cb.addEventListener('change', () => loadGraph()));
+document.querySelectorAll('input[name="layout"]').forEach(r => r.addEventListener('change', () => renderGraph()));
+
+let searchTimeout;
+document.getElementById('search-input').addEventListener('input', e => {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(() => searchNodes(e.target.value), 300);
+});
+
+// ══════════════════════════════════════════════════════════
+// 分隔条
+// ══════════════════════════════════════════════════════════
+function initResizer(resizerId, panelId, direction) {
+  const resizer = document.getElementById(resizerId);
+  const panel = document.getElementById(panelId);
+  let startX, startWidth;
+  resizer.addEventListener('mousedown', e => {
+    startX=e.clientX; startWidth=panel.offsetWidth;
+    resizer.classList.add('dragging'); document.body.style.cursor='col-resize'; document.body.style.userSelect='none';
+    const onMove = e => { const d=e.clientX-startX; panel.style.width=Math.max(150,Math.min(500,direction==='left'?startWidth+d:startWidth-d))+'px'; };
+    const onUp   = () => { resizer.classList.remove('dragging'); document.body.style.cursor=''; document.body.style.userSelect=''; document.removeEventListener('mousemove',onMove); document.removeEventListener('mouseup',onUp); };
+    document.addEventListener('mousemove',onMove); document.addEventListener('mouseup',onUp);
+  });
+}
+initResizer('resizer-left','filter-panel','left');
+initResizer('resizer-right','detail-panel','right');
+
+// ══════════════════════════════════════════════════════════
+// 实时同步（SSE）
+// ══════════════════════════════════════════════════════════
+(function setupSSE() {
+  const dot  = document.getElementById('live-dot');
+  const text = document.getElementById('live-text');
+
+  function setStatus(state) {
+    if (state === 'on') {
+      dot.className = 'live-dot-on';
+      text.textContent = '实时同步';
+      text.style.color = '#22c55e';
+    } else {
+      dot.className = 'live-dot-err';
+      text.textContent = '重连中…';
+      text.style.color = '#94a3b8';
+    }
+  }
+
+  const es = new EventSource('/api/events');
+  es.onopen    = () => setStatus('on');
+  es.onerror   = () => setStatus('err');
+  es.addEventListener('data_updated', () => loadGraph());
+})();
+
+// ══════════════════════════════════════════════════════════
+// 启动
+// ══════════════════════════════════════════════════════════
+initGraph();
+loadGraph();
+</script>
 </body>
 </html>

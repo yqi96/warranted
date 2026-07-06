@@ -6,7 +6,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeQualifier, makeRebuttal } from "./helpers.ts";
+import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal } from "./helpers.ts";
 import { registerTools } from "../src/tools.ts";
 
 let db: Database;
@@ -39,14 +39,14 @@ afterEach(() => {
 // =============================================================================
 
 describe("工具注册", () => {
-  test("注册了 12 个工具", () => {
-    expect(Object.keys(tools).length).toBe(12);
+  test("注册了 11 个工具", () => {
+    expect(Object.keys(tools).length).toBe(11);
   });
 
   test("所有必需工具已注册", () => {
     const expected = [
       "create_claim", "create_ground", "create_warrant",
-      "create_backing", "create_qualifier", "create_rebuttal",
+      "create_backing", "create_rebuttal",
       "list_claims", "get_argument", "search_nodes",
       "get_stats", "update_node", "delete_node",
     ];
@@ -115,9 +115,11 @@ describe("create_ground 工具", () => {
 describe("create_warrant 工具", () => {
   test("成功创建", async () => {
     const claim = makeClaim(db);
+    const ground = makeGround(db);
     const result = await tools.create_warrant.handler({
       claim_id: claim.id,
       content: "推理规则",
+      ground_ids: [ground.id],
     });
     expect(result.content[0].text).toContain("Created warrant");
   });

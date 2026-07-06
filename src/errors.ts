@@ -58,3 +58,11 @@ export class MutuallyExclusiveModeError extends ToulminError {
     this.name = "MutuallyExclusiveModeError";
   }
 }
+
+/** Claim 状态转换违规 */
+export class StatusTransitionError extends ToulminError {
+  constructor(message: string) {
+    super(message);
+    this.name = "StatusTransitionError";
+  }
+}

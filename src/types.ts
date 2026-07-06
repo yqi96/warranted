@@ -1,7 +1,7 @@
 /**
  * Toulmin 论证模型 — 类型定义
  *
- * 6 种节点类型：Claim, Ground, Warrant, Backing, Qualifier, Rebuttal
+ * 5 种节点类型：Claim, Ground, Warrant, Backing, Rebuttal
  * 所有节点共享基础字段，类型特有字段存储在 data JSON 中。
  */
 
@@ -14,7 +14,6 @@ export const NodeType = {
   Ground: "ground",
   Warrant: "warrant",
   Backing: "backing",
-  Qualifier: "qualifier",
   Rebuttal: "rebuttal",
 } as const;
 
@@ -95,13 +94,6 @@ export interface BackingNode extends BaseNode {
   warrantId: number;
 }
 
-/** Qualifier 节点 */
-export interface QualifierNode extends BaseNode {
-  type: "qualifier";
-  attachments: string[];
-  claimId: number;
-}
-
 /** Rebuttal 节点 */
 export interface RebuttalNode extends BaseNode {
   type: "rebuttal";
@@ -116,7 +108,6 @@ export type ToulminNode =
   | GroundNode
   | WarrantNode
   | BackingNode
-  | QualifierNode
   | RebuttalNode;
 
 // =============================================================================
@@ -125,6 +116,7 @@ export type ToulminNode =
 
 export interface ClaimData {
   status: ClaimStatus;
+  qualifier?: string | null;
 }
 
 export interface GroundData {
@@ -144,11 +136,6 @@ export interface BackingData {
   warrant_id: number;
 }
 
-export interface QualifierData {
-  attachments: string[];
-  claim_id: number;
-}
-
 export interface RebuttalData {
   attachments: string[];
   target_id: number;
@@ -160,7 +147,6 @@ export type NodeData =
   | GroundData
   | WarrantData
   | BackingData
-  | QualifierData
   | RebuttalData;
 
 // =============================================================================
@@ -179,6 +165,7 @@ export interface UpdateNodeParams {
   source?: GroundSource;
   verification?: VerificationStatus;
   ground_ids?: GroundIdsUpdate;
+  qualifier?: string | null;
 }
 
 // =============================================================================
@@ -219,7 +206,7 @@ export interface ClaimArgument {
     id: number;
     content: string;
     status: ClaimStatus;
-    qualifier: { id: number; content: string; attachments: string[] } | null;
+    qualifier: string | null;
   };
   warrants: ArgumentWarrant[];
   rebuttals: ArgumentRebuttal[];

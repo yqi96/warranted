@@ -73,18 +73,23 @@ describe("场景 1：论文复现", () => {
     });
 
     // 阶段 3：综合判定
+    // 先创建 Rebuttal 才能标记 disputed (A3)
+    service.createRebuttal(db, {
+      content: "ResNet 上加速倍数未达论文声称的 2.0×",
+      targetId: claim.id,
+      targetType: "claim",
+    });
     service.updateNode(db, claim.id, { status: "disputed" });
 
-    const qualifier = service.createQualifier(db, {
-      content: "仅在 ViT 架构上完全复现（2.0×）；ResNet 上加速倍数为 1.8×",
-      claimId: claim.id,
+    service.updateNode(db, claim.id, {
+      qualifier: "仅在 ViT 架构上完全复现（2.0×）；ResNet 上加速倍数为 1.8×",
     });
 
     // 验证完整论证结构
     const arg = service.getArgument(db, claim.id) as ClaimArgument;
     expect(arg.claim.status).toBe("disputed");
     expect(arg.claim.qualifier).not.toBeNull();
-    expect(arg.claim.qualifier!.content).toContain("ViT");
+    expect(arg.claim.qualifier!).toContain("ViT");
     expect(arg.warrants.length).toBe(1);
     expect(arg.warrants[0].grounds.length).toBe(2);
     expect(arg.warrants[0].backings.length).toBe(1);
@@ -137,6 +142,7 @@ describe("场景 2：假设验证", () => {
       content: "消融实验：去除增强后小数据集增益消失",
       source: "observed",
       verification: "verified",
+      attachments: ["/repro/ablation/results.csv"],
     });
 
     // 阶段 3：追加新证据
@@ -225,9 +231,8 @@ describe("场景 3：文献综述", () => {
     expect(arg.rebuttals[0].target_type).toBe("warrant");
 
     // 添加限定
-    service.createQualifier(db, {
-      content: "长序列建模任务（≤16K token）",
-      claimId: claim.id,
+    service.updateNode(db, claim.id, {
+      qualifier: "长序列建模任务（≤16K token）",
     });
 
     // 判定
@@ -252,6 +257,18 @@ describe("场景 4：链式推理", () => {
   test("Claim A → 作为 Ground → Warrant → Claim B", () => {
     // 前置 Claim（已验证）
     const claimA = service.createClaim(db, "per-scale 机制是 ScaleOpt 收敛加速的核心原因");
+    // 为 claimA 构建 Warrant + verified Ground 以满足 A1
+    const gA = service.createGround(db, {
+      content: "per-scale 机制的收敛性证明",
+      source: "observed",
+      verification: "verified",
+      attachments: ["/repro/per-scale/proof.csv"],
+    });
+    service.createWarrant(db, {
+      content: "收敛性证明 → 核心原因",
+      claimId: claimA.id,
+      groundIds: [gA.id],
+    });
     service.updateNode(db, claimA.id, { status: "validated" });
 
     // 新 Claim
@@ -268,6 +285,7 @@ describe("场景 4：链式推理", () => {
       content: "文献指出小模型参数分布方差更大，per-scale 归一化效果更明显",
       source: "literature",
       verification: "verified",
+      attachments: ["/repro/literature/evidence.csv"],
     });
 
     const warrant = service.createWarrant(db, {
@@ -328,8 +346,8 @@ describe("场景 5：共享证据", () => {
     expect(warrantIds).toContain(wA.id);
     expect(warrantIds).toContain(wB.id);
 
-    // 删除 Ground，两个 Warrant 都应该被清理引用
-    service.deleteNode(db, sharedGround.id);
+    // 删除共享 Ground，自动从 Warrant 中移除并返回警告
+    service.deleteNode(db, sharedGround.id, true);
 
     const argA = service.getArgument(db, wA.id) as WarrantArgument;
     const argB = service.getArgument(db, wB.id) as WarrantArgument;
@@ -360,21 +378,18 @@ describe("场景 6：复杂级联删除", () => {
     const b1 = service.createBacking(db, { content: "支撑1", warrantId: w1.id });
     const b2 = service.createBacking(db, { content: "支撑2", warrantId: w2.id });
 
-    const q = service.createQualifier(db, { content: "限定", claimId: claim.id });
-
     const r1 = service.createRebuttal(db, { content: "反驳Claim", targetId: claim.id, targetType: "claim" });
     const r2 = service.createRebuttal(db, { content: "反驳Warrant", targetId: w1.id, targetType: "warrant" });
 
     // 执行级联删除
     service.deleteNode(db, claim.id, true);
 
-    // Claim, Warrants, Backings, Qualifier, Rebuttals 全部删除
+    // Claim, Warrants, Backings, Rebuttals 全部删除
     expect(() => service.getArgument(db, claim.id)).toThrow();
     expect(() => service.getArgument(db, w1.id)).toThrow();
     expect(() => service.getArgument(db, w2.id)).toThrow();
     expect(() => service.getArgument(db, b1.id)).toThrow();
     expect(() => service.getArgument(db, b2.id)).toThrow();
-    expect(() => service.getArgument(db, q.id)).toThrow();
     expect(() => service.getArgument(db, r1.id)).toThrow();
     expect(() => service.getArgument(db, r2.id)).toThrow();
 
@@ -389,7 +404,6 @@ describe("场景 6：复杂级联删除", () => {
     expect(stats.claims.total).toBe(0);
     expect(stats.warrants.total).toBe(0);
     expect(stats.backings.total).toBe(0);
-    expect(stats.qualifiers.total).toBe(0);
     expect(stats.rebuttals.total).toBe(0);
     expect(stats.grounds.total).toBe(2);
   });

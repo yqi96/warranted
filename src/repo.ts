@@ -96,14 +96,6 @@ export function findBackingsByWarrant(db: Database, warrantId: number): NodeRow[
   return stmt.all(warrantId) as NodeRow[];
 }
 
-/** 查找绑定到指定 Claim 的所有 Qualifier */
-export function findQualifiersByClaim(db: Database, claimId: number): NodeRow[] {
-  const stmt = db.prepare(
-    "SELECT * FROM nodes WHERE type = 'qualifier' AND CAST(json_extract(data, '$.claim_id') AS INTEGER) = ? ORDER BY id"
-  );
-  return stmt.all(claimId) as NodeRow[];
-}
-
 /** 查找指向指定 target 的所有 Rebuttal */
 export function findRebuttalsByTarget(
   db: Database,
@@ -155,7 +147,6 @@ export function countNodesByType(db: Database): Record<string, number> {
     ground: 0,
     warrant: 0,
     backing: 0,
-    qualifier: 0,
     rebuttal: 0,
   };
   for (const row of rows) {

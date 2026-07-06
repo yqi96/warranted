@@ -11,7 +11,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS nodes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    type       TEXT    NOT NULL CHECK(type IN ('claim','ground','warrant','backing','qualifier','rebuttal')),
+    type       TEXT    NOT NULL CHECK(type IN ('claim','ground','warrant','backing','rebuttal')),
     content    TEXT    NOT NULL,
     data       TEXT    NOT NULL DEFAULT '{}',
     created_at TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -30,11 +30,6 @@ CREATE INDEX IF NOT EXISTS idx_nodes_warrant_claim ON nodes(
 CREATE INDEX IF NOT EXISTS idx_nodes_backing_warrant ON nodes(
     CAST(json_extract(data, '$.warrant_id') AS INTEGER)
 ) WHERE type = 'backing';
-
--- Qualifier 按 claim_id 查询
-CREATE INDEX IF NOT EXISTS idx_nodes_qualifier_claim ON nodes(
-    CAST(json_extract(data, '$.claim_id') AS INTEGER)
-) WHERE type = 'qualifier';
 
 -- Rebuttal 按 target_id 查询
 CREATE INDEX IF NOT EXISTS idx_nodes_rebuttal_target ON nodes(

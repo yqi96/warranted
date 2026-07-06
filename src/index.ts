@@ -15,6 +15,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { openDatabase } from "./db.ts";
 import { registerTools } from "./tools.ts";
+import { initLogger } from "./logger.ts";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
 
@@ -54,6 +55,13 @@ async function main() {
   // 打开数据库
   const db = openDatabase(dbPath);
   console.error(`[Toulmin MCP] Database opened: ${dbPath}`);
+
+  // 初始化操作日志（写入 .toulmin/ 目录下，与数据库同位置）
+  if (dbPath !== ":memory:") {
+    const logPath = dirname(dbPath) + "/operation.log";
+    initLogger(logPath);
+    console.error(`[Toulmin MCP] Operation log: ${logPath}`);
+  }
 
   // 创建 MCP Server
   const server = new McpServer({

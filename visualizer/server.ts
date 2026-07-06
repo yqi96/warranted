@@ -8,7 +8,7 @@
  */
 
 import { openDatabase, initializeSchema } from "../src/db.ts";
-import { mkdirSync, writeFileSync, copyFileSync } from "fs";
+import { mkdirSync, existsSync, watch as fsWatch } from "fs";
 import { dirname, join } from "path";
 import type { Database } from "bun:sqlite";
 import type { NodeRow, NodeType } from "../src/types.ts";
@@ -85,49 +85,41 @@ function buildGraph(db: Database, typeFilter?: string[]): { nodes: GraphNode[]; 
 
     switch (row.type) {
       case "warrant": {
-        // Warrant → Claim (supports)
+        // Claim → Warrant (supports): 推理规则支撑主张
         const claimId = data.claim_id as number;
         if (claimId && filteredIds.has(claimId)) {
-          edges.push({ id: `e_${row.id}_${claimId}_supports`, source: row.id, target: claimId, type: "supports" });
+          edges.push({ id: `e_${claimId}_${row.id}_supports`, source: claimId, target: row.id, type: "supports" });
         }
-        // Warrant → Ground[] (based_on)
+        // Ground → Warrant (based_on): 证据支撑推理规则
         const groundIds = (data.ground_ids || []) as number[];
         for (const gid of groundIds) {
           if (filteredIds.has(gid)) {
-            edges.push({ id: `e_${row.id}_${gid}_based_on`, source: row.id, target: gid, type: "based_on" });
+            edges.push({ id: `e_${gid}_${row.id}_based_on`, source: gid, target: row.id, type: "based_on" });
           }
         }
         break;
       }
       case "backing": {
-        // Backing → Warrant (reinforces)
+        // Warrant → Backing (reinforces): 支撑推理规则
         const warrantId = data.warrant_id as number;
         if (warrantId && filteredIds.has(warrantId)) {
-          edges.push({ id: `e_${row.id}_${warrantId}_reinforces`, source: row.id, target: warrantId, type: "reinforces" });
-        }
-        break;
-      }
-      case "qualifier": {
-        // Qualifier → Claim (qualifies)
-        const claimId = data.claim_id as number;
-        if (claimId && filteredIds.has(claimId)) {
-          edges.push({ id: `e_${row.id}_${claimId}_qualifies`, source: row.id, target: claimId, type: "qualifies" });
+          edges.push({ id: `e_${warrantId}_${row.id}_reinforces`, source: warrantId, target: row.id, type: "reinforces" });
         }
         break;
       }
       case "rebuttal": {
-        // Rebuttal → Claim/Warrant (challenges)
+        // Claim/Warrant → Rebuttal (challenges): 挑战主张或推理
         const targetId = data.target_id as number;
         if (targetId && filteredIds.has(targetId)) {
-          edges.push({ id: `e_${row.id}_${targetId}_challenges`, source: row.id, target: targetId, type: "challenges" });
+          edges.push({ id: `e_${targetId}_${row.id}_challenges`, source: targetId, target: row.id, type: "challenges" });
         }
         break;
       }
       case "ground": {
-        // Ground → Claim (derives_from, 链式推理)
+        // Warrant → Ground (derives_from, 链式推理): 上游 Claim 支撑下游 Ground
         const refClaimId = data.ref_claim_id as number | null;
         if (refClaimId && filteredIds.has(refClaimId)) {
-          edges.push({ id: `e_${row.id}_${refClaimId}_derives`, source: row.id, target: refClaimId, type: "derives_from" });
+          edges.push({ id: `e_${refClaimId}_${row.id}_derives`, source: refClaimId, target: row.id, type: "derives_from" });
         }
         break;
       }
@@ -141,19 +133,76 @@ function buildGraph(db: Database, typeFilter?: string[]): { nodes: GraphNode[]; 
 // HTTP 服务器
 // =============================================================================
 
-const { dbPath } = parseArgs();
+const { dbPath: initialDbPath } = parseArgs();
 
 // 确保数据库目录存在
-if (dbPath !== ":memory:") {
-  const dir = dirname(dbPath);
+if (initialDbPath !== ":memory:") {
+  const dir = dirname(initialDbPath);
   mkdirSync(dir, { recursive: true });
 }
 
-let db = openDatabase(dbPath);
-console.error(`[Toulmin Viz] Database opened: ${dbPath}`);
+let db = openDatabase(initialDbPath);
+let currentDbPath = initialDbPath;
+console.error(`[Toulmin Viz] Database opened: ${initialDbPath}`);
 
 // 获取 index.html 路径
 const htmlPath = join(import.meta.dir, "index.html");
+
+// =============================================================================
+// SSE 实时推送
+// =============================================================================
+
+const sseClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
+const sseEncoder = new TextEncoder();
+
+function broadcastSSE(event: string, data: Record<string, unknown> = {}) {
+  const msg = sseEncoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  for (const ctrl of [...sseClients]) {
+    try {
+      ctrl.enqueue(msg);
+    } catch {
+      sseClients.delete(ctrl);
+    }
+  }
+  if (sseClients.size > 0) {
+    console.error(`[Toulmin Viz] Broadcast '${event}' → ${sseClients.size} client(s)`);
+  }
+}
+
+// =============================================================================
+// 文件监听 & 数据库切换
+// =============================================================================
+
+let watchDebounce: ReturnType<typeof setTimeout> | null = null;
+let currentWatcher: ReturnType<typeof fsWatch> | null = null;
+
+function startWatcher(watchDir: string) {
+  try {
+    currentWatcher = fsWatch(watchDir, (_event, filename) => {
+      if (!filename) return;
+      if (!filename.endsWith(".db") && !filename.endsWith(".db-wal") && !filename.endsWith(".db-shm")) return;
+      if (watchDebounce) clearTimeout(watchDebounce);
+      watchDebounce = setTimeout(() => broadcastSSE("data_updated"), 300);
+    });
+    console.error(`[Toulmin Viz] Watching: ${watchDir}`);
+  } catch (e) {
+    console.error(`[Toulmin Viz] Watch failed (real-time sync unavailable):`, e);
+  }
+}
+
+function switchDatabase(newPath: string) {
+  db.close();
+  if (currentWatcher) { currentWatcher.close(); currentWatcher = null; }
+  if (watchDebounce) { clearTimeout(watchDebounce); watchDebounce = null; }
+
+  db = openDatabase(newPath);
+  currentDbPath = newPath;
+  startWatcher(dirname(newPath));
+  console.error(`[Toulmin Viz] Switched to: ${newPath}`);
+  broadcastSSE("data_updated", { path: newPath });
+}
+
+startWatcher(dirname(initialDbPath));
 
 const server = Bun.serve({
   port: 3456,
@@ -174,6 +223,30 @@ const server = Bun.serve({
     }
 
     try {
+      // SSE: 实时事件推送
+      if (path === "/api/events") {
+        let ctrl: ReadableStreamDefaultController<Uint8Array>;
+        const stream = new ReadableStream<Uint8Array>({
+          start(c) {
+            ctrl = c;
+            sseClients.add(ctrl);
+            ctrl.enqueue(sseEncoder.encode(`event: connected\ndata: {}\n\n`));
+          },
+          cancel() {
+            sseClients.delete(ctrl);
+          },
+        });
+        req.signal?.addEventListener("abort", () => sseClients.delete(ctrl));
+        return new Response(stream, {
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+          },
+        });
+      }
+
       // API: 获取完整图数据
       if (path === "/api/graph") {
         const typesParam = url.searchParams.get("types");
@@ -224,58 +297,23 @@ const server = Bun.serve({
         return Response.json(nodes.map(n => ({ ...n, data: repo.parseNodeData(n) })), { headers: corsHeaders });
       }
 
-      // API: 上传数据库文件（支持 .db + .db-wal + .db-shm 三文件集）
-      if (path === "/api/upload" && req.method === "POST") {
-        const formData = await req.formData();
-        const files = formData.getAll("files") as File[];
-        if (!files || files.length === 0) {
-          return Response.json({ error: "No files provided" }, { status: 400, headers: corsHeaders });
+      // API: 查询当前监控路径
+      if (path === "/api/current-db") {
+        return Response.json({ dir: dirname(currentDbPath), path: currentDbPath }, { headers: corsHeaders });
+      }
+
+      // API: 切换监控目录（接收 .toulmin 目录路径，自动拼 argument.db）
+      if (path === "/api/switch-db" && req.method === "POST") {
+        const { dir } = await req.json() as { dir?: string };
+        if (!dir) {
+          return Response.json({ error: "Missing 'dir' field" }, { status: 400, headers: corsHeaders });
         }
-
-        // 找到主 .db 文件
-        const mainFile = files.find(f => f.name.endsWith(".db") || f.name.endsWith(".sqlite"));
-        if (!mainFile) {
-          return Response.json({ error: "No .db or .sqlite file found" }, { status: 400, headers: corsHeaders });
+        const newDbPath = join(dir, "argument.db");
+        if (!existsSync(newDbPath)) {
+          return Response.json({ error: `File not found: ${newDbPath}` }, { status: 404, headers: corsHeaders });
         }
-
-        // 关闭当前数据库
-        db.close();
-
-        // 保存所有上传的文件
-        for (const file of files) {
-          let targetName = file.name;
-          // 标准化文件名
-          if (file.name.endsWith("-wal")) targetName = dbPath + "-wal";
-          else if (file.name.endsWith("-shm")) targetName = dbPath + "-shm";
-          else targetName = dbPath;
-
-          const buffer = await file.arrayBuffer();
-          writeFileSync(targetName, Buffer.from(buffer));
-          console.error(`[Toulmin Viz] Saved: ${targetName} (${buffer.byteLength} bytes)`);
-        }
-
-        // 打开数据库，checkpoint WAL 合并数据到主文件
-        try {
-          const tempDb = new (await import("bun:sqlite")).Database(dbPath);
-          tempDb.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-          tempDb.close();
-          console.error(`[Toulmin Viz] WAL checkpoint completed`);
-        } catch (e) {
-          console.error(`[Toulmin Viz] WAL checkpoint failed:`, e);
-        }
-
-        // 清理 WAL/SHM 文件（checkpoint 后数据已在主文件中）
-        try {
-          const { unlinkSync, existsSync } = await import("fs");
-          if (existsSync(dbPath + "-wal")) unlinkSync(dbPath + "-wal");
-          if (existsSync(dbPath + "-shm")) unlinkSync(dbPath + "-shm");
-        } catch {}
-
-        // 重新打开数据库
-        db = openDatabase(dbPath);
-
-        const stats = repo.countNodesByType(db);
-        return Response.json({ success: true, filename: mainFile.name, fileCount: files.length, stats }, { headers: corsHeaders });
+        switchDatabase(newDbPath);
+        return Response.json({ success: true, path: newDbPath }, { headers: corsHeaders });
       }
 
       // 静态文件: index.html

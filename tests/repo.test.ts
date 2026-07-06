@@ -66,15 +66,6 @@ describe("insertNode", () => {
     expect(data.warrant_id).toBe(1);
   });
 
-  test("插入 Qualifier 节点", () => {
-    const row = repo.insertNode(db, "qualifier", "限定内容", {
-      attachments: [],
-      claim_id: 1,
-    });
-    const data = JSON.parse(row.data);
-    expect(data.claim_id).toBe(1);
-  });
-
   test("插入 Rebuttal 节点", () => {
     const row = repo.insertNode(db, "rebuttal", "反驳条件", {
       attachments: [],
@@ -185,7 +176,7 @@ describe("listNodesByType", () => {
 });
 
 // =============================================================================
-// findWarrantsByClaim / findBackingsByWarrant / findQualifiersByClaim
+// findWarrantsByClaim / findBackingsByWarrant
 // =============================================================================
 
 describe("关联查询", () => {
@@ -209,15 +200,6 @@ describe("关联查询", () => {
 
     const b = repo.findBackingsByWarrant(db, 1);
     expect(b.length).toBe(2);
-  });
-
-  test("findQualifiersByClaim 返回正确的 Qualifier", () => {
-    repo.insertNode(db, "claim", "C1", { status: "proposed" });
-    repo.insertNode(db, "qualifier", "Q1", { attachments: [], claim_id: 1 });
-
-    const q = repo.findQualifiersByClaim(db, 1);
-    expect(q.length).toBe(1);
-    expect(q[0].content).toBe("Q1");
   });
 
   test("findRebuttalsByTarget 按 target 过滤", () => {

@@ -15,8 +15,11 @@ import {
   CascadeRequiredError,
   TypeMismatchError,
   MutuallyExclusiveModeError,
+  StatusTransitionError,
 } from "./errors.ts";
 import type { ArgumentResult, Stats, ToulminNode } from "./types.ts";
+import { log, summarizeInput, summarizeOutput } from "./logger.ts";
+import { ELEMENTS, HINTS, WARNINGS } from "./content.ts";
 
 // =============================================================================
 // 辅助函数
@@ -54,7 +57,7 @@ function formatArgument(result: ArgumentResult): string {
     lines.push(`Content: ${result.claim.content}`);
     lines.push(`Status: ${result.claim.status}`);
     if (result.claim.qualifier) {
-      lines.push(`Qualifier: ${result.claim.qualifier.content}`);
+      lines.push(`Qualifier: ${result.claim.qualifier}`);
     }
     lines.push("");
 
@@ -140,12 +143,37 @@ function formatStats(stats: Stats): string {
   lines.push("");
   lines.push(`Warrants: ${stats.warrants.total}`);
   lines.push(`Backings: ${stats.backings.total}`);
-  lines.push(`Qualifiers: ${stats.qualifiers.total}`);
   lines.push(`Rebuttals: ${stats.rebuttals.total}`);
   for (const [t, count] of Object.entries(stats.rebuttals.by_target_type)) {
     lines.push(`  - ${t}: ${count}`);
   }
   return lines.join("\n");
+}
+
+// =============================================================================
+// 日志包装器
+// =============================================================================
+
+type ToolHandler = (input: any) => Promise<{ content: { type: string; text: string }[] }>;
+
+/** 包装 handler，自动记录工具名、输入、结果摘要和耗时 */
+function withLog(toolName: string, handler: ToolHandler): ToolHandler {
+  return async (input: any) => {
+    const start = Date.now();
+    const inputSummary = summarizeInput(input ?? {});
+    try {
+      const result = await handler(input);
+      const ms = Date.now() - start;
+      const text = result.content?.[0]?.text ?? "";
+      const status = text.startsWith("Error:") ? "ERR" : "OK ";
+      log(toolName, status as "OK" | "ERR", ms, `${inputSummary} → ${summarizeOutput(text)}`);
+      return result;
+    } catch (e) {
+      const ms = Date.now() - start;
+      log(toolName, "ERR", ms, `${inputSummary} → ${String(e)}`);
+      throw e;
+    }
+  };
 }
 
 // =============================================================================
@@ -160,29 +188,24 @@ export function registerTools(server: any, db: Database): void {
     "create_claim",
     {
       title: "Create Claim",
-      description: "Record a new claim/thesis in the argumentation graph.",
+      description: ELEMENTS.claim.description,
       inputSchema: {
-        content: z.string().describe("The claim content"),
+        content: z.string().describe(ELEMENTS.claim.content),
+        qualifier: z.string().optional().describe(ELEMENTS.claim.qualifier),
       },
     },
-    async ({ content }: { content: string }) => {
+    withLog("create_claim", async ({ content, qualifier }: { content: string; qualifier?: string }) => {
       try {
-        const claim = service.createClaim(db, content);
-        const lines = [
-          `Created claim #${claim.id}: ${claim.content}`,
-          ``,
-          `Next: this claim has no warrants yet. To build the reasoning chain:`,
-          `  1. create_ground — provide evidence (or derive from existing claims via ref_claim_id)`,
-          `  2. create_warrant — link the claim to its grounds with an inference rule`,
-          `  3. create_backing (optional) — support the warrant's credibility`,
-        ];
+        const claim = service.createClaim(db, content, qualifier);
+        const lines = [`Created claim #${claim.id}: ${claim.content}`];
+        lines.push("", HINTS.claimNoWarrants);
         return {
           content: [{ type: "text", text: lines.join("\n") }],
         };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
       }
-    }
+    })
   );
 
   // ===========================================================================
@@ -192,18 +215,16 @@ export function registerTools(server: any, db: Database): void {
     "create_ground",
     {
       title: "Create Ground",
-      description:
-        "Record a piece of evidence. Mode A: provide source + verification for normal evidence. " +
-        "Mode B: provide ref_claim_id for chain reasoning (referencing an existing claim as evidence).",
+      description: ELEMENTS.ground.description,
       inputSchema: {
-        content: z.string().optional().describe("Evidence content (Mode A)"),
-        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe("Evidence source (Mode A)"),
-        verification: z.enum(["verified", "pending"]).optional().describe("Verification status (Mode A)"),
-        attachments: z.array(z.string()).optional().describe("Attachment file paths"),
-        ref_claim_id: z.number().optional().describe("Reference existing claim as evidence (Mode B, mutually exclusive with source/verification)"),
+        content: z.string().optional().describe(ELEMENTS.ground.content),
+        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(ELEMENTS.ground.source),
+        verification: z.enum(["verified", "pending"]).optional().describe(ELEMENTS.ground.verification),
+        attachments: z.array(z.string()).optional().describe(ELEMENTS.ground.attachments),
+        ref_claim_id: z.number().optional().describe(ELEMENTS.ground.refClaimId),
       },
     },
-    async (opts: any) => {
+    withLog("create_ground", async (opts: any) => {
       try {
         const ground = service.createGround(db, {
           content: opts.content,
@@ -212,13 +233,17 @@ export function registerTools(server: any, db: Database): void {
           attachments: opts.attachments,
           refClaimId: opts.ref_claim_id,
         });
+        const lines = [`Created ground #${ground.id}: ${ground.content}`];
+        if (opts.verification === "pending") {
+          lines.push("", HINTS.groundPending);
+        }
         return {
-          content: [{ type: "text", text: `Created ground #${ground.id}: ${ground.content}` }],
+          content: [{ type: "text", text: lines.join("\n") }],
         };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
       }
-    }
+    })
   );
 
   // ===========================================================================
@@ -228,14 +253,14 @@ export function registerTools(server: any, db: Database): void {
     "create_warrant",
     {
       title: "Create Warrant",
-      description: "Record an inference rule linking a claim to its supporting grounds.",
+      description: ELEMENTS.warrant.description,
       inputSchema: {
-        claim_id: z.number().describe("The claim this warrant supports"),
-        content: z.string().describe("The inference rule content"),
-        ground_ids: z.array(z.number()).optional().describe("Ground IDs to associate"),
+        claim_id: z.number().describe(ELEMENTS.warrant.claimId),
+        content: z.string().describe(ELEMENTS.warrant.content),
+        ground_ids: z.array(z.number()).optional().describe(ELEMENTS.warrant.groundIds),
       },
     },
-    async ({ claim_id, content, ground_ids }: { claim_id: number; content: string; ground_ids?: number[] }) => {
+    withLog("create_warrant", async ({ claim_id, content, ground_ids }: { claim_id: number; content: string; ground_ids?: number[] }) => {
       try {
         const warrant = service.createWarrant(db, { content, claimId: claim_id, groundIds: ground_ids });
         return {
@@ -244,7 +269,7 @@ export function registerTools(server: any, db: Database): void {
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
       }
-    }
+    })
   );
 
   // ===========================================================================
@@ -254,14 +279,14 @@ export function registerTools(server: any, db: Database): void {
     "create_backing",
     {
       title: "Create Backing",
-      description: "Record support for a warrant's credibility.",
+      description: ELEMENTS.backing.description,
       inputSchema: {
-        warrant_id: z.number().describe("The warrant this backing supports"),
-        content: z.string().describe("Backing content"),
+        warrant_id: z.number().describe(ELEMENTS.backing.warrantId),
+        content: z.string().describe(ELEMENTS.backing.content),
         attachments: z.array(z.string()).optional().describe("Attachment file paths"),
       },
     },
-    async ({ warrant_id, content, attachments }: { warrant_id: number; content: string; attachments?: string[] }) => {
+    withLog("create_backing", async ({ warrant_id, content, attachments }: { warrant_id: number; content: string; attachments?: string[] }) => {
       try {
         const backing = service.createBacking(db, { content, warrantId: warrant_id, attachments });
         return {
@@ -270,51 +295,25 @@ export function registerTools(server: any, db: Database): void {
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
       }
-    }
+    })
   );
 
   // ===========================================================================
-  // 5. create_qualifier
-  // ===========================================================================
-  server.registerTool(
-    "create_qualifier",
-    {
-      title: "Create Qualifier",
-      description: "Record the scope/conditions under which a claim applies.",
-      inputSchema: {
-        claim_id: z.number().describe("The claim this qualifier limits"),
-        content: z.string().describe("Qualifier content"),
-        attachments: z.array(z.string()).optional().describe("Attachment file paths"),
-      },
-    },
-    async ({ claim_id, content, attachments }: { claim_id: number; content: string; attachments?: string[] }) => {
-      try {
-        const qualifier = service.createQualifier(db, { content, claimId: claim_id, attachments });
-        return {
-          content: [{ type: "text", text: `Created qualifier #${qualifier.id}: ${qualifier.content}` }],
-        };
-      } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
-      }
-    }
-  );
-
-  // ===========================================================================
-  // 6. create_rebuttal
+  // 5. create_rebuttal
   // ===========================================================================
   server.registerTool(
     "create_rebuttal",
     {
       title: "Create Rebuttal",
-      description: "Record conditions that would invalidate a claim or warrant.",
+      description: ELEMENTS.rebuttal.description,
       inputSchema: {
-        target_id: z.number().describe("ID of the claim or warrant being rebutted"),
-        target_type: z.enum(["claim", "warrant"]).describe("Type of the target node"),
-        content: z.string().describe("Rebuttal condition content"),
+        target_id: z.number().describe(ELEMENTS.rebuttal.targetId),
+        target_type: z.enum(["claim", "warrant"]).describe(ELEMENTS.rebuttal.targetType),
+        content: z.string().describe(ELEMENTS.rebuttal.content),
         attachments: z.array(z.string()).optional().describe("Attachment file paths"),
       },
     },
-    async ({ target_id, target_type, content, attachments }: { target_id: number; target_type: "claim" | "warrant"; content: string; attachments?: string[] }) => {
+    withLog("create_rebuttal", async ({ target_id, target_type, content, attachments }: { target_id: number; target_type: "claim" | "warrant"; content: string; attachments?: string[] }) => {
       try {
         const rebuttal = service.createRebuttal(db, { content, targetId: target_id, targetType: target_type, attachments });
         return {
@@ -323,11 +322,11 @@ export function registerTools(server: any, db: Database): void {
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
       }
-    }
+    })
   );
 
   // ===========================================================================
-  // 7. list_claims
+  // 6. list_claims
   // ===========================================================================
   server.registerTool(
     "list_claims",
@@ -338,7 +337,7 @@ export function registerTools(server: any, db: Database): void {
         status: z.string().optional().describe("Filter by status (comma-separated: proposed,supported,validated)"),
       },
     },
-    async ({ status }: { status?: string }) => {
+    withLog("list_claims", async ({ status }: { status?: string }) => {
       try {
         const claims = service.listClaims(db, status);
         if (claims.length === 0) {
@@ -349,11 +348,11 @@ export function registerTools(server: any, db: Database): void {
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
       }
-    }
+    })
   );
 
   // ===========================================================================
-  // 8. get_argument
+  // 7. get_argument
   // ===========================================================================
   server.registerTool(
     "get_argument",
@@ -364,18 +363,18 @@ export function registerTools(server: any, db: Database): void {
         node_id: z.number().describe("Any node ID"),
       },
     },
-    async ({ node_id }: { node_id: number }) => {
+    withLog("get_argument", async ({ node_id }: { node_id: number }) => {
       try {
         const result = service.getArgument(db, node_id);
         return { content: [{ type: "text", text: formatArgument(result) }] };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
       }
-    }
+    })
   );
 
   // ===========================================================================
-  // 9. search_nodes
+  // 8. search_nodes
   // ===========================================================================
   server.registerTool(
     "search_nodes",
@@ -384,10 +383,10 @@ export function registerTools(server: any, db: Database): void {
       description: "Search nodes by keyword, optionally filtered by type.",
       inputSchema: {
         keyword: z.string().describe("Search keyword"),
-        node_type: z.enum(["claim", "ground", "warrant", "backing", "qualifier", "rebuttal"]).optional().describe("Filter by node type"),
+        node_type: z.enum(["claim", "ground", "warrant", "backing", "rebuttal"]).optional().describe("Filter by node type"),
       },
     },
-    async ({ keyword, node_type }: { keyword: string; node_type?: string }) => {
+    withLog("search_nodes", async ({ keyword, node_type }: { keyword: string; node_type?: string }) => {
       try {
         const results = service.searchNodesService(db, keyword, node_type);
         if (results.length === 0) {
@@ -398,11 +397,11 @@ export function registerTools(server: any, db: Database): void {
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
       }
-    }
+    })
   );
 
   // ===========================================================================
-  // 10. get_stats
+  // 9. get_stats
   // ===========================================================================
   server.registerTool(
     "get_stats",
@@ -411,38 +410,39 @@ export function registerTools(server: any, db: Database): void {
       description: "Get global argumentation statistics.",
       inputSchema: {},
     },
-    async () => {
+    withLog("get_stats", async () => {
       try {
         const stats = service.getStats(db);
         return { content: [{ type: "text", text: formatStats(stats) }] };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
       }
-    }
+    })
   );
 
   // ===========================================================================
-  // 11. update_node
+  // 10. update_node
   // ===========================================================================
   server.registerTool(
     "update_node",
     {
       title: "Update Node",
-      description: "Update a node's content, status, or relationships.",
+      description: "Update a node's content, status, verification, or relationships.",
       inputSchema: {
         node_id: z.number().describe("Node ID to update"),
         content: z.string().optional().describe("New content"),
-        attachments: z.array(z.string()).optional().describe("New attachments"),
-        status: z.enum(["proposed", "supported", "validated", "disputed", "refuted"]).optional().describe("Claim status"),
+        attachments: z.array(z.string()).optional().describe("New attachment file paths"),
+        status: z.enum(["proposed", "supported", "validated", "disputed", "refuted"]).optional().describe("Claim status: tracks argumentation progress"),
         source: z.enum(["literature", "observed", "hypothesis"]).optional().describe("Ground source"),
-        verification: z.enum(["verified", "pending"]).optional().describe("Ground verification"),
+        verification: z.enum(["verified", "pending"]).optional().describe("Ground verification status"),
         ground_ids: z.object({
           add: z.array(z.number()).optional(),
           remove: z.array(z.number()).optional(),
         }).optional().describe("Warrant ground_ids incremental update"),
+        qualifier: z.string().optional().describe("Claim qualifier: degree of certainty ('probably', 'presumably', 'certainly')"),
       },
     },
-    async (opts: any) => {
+    withLog("update_node", async (opts: any) => {
       try {
         const updated = service.updateNode(db, opts.node_id, {
           content: opts.content,
@@ -451,6 +451,7 @@ export function registerTools(server: any, db: Database): void {
           source: opts.source,
           verification: opts.verification,
           ground_ids: opts.ground_ids,
+          qualifier: opts.qualifier,
         });
         return {
           content: [{ type: "text", text: `Updated ${formatNode(updated)}` }],
@@ -458,29 +459,33 @@ export function registerTools(server: any, db: Database): void {
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
       }
-    }
+    })
   );
 
   // ===========================================================================
-  // 12. delete_node
+  // 11. delete_node
   // ===========================================================================
   server.registerTool(
     "delete_node",
     {
       title: "Delete Node",
-      description: "Delete a node. Claim deletion requires cascade=true.",
+      description: "Delete a node. Deleting Ground/Warrant auto-cleans references and returns warnings. Claim deletion requires cascade=true.",
       inputSchema: {
         node_id: z.number().describe("Node ID to delete"),
         cascade: z.boolean().optional().default(false).describe("Recursively delete child nodes (required for Claims)"),
       },
     },
-    async ({ node_id, cascade }: { node_id: number; cascade?: boolean }) => {
+    withLog("delete_node", async ({ node_id, cascade }: { node_id: number; cascade?: boolean }) => {
       try {
-        service.deleteNode(db, node_id, cascade);
-        return { content: [{ type: "text", text: `Deleted node #${node_id}` }] };
+        const warnings = service.deleteNode(db, node_id, cascade);
+        let text = `Deleted node #${node_id}`;
+        if (warnings.length > 0) {
+          text += "\n\n" + warnings.join("\n");
+        }
+        return { content: [{ type: "text", text }] };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
       }
-    }
+    })
   );
 }

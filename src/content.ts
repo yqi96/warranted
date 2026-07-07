@@ -29,10 +29,14 @@ export const ELEMENTS = {
       "A ground must be independent of the claim. " +
       "Example: 'I was born in Bermuda.'",
     content: [
-      "State a fact or result — not a methodology.",
+      "A Ground must be a research RESULT — what was found, observed, produced, or discovered.",
+      "It is NOT a description of data availability, input datasets, or methodology.",
+      "Wrong: 'This database contains N records available at X' (data availability statement — not a result).",
       "Wrong: 'We used regression analysis' (methodology — belongs in Backing).",
       "Right: 'The temperature increased by 2°C over the past century' (an observed result).",
+      "Right: 'Method A outperforms Method B on metric X' (a research finding).",
       "Right (hypothesis): 'The treatment group will show improved outcomes' (an expected result).",
+      "Test: Does this state what was FOUND/PRODUCED, or what was USED/AVAILABLE? Only the former is a Ground.",
     ].join(" "),
     source: "Evidence source: 'observed' (independently produced), 'hypothesis' (to be verified), or 'literature' (from published work).",
     verification: "Has this evidence been independently verified?",
@@ -98,6 +102,14 @@ export const HINTS = {
     "Hint: This is a hypothesis to verify. Verification work requires documentation: " +
     "a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this ground — explaining what the ground states and how evidence was produced, plus supporting files. " +
     "Without these, the Ground cannot pass acceptance.",
+
+  reviewDispatched:
+    "Hint: An async review has been dispatched to verify the reasoning chain. " +
+    "Results will be available on the next tool call.",
+
+  groundReviewDispatched:
+    "Hint: An async review has been dispatched to verify the ground's evidence. " +
+    "Results will be available on the next tool call.",
 } as const;
 
 // =============================================================================

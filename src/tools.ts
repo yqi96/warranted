@@ -20,6 +20,9 @@ import {
 import type { ArgumentResult, Stats, ToulminNode } from "./types.ts";
 import { log, summarizeInput, summarizeOutput } from "./logger.ts";
 import { ELEMENTS, HINTS, WARNINGS } from "./content.ts";
+import type { ReviewConfig } from "./review-config.ts";
+import { executeArgumentReview, executeGroundReview } from "./review-sync.ts";
+import { detectConnectedChain } from "./service.ts";
 
 // =============================================================================
 // 辅助函数
@@ -33,6 +36,28 @@ function formatError(e: unknown): string {
     return `Error: ${e.message}`;
   }
   return `Unknown error: ${String(e)}`;
+}
+
+function formatReviewResult(title: string, result: { verdict: string; summary: string; issues: Array<{ severity: string; element?: string; nodeId?: number; message: string }> }): string {
+  const lines = [`## ${title}`, `Verdict: ${result.verdict}`, ``, result.summary];
+  
+  if (result.issues.length > 0) {
+    lines.push("", "Issues:");
+    for (const issue of result.issues) {
+      const prefix = issue.severity === "major" ? "⚠️" : issue.severity === "minor" ? "⚡" : "ℹ️";
+      const elementInfo = issue.element ? ` [${issue.element}]` : "";
+      const nodeInfo = issue.nodeId ? ` #${issue.nodeId}` : "";
+      lines.push(`  ${prefix}${elementInfo}${nodeInfo}: ${issue.message}`);
+    }
+    
+    // 明确要求修复或撤回
+    lines.push(
+      "",
+      "**CRITICAL**: The status update has been applied, but the issues above MUST be resolved immediately. You are required to either fix all identified problems or revert the status change. Do not proceed with other tasks until this is addressed."
+    );
+  }
+  
+  return lines.join("\n");
 }
 
 function formatNode(node: ToulminNode): string {
@@ -156,31 +181,33 @@ function formatStats(stats: Stats): string {
 
 type ToolHandler = (input: any) => Promise<{ content: { type: string; text: string }[] }>;
 
-/** 包装 handler，自动记录工具名、输入、结果摘要和耗时 */
-function withLog(toolName: string, handler: ToolHandler): ToolHandler {
-  return async (input: any) => {
-    const start = Date.now();
-    const inputSummary = summarizeInput(input ?? {});
-    try {
-      const result = await handler(input);
-      const ms = Date.now() - start;
-      const text = result.content?.[0]?.text ?? "";
-      const status = text.startsWith("Error:") ? "ERR" : "OK ";
-      log(toolName, status as "OK" | "ERR", ms, `${inputSummary} → ${summarizeOutput(text)}`);
-      return result;
-    } catch (e) {
-      const ms = Date.now() - start;
-      log(toolName, "ERR", ms, `${inputSummary} → ${String(e)}`);
-      throw e;
-    }
-  };
-}
-
 // =============================================================================
 // 工具注册
 // =============================================================================
 
-export function registerTools(server: any, db: Database): void {
+export function registerTools(server: any, db: Database, reviewConfig: ReviewConfig | null = null): void {
+
+  /** 包装 handler，自动记录工具名、输入、结果摘要和耗时，并注入审查通知 */
+  function withLog(toolName: string, handler: ToolHandler): ToolHandler {
+    return async (input: any) => {
+      const start = Date.now();
+      const inputSummary = summarizeInput(input ?? {});
+      try {
+        const result = await handler(input);
+        const ms = Date.now() - start;
+        let text = result.content?.[0]?.text ?? "";
+        const status = text.startsWith("Error:") ? "ERR" : "OK ";
+
+
+        log(toolName, status as "OK" | "ERR", ms, `${inputSummary} → ${summarizeOutput(text)}`);
+        return { content: [{ type: "text", text }] };
+      } catch (e) {
+        const ms = Date.now() - start;
+        log(toolName, "ERR", ms, `${inputSummary} → ${String(e)}`);
+        throw e;
+      }
+    };
+  }
   // ===========================================================================
   // 1. create_claim
   // ===========================================================================
@@ -237,6 +264,19 @@ export function registerTools(server: any, db: Database): void {
         if (opts.verification === "pending") {
           lines.push("", HINTS.groundPending);
         }
+
+        // 直接创建为 verified: 执行证据审查
+        if (reviewConfig && opts.verification === "verified") {
+          try {
+            const reviewResult = await executeGroundReview(reviewConfig, db, ground.id);
+            if (reviewResult) {
+              lines.push("", formatReviewResult("Ground Evidence Review", reviewResult));
+            }
+          } catch {
+            // 审查失败不影响主流程
+          }
+        }
+
         return {
           content: [{ type: "text", text: lines.join("\n") }],
         };
@@ -263,8 +303,31 @@ export function registerTools(server: any, db: Database): void {
     withLog("create_warrant", async ({ claim_id, content, ground_ids }: { claim_id: number; content: string; ground_ids?: number[] }) => {
       try {
         const warrant = service.createWarrant(db, { content, claimId: claim_id, groundIds: ground_ids });
+        const lines = [`Created warrant #${warrant.id}: ${warrant.content}`];
+
+        // 执行推理链审查
+        if (reviewConfig) {
+          try {
+            const chain = detectConnectedChain(db, warrant.id);
+            if (chain) {
+              const reviewResult = await executeArgumentReview(
+                reviewConfig,
+                db,
+                chain.claimId,
+                chain.warrantId,
+                chain.groundIds
+              );
+              if (reviewResult) {
+                lines.push("", formatReviewResult("Argument Review", reviewResult));
+              }
+            }
+          } catch {
+            // 审查失败不影响主流程
+          }
+        }
+
         return {
-          content: [{ type: "text", text: `Created warrant #${warrant.id}: ${warrant.content}` }],
+          content: [{ type: "text", text: lines.join("\n") }],
         };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
@@ -457,6 +520,39 @@ export function registerTools(server: any, db: Database): void {
         if (warnings.length > 0) {
           text += "\n\n" + warnings.join("\n");
         }
+
+        // 执行审查
+        if (reviewConfig) {
+          try {
+            // Ground verification → verified: 执行证据审查
+            if (node.type === "ground" && opts.verification === "verified") {
+              const reviewResult = await executeGroundReview(reviewConfig, db, node.id);
+              if (reviewResult) {
+                text += "\n\n" + formatReviewResult("Ground Evidence Review", reviewResult);
+              }
+            }
+
+            // Warrant ground_ids.add: 检查链路连通
+            if (node.type === "warrant" && opts.ground_ids?.add) {
+              const chain = detectConnectedChain(db, node.id);
+              if (chain) {
+                const reviewResult = await executeArgumentReview(
+                  reviewConfig,
+                  db,
+                  chain.claimId,
+                  chain.warrantId,
+                  chain.groundIds
+                );
+                if (reviewResult) {
+                  text += "\n\n" + formatReviewResult("Argument Review", reviewResult);
+                }
+              }
+            }
+          } catch {
+            // 审查失败不影响主流程
+          }
+        }
+
         return {
           content: [{ type: "text", text }],
         };

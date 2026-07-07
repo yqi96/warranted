@@ -6,7 +6,7 @@
  * 通过 stdio 与 Agent 通信。
  *
  * Usage:
- *   bun src/index.ts [--db-path ./toulmin.db]
+ *   bun src/index.ts [--db-path ./toulmin.db] [--review-config ./review.json]
  *
  * 默认数据库路径：.toulmin/argument.db（项目目录下，支持跨 Session 恢复）
  */
@@ -16,6 +16,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { openDatabase } from "./db.ts";
 import { registerTools } from "./tools.ts";
 import { initLogger } from "./logger.ts";
+import { loadReviewConfig } from "./review-config.ts";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
 
@@ -25,18 +26,22 @@ import { dirname } from "path";
 
 const DEFAULT_DB_PATH = ".toulmin/argument.db";
 
-function parseArgs(): { dbPath: string } {
+function parseArgs(): { dbPath: string; reviewConfigPath: string | null } {
   const args = process.argv.slice(2);
   let dbPath = DEFAULT_DB_PATH;
+  let reviewConfigPath: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--db-path" && args[i + 1]) {
       dbPath = args[i + 1];
       i++;
+    } else if (args[i] === "--review-config" && args[i + 1]) {
+      reviewConfigPath = args[i + 1];
+      i++;
     }
   }
 
-  return { dbPath };
+  return { dbPath, reviewConfigPath };
 }
 
 // =============================================================================
@@ -44,7 +49,7 @@ function parseArgs(): { dbPath: string } {
 // =============================================================================
 
 async function main() {
-  const { dbPath } = parseArgs();
+  const { dbPath, reviewConfigPath } = parseArgs();
 
   // 确保数据库目录存在（文件数据库时）
   if (dbPath !== ":memory:") {
@@ -69,8 +74,16 @@ async function main() {
     version: "0.1.0",
   });
 
+  // 加载审查配置
+  const reviewConfig = loadReviewConfig(reviewConfigPath, dbPath);
+  if (reviewConfig) {
+    console.error(`[Toulmin MCP] Async review enabled (model: ${reviewConfig.model})`);
+  } else {
+    console.error("[Toulmin MCP] Async review disabled");
+  }
+
   // 注册工具
-  registerTools(server, db);
+  registerTools(server, db, reviewConfig);
   console.error("[Toulmin MCP] 12 tools registered");
 
   // 连接 stdio transport

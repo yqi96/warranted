@@ -23,7 +23,9 @@ After finding one problem, check the entire graph for the same type of problem.
 ## Element Roles
 
 Map each element by its *logical role*, not surface form. Detailed definitions are in the tool descriptions.
-**Core chain (3):** Claim (conclusion) → Ground (independent evidence) → Warrant (inference principle). This is the backbone — without all three, there is no argument.
+**Core chain (3):** Claim (conclusion) → Ground (research result) → Warrant (inference principle). This is the backbone — without all three, there is no argument.
+
+**Ground** must be a research RESULT — what was found, observed, or produced. NOT a data availability statement, input dataset description, or methodology. Ask: "Is this a finding, or just a resource?" Only findings are Grounds.
 
 **Supporting elements (2):** Backing (supports Warrant), Rebuttal (challenges Claim or Warrant).
 

@@ -140,7 +140,7 @@ function assertNodeType(row: NodeRow, expectedType: string): void {
 // =============================================================================
 
 /** 查找引用某 Ground 的所有 Warrants */
-function findWarrantsUsingGround(db: Database, groundId: number): NodeRow[] {
+export function findWarrantsUsingGround(db: Database, groundId: number): NodeRow[] {
   const allWarrants = repo.listNodesByType(db, "warrant");
   return allWarrants.filter(w => {
     const wData = JSON.parse(w.data);
@@ -158,6 +158,36 @@ function hasRebuttals(db: Database, claimId: number): boolean {
     if (warrantRebuttals.length > 0) return true;
   }
   return false;
+}
+
+/**
+ * 检测 Warrant 是否形成完整的推理链（Claim → Warrant → Ground）。
+ * 返回链路数据（供审查 agent 使用），或 null（链路不完整）。
+ */
+export function detectConnectedChain(
+  db: Database,
+  warrantId: number
+): { claimId: number; warrantId: number; groundIds: number[] } | null {
+  const wRow = repo.getNodeById(db, warrantId);
+  if (!wRow || wRow.type !== "warrant") return null;
+
+  const wData = JSON.parse(wRow.data);
+  const claimId: number = wData.claim_id;
+  const groundIds: number[] = wData.ground_ids || [];
+
+  // 链路不完整：无 Ground 或无 Claim
+  if (groundIds.length === 0 || !claimId) return null;
+
+  const claimRow = repo.getNodeById(db, claimId);
+  if (!claimRow || claimRow.type !== "claim") return null;
+
+  // 验证所有 Ground 存在
+  for (const gid of groundIds) {
+    const gRow = repo.getNodeById(db, gid);
+    if (!gRow || gRow.type !== "ground") return null;
+  }
+
+  return { claimId, warrantId, groundIds };
 }
 
 /** 检测链式推理循环：检查从 startId 出发沿现有链是否能到达 targetId */

@@ -5,6 +5,10 @@ description: Build and verify an independent argument graph to assess whether a 
 
 Build a sound argument first; execution only judges whether the argument holds.
 
+## Goal
+
+Verify whether the paper's claims are correct — nothing more, nothing less. Maintain strict neutrality throughout: a confirmed claim and a refuted claim are equally valid scientific outcomes. Approach the work with an objective perspective, free from any preference for a particular result. Problems encountered, dead ends reached, and failures along the way are part of the record — document them honestly, without sugarcoating.
+
 ## Two phases, one priority
 
 **Phase 1 (Extract)** is the scientific thinking chain. It maps the paper's logical structure: what is claimed, what evidence the paper appeals to, and whether the inference from evidence to conclusion is sound. This is the primary scientific work — do not rush it to get to coding.
@@ -24,6 +28,8 @@ Read the paper and extract its argument structure. Nothing is accepted yet — e
 5. **Rebuttal** (if any): What exceptions does the paper acknowledge? → `create_rebuttal`
 
 > **Chained reasoning**: When a sub-Claim serves as evidence for another Claim, use `create_ground(ref_claim_id=sub-Claim.id)`.
+
+6. **Plan verification**: Step back and look at the graph as a whole. Determine dependency order (if Claim B depends on sub-Claim A, verify A first). For each Ground, check whether you understand what kind of evidence would confirm or refute it — if not, go back and clarify. Articulate what result would support the Claim and what would refute it, before running anything. This is not a one-shot gate — revisit these questions after each Ground you verify. New results may change how you approach the rest.
 
 ### What to write in a Phase 1 Ground
 
@@ -52,7 +58,11 @@ hypothesis + pending
 ```
 
 - Reproducible → `update_node(source="observed", verification="verified", attachments=[...])`
-- Cannot verify (data unavailable, method opaque, results diverge) → keep `hypothesis + pending`. Write a description document explaining what prevented verification. Honest documentation of a failed reproduction is a valid scientific outcome.
+- Cannot verify → keep `hypothesis + pending`. Document what blocked you and why. Honest accounting of a dead end is a valid scientific outcome.
+
+### The description document
+
+Every Ground — whether verified or stuck — gets a description document. Its purpose is reproducibility of *your own work*: someone else (or future you) should be able to read it and understand what you did, what happened, and why you reached your judgment. Write it for that audience. There is no fixed template — include what matters: data sources, scripts, results, obstacles, reasoning. Omit what doesn't. The description document has no fixed location — place it in the script's directory, a sibling directory, or wherever fits your workspace. What matters is that a reader can find it by looking near the code.
 
 **Claim adjudication after verifying its Grounds:**
 
@@ -81,10 +91,24 @@ If the paper produced it, **DO NOT USE IT** — go reproduce it independently in
 1. `get_stats` — check overall progress
 2. `get_argument(claim_id)` — inspect each Claim's full argument chain
 3. Check for orphan nodes: Claims without Warrants, Warrants without Grounds
-4. Confirm all Claim statuses are adjudicated
+4. Confirm all Claims are assessed — judge, don't modify
+5. Read through your description documents — do they tell a coherent story? If a document is vague or hand-wavy, the verification behind it probably was too.
+
+## When things don't work out
+
+Reproduction is hard. These are common situations and how to think about them:
+
+- **Data unavailable**: Try to find equivalent public data. If none exists, the Ground stays `pending` — but explain specifically what data gap blocks you, not just "data not available."
+- **Method description is vague**: Make a reasonable interpretation, document your assumption, and run with it. Note in the description document that the result is assumption-dependent. This is information, not failure.
+- **Results diverge from the paper**: This is the interesting case. Don't assume you made a mistake — but do check your work carefully. If the divergence is real, the Claim moves toward `disputed`. Record the discrepancy quantitatively.
+- **Computationally infeasible**: Scale down if a smaller experiment still tests the same Ground. If it doesn't, document why and leave it `pending`.
+
+The key principle: **every outcome is data**. A failed reproduction with a clear explanation is more valuable than a suspicious success.
 
 ## Checklist
 
-- [ ] Every `verified` Ground has attachments and a description document
-- [ ] Unverifiable Grounds remain `hypothesis + pending` with documented reasons
-- [ ] All Claim statuses are adjudicated
+- [ ] Every `verified` Ground has attachments and a description document (located near the script — same directory or sibling)
+- [ ] Every `pending` Ground has a description document explaining what blocks it
+- [ ] All Claims assessed — judge the author's claims, don't modify them
+- [ ] Description documents are specific enough for someone to follow your reasoning
+- [ ] No author-produced results were used as verification evidence

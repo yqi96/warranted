@@ -64,7 +64,7 @@ hypothesis + pending
 
 Every Ground — whether verified or stuck — gets a description document. Its purpose is reproducibility of *your own work*: someone else (or future you) should be able to read it and understand what you did, what happened, and why you reached your judgment. Write it for that audience. There is no fixed template — include what matters: data sources, scripts, results, obstacles, reasoning. Omit what doesn't. The description document has no fixed location — place it in the script's directory, a sibling directory, or wherever fits your workspace. What matters is that a reader can find it by looking near the code.
 
-**Claim adjudication after verifying its Grounds:**
+**Assessing Claims after verifying their Grounds:**
 
 | Evidence state | Action |
 |---|---|

@@ -39,7 +39,7 @@ function formatError(e: unknown): string {
 }
 
 function formatReviewResult(title: string, result: { verdict: string; summary: string; issues: Array<{ severity: string; element?: string; nodeId?: number; message: string }> }): string {
-  const lines = [`## ${title}`, `Verdict: ${result.verdict}`, ``, result.summary];
+  const lines = [`## ${title}`];
   
   if (result.issues.length > 0) {
     lines.push("", "Issues:");

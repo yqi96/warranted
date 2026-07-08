@@ -24,44 +24,7 @@ If you cannot answer this, you are drifting.
 **THE TOULMIN GRAPH WORK IS MUCH MUCH MUCH MORE IMPORTANT THAN THE CODE EXECUTION**
 **ANY TASK that is not derived from the argument graph, or is not aimed at expanding or refining the argument graph, is ILLEGAL.**
 
-### Writing to the graph
-
-Every scientific action maps to a graph operation. There is no scientific action that falls outside this table.
-
-| Action | Graph operation |
-|---|---|
-| Observe a measurement or pattern | `create_ground(source="observed")` |
-| Formulate a hypothesis | `create_claim` + `create_ground(source="hypothesis")` |
-| Find supporting literature | `create_ground(source="literature")` or `create_backing` |
-| Articulate why evidence supports a conclusion | `create_warrant` |
-| Run a verification — result obtained | `update_node(verification="verified", attachments=[...])` |
-| Run a verification — result unobtainable or diverges | keep `pending`; document the reason |
-| Discover a contradiction or exception | `create_rebuttal` |
-| Evidence accumulates sufficiently for a conclusion | `update_node(status="supported")` |
-| Evidence contradicts the claim | `update_node(status="disputed")` |
-| Unexpected result generates a new insight | `create_claim` (new claim, possibly linked via `ref_claim_id`) |
-
-Commit each of these immediately — not batched at the end. Prefer many small commits over a few large ones.
-
-### Reading the graph to decide what to do next
-
-After any commit, read the graph state. It tells you what science remains:
-
-- **Claim has no Warrant** → what inference principle licenses this conclusion? Articulate it.
-- **Claim has no Ground** → what evidence would support it? Design the verification.
-- **Pending Ground** → what data, computation, or observation would confirm or refute it? Run it.
-- **Warrant reads as if-then** ("If [Ground] then [Claim]") → what general principle does this instantiate? Rewrite it.
-- **Ground describes data or method, not a result** → what was actually found? Rewrite as a finding.
-- **Contradictory evidence** → does this invalidate the Claim, or only limit its scope? Add Rebuttal; adjust Qualifier if needed.
-- **Unexpected result** → does this generate a new Claim? Create it and link the evidence.
-
-After resolving one issue, scan the entire graph for the same type of problem.
-
-### On exploration
-
-Science does not always begin with a fully formed argument. Exploratory work generates observations before their argumentative role is clear. This is fine — commit those observations as hypothesis Grounds, even if no Claim has been formed yet. The argument structure becomes visible as evidence accumulates. The graph holds the work; the structure emerges from it.
-
-## Element Roles
+### Element Roles
 
 Map each element by its *logical role*, not surface form. Detailed definitions are in the tool descriptions.
 
@@ -90,19 +53,44 @@ Right (hypothesis): "Method X applied to dataset Y yields a warming trend exceed
 
 **Qualifier** — a Claim attribute expressing degree of certainty. Set via `create_claim(qualifier=...)` or `update_node(qualifier=...)`.
 
+### Writing to the graph
+
+Every scientific action maps to a graph operation. There is no scientific action that falls outside this table.
+
+| Action | Graph operation |
+|---|---|
+| Observe a measurement or pattern | `create_ground(source="observed")` |
+| Formulate a hypothesis | `create_claim` + `create_ground(source="hypothesis")` |
+| Find supporting literature | `create_ground(source="literature")` or `create_backing` |
+| Articulate why evidence supports a conclusion | `create_warrant` |
+| Run a verification — result obtained | `update_node(verification="verified", attachments=[...])` |
+| Run a verification — result unobtainable or diverges | keep `pending`; document the reason |
+| Discover a contradiction or exception | `create_rebuttal` |
+| Evidence accumulates sufficiently for a conclusion | `update_node(status="supported")` |
+| Evidence contradicts the claim | `update_node(status="disputed")` |
+| Unexpected result generates a new insight | `create_claim` (new claim, possibly linked via `ref_claim_id`) |
+
+Commit each of these immediately — not batched at the end. Prefer many small commits over a few large ones.
+
+### On exploration
+
+Science does not always begin with a fully formed argument. Exploratory work generates observations before their argumentative role is clear. This is fine — commit those observations as hypothesis Grounds, even if no Claim has been formed yet. The argument structure becomes visible as evidence accumulates. The graph holds the work; the structure emerges from it.
+
+## Tasks Are Derived, Not Invented
+
+Tasks do not come from impression, convenience, or a plan written before the argument existed. They are **read from the argument graph**. The current state of the graph — what is present, what is missing, what is unresolved — is the sole legitimate source of Tasks. Read the graph after every commit; the structural gaps you find are your next work.
+
+The core principle: **if you cannot point to a structural need in the graph that a Task addresses, that Task does not belong in the plan.**
+
+This principle is scale-independent. It applies whether you are examining a single Claim and its immediate neighborhood (its Grounds, Warrant, Backing, Rebuttals) or surveying the entire graph. At any scope, structural gaps reveal themselves as Tasks: a pending Ground implies a verification Task; a Claim without a Warrant implies a Task to articulate the inference principle; a contradiction without a Rebuttal implies a Task to analyze its scope. The work announces itself from the structure.
+
+The graph's dependency structure also determines priority: work upstream blocks work downstream. A pending Ground must be resolved before its Warrant can be evaluated; a Warrant must exist before its Claim can be assessed. So the graph dictates not only *what* to work on, but *when*.
+
+**The question is never "what should I do next?"** The question is always: **"What does the graph require that is not yet done?"** And conversely: the graph is complete when every structural need has a corresponding Task, and every such Task is resolved. After resolving one issue, scan for the same type of problem elsewhere.
+
 ## Workload and Rigor
 
 Large workloads are normal in scientific tasks; the user does not impose time limits on execution. When facing a complex multi-step task, use the Task lifecycle tools (TaskCreate / TaskUpdate) to break it into smaller Tasks and complete them incrementally. Workload is never a justification for skipping or simplifying any verification step.
 
 **Every detail specified by the active skill must be followed strictly.** Scientific rigor does not permit selective application of rules under execution pressure.
 
-## Graph Completeness Check
-
-After each major change, verify:
-1. Every Claim has at least one Warrant
-2. Every Warrant has at least one Ground
-3. Every Ground is referenced by at least one Warrant (no orphan Grounds)
-4. Every Warrant is a domain-general principle (not an if-then bridge)
-5. Every `pending` Ground has a stated verification target: what data, computation, or observation would confirm or refute it
-6. Contradictions have Rebuttals, not deletions
-7. Qualifiers reflect the actual evidential weight

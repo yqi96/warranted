@@ -27,7 +27,8 @@ describe("buildArgumentReviewPrompt", () => {
     expect(prompt).toContain("Ground");
     expect(prompt).toContain("#2");
     expect(prompt).toContain("方法A准确率95%");
-    expect(prompt).toContain("/data.csv");
+    // attachments 不包含在推理链审查 prompt 中（纯逻辑分析，不读文件）
+    expect(prompt).not.toContain("/data.csv");
   });
 
   test("包含 Qualifier", () => {

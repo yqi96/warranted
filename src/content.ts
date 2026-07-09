@@ -84,6 +84,16 @@ export const ELEMENTS = {
     targetId: "ID of the claim or warrant being rebutted.",
     targetType: "Type of the target node.",
   },
+
+  compile: {
+    description:
+      "Compile a claim — trigger a two-stage review of the argument chain. " +
+      "Stage 1: check each element (Claim/Warrant/Ground) follows Toulmin definitions. " +
+      "Stage 2: if Stage 1 passes, check overall logical chain coherence. " +
+      "If review passes, the claim gets 'compiled' status. " +
+      "If any node in the argument is later modified, compiled status is auto-cleared.",
+    claimId: "The claim ID to compile.",
+  },
 } as const;
 
 // =============================================================================
@@ -110,6 +120,15 @@ export const HINTS = {
   groundReviewDispatched:
     "Hint: An async review has been dispatched to verify the ground's evidence. " +
     "Results will be available on the next tool call.",
+
+  compileSuccess: (claimId: number) =>
+    `Hint: Claim #${claimId} compiled successfully. ` +
+    `If you modify any node in this argument, the compiled status will be auto-cleared ` +
+    `and you will be prompted to re-compile.`,
+
+  compileFailed: (claimId: number) =>
+    `Hint: Compile failed for Claim #${claimId}. ` +
+    `Please address the issues above and call compile again.`,
 } as const;
 
 // =============================================================================
@@ -141,4 +160,10 @@ export const WARNINGS = {
     `Warrants ${wids} reference this Ground. ` +
     `Claims depending on these Warrants may no longer satisfy the "supported" criteria. ` +
     `Please review whether the related Claims' status is still appropriate.`,
+
+  /** Compile 失效 */
+  compileInvalidated: (claimId: number, nodeId: number) =>
+    `Warning: Claim #${claimId}'s compiled status has been cleared ` +
+    `because node #${nodeId} in its argument chain was modified. ` +
+    `Re-compile Claim #${claimId} to re-verify the argument.`,
 } as const;

@@ -17,12 +17,13 @@ import {
   MutuallyExclusiveModeError,
   StatusTransitionError,
 } from "./errors.ts";
-import type { ArgumentResult, Stats, ToulminNode } from "./types.ts";
+import type { ArgumentResult, Stats, ToulminNode, CompileResult } from "./types.ts";
 import { log, summarizeInput, summarizeOutput } from "./logger.ts";
 import { ELEMENTS, HINTS, WARNINGS } from "./content.ts";
 import type { ReviewConfig } from "./review-config.ts";
 import { executeArgumentReview, executeGroundReview } from "./review-sync.ts";
 import { detectConnectedChain } from "./service.ts";
+import * as compileService from "./compile-service.ts";
 
 // =============================================================================
 // 辅助函数
@@ -172,6 +173,46 @@ function formatStats(stats: Stats): string {
   for (const [t, count] of Object.entries(stats.rebuttals.by_target_type)) {
     lines.push(`  - ${t}: ${count}`);
   }
+  return lines.join("\n");
+}
+
+function formatCompileResult(result: CompileResult): string {
+  const lines: string[] = [];
+  const verdictLabel = result.verdict === "passed" ? "PASSED" : "FAILED";
+  lines.push(`## Compile: Claim #${result.claimId}`);
+  lines.push("");
+  lines.push(`**Verdict**: ${verdictLabel}`);
+  lines.push(`**Summary**: ${result.summary}`);
+  lines.push("");
+
+  // Element review details
+  lines.push("### Review Details");
+  for (const r of result.elementReviews) {
+    const skippedLabel = r.skipped ? " (skipped — unchanged)" : "";
+    const nodeIdLabel = r.nodeId ? ` #${r.nodeId}` : "";
+    const verdictIcon = r.verdict === "pass" ? "PASS" : r.verdict === "fail" ? "FAIL" : "CONCERNS";
+    lines.push(`- **${r.reviewer}${nodeIdLabel}**: ${verdictIcon}${skippedLabel}`);
+    if (r.issues.length > 0 && !r.skipped) {
+      for (const issue of r.issues) {
+        const prefix = issue.severity === "major" ? "  - [major]" : issue.severity === "minor" ? "  - [minor]" : "  - [info]";
+        lines.push(`${prefix}: ${issue.message}`);
+      }
+    }
+  }
+
+  lines.push("");
+  lines.push(`---`);
+  lines.push(`Compiled at: ${result.compiledAt}`);
+  if (result.skippedCount > 0) {
+    lines.push(`Skipped ${result.skippedCount} of ${result.totalCount} reviewers (content unchanged since last compile).`);
+  }
+
+  if (result.verdict === "passed") {
+    lines.push("", HINTS.compileSuccess(result.claimId));
+  } else {
+    lines.push("", HINTS.compileFailed(result.claimId));
+  }
+
   return lines.join("\n");
 }
 
@@ -553,6 +594,12 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           }
         }
 
+        // Invalidate compiled status of affected claims
+        const compileWarnings = compileService.invalidateCompiledClaims(db, opts.node_id);
+        if (compileWarnings.length > 0) {
+          text += "\n\n" + compileWarnings.join("\n");
+        }
+
         return {
           content: [{ type: "text", text }],
         };
@@ -582,6 +629,37 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         if (warnings.length > 0) {
           text += "\n\n" + warnings.join("\n");
         }
+        // Invalidate compiled status of affected claims
+        const compileWarnings = compileService.invalidateCompiledClaims(db, node_id);
+        if (compileWarnings.length > 0) {
+          text += "\n\n" + compileWarnings.join("\n");
+        }
+        return { content: [{ type: "text", text }] };
+      } catch (e) {
+        return { content: [{ type: "text", text: formatError(e) }] };
+      }
+    })
+  );
+
+  // ===========================================================================
+  // 13. compile
+  // ===========================================================================
+  server.registerTool(
+    "compile",
+    {
+      title: "Compile Argument",
+      description: ELEMENTS.compile.description,
+      inputSchema: {
+        claim_id: z.number().describe(ELEMENTS.compile.claimId),
+      },
+    },
+    withLog("compile", async ({ claim_id }: { claim_id: number }) => {
+      try {
+        if (!reviewConfig) {
+          return { content: [{ type: "text", text: "Error: Review is not configured. Cannot compile. The --review-config flag is required." }] };
+        }
+        const result = await compileService.compileArgument(db, reviewConfig, claim_id);
+        const text = formatCompileResult(result);
         return { content: [{ type: "text", text }] };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };

@@ -5,7 +5,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import type { NodeRow, NodeType, NodeData } from "./types.ts";
+import type { NodeRow, NodeType, NodeData, CompileState } from "./types.ts";
 
 // =============================================================================
 // 基础 CRUD
@@ -197,6 +197,56 @@ export function removeGroundFromAllWarrants(db: Database, groundId: number): voi
       updateNodeFields(db, w.id, { data });
     }
   }
+}
+
+// =============================================================================
+// Compile 状态操作
+// =============================================================================
+
+/** 保存 compile 状态（INSERT OR REPLACE） */
+export function saveCompileState(
+  db: Database,
+  claimId: number,
+  verdict: string,
+  summary: string,
+  nodeHashes: Record<number, string>
+): void {
+  const now = new Date().toISOString().slice(0, 19);
+  const stmt = db.prepare(
+    "INSERT OR REPLACE INTO compile_state (claim_id, verdict, summary, node_hashes, created_at) VALUES (?, ?, ?, ?, ?)"
+  );
+  stmt.run(claimId, verdict, summary, JSON.stringify(nodeHashes), now);
+}
+
+/** 获取 compile 状态 */
+export function getCompileState(db: Database, claimId: number): CompileState | null {
+  const stmt = db.prepare("SELECT * FROM compile_state WHERE claim_id = ?");
+  const row = stmt.get(claimId) as { claim_id: number; verdict: string; summary: string; node_hashes: string; created_at: string } | null;
+  if (!row) return null;
+  return {
+    claimId: row.claim_id,
+    verdict: row.verdict as "passed" | "failed",
+    summary: row.summary,
+    nodeHashes: JSON.parse(row.node_hashes),
+    createdAt: row.created_at,
+  };
+}
+
+/** 删除 compile 状态 */
+export function deleteCompileState(db: Database, claimId: number): void {
+  const stmt = db.prepare("DELETE FROM compile_state WHERE claim_id = ?");
+  stmt.run(claimId);
+}
+
+/** 清除 ClaimData 中的 compiled/compiled_at 标志 */
+export function clearCompiledFlag(db: Database, claimId: number): void {
+  const row = getNodeById(db, claimId);
+  if (!row || row.type !== "claim") return;
+  const data = JSON.parse(row.data);
+  if (!data.compiled) return;
+  data.compiled = false;
+  delete data.compiled_at;
+  updateNodeFields(db, claimId, { data });
 }
 
 // =============================================================================

@@ -117,6 +117,8 @@ export type ToulminNode =
 export interface ClaimData {
   status: ClaimStatus;
   qualifier?: string | null;
+  compiled?: boolean;
+  compiled_at?: string;
 }
 
 export interface GroundData {
@@ -263,4 +265,47 @@ export interface NodeRow {
   data: string; // JSON string
   created_at: string;
   updated_at: string;
+}
+
+// =============================================================================
+// compile 相关类型
+// =============================================================================
+
+export const CompileVerdict = {
+  Passed: "passed",
+  Failed: "failed",
+} as const;
+
+export type CompileVerdict = (typeof CompileVerdict)[keyof typeof CompileVerdict];
+
+export interface CompileState {
+  claimId: number;
+  verdict: CompileVerdict;
+  summary: string;
+  nodeHashes: Record<number, string>; // { nodeId: sha256hash }
+  createdAt: string;
+}
+
+export interface ElementReviewResult {
+  reviewer: "claim" | "warrant" | "ground" | "chain";
+  nodeId?: number;
+  verdict: string;
+  summary: string;
+  issues: Array<{
+    severity: "major" | "minor" | "info";
+    element?: string;
+    nodeId?: number;
+    message: string;
+  }>;
+  skipped?: boolean;
+}
+
+export interface CompileResult {
+  claimId: number;
+  verdict: CompileVerdict;
+  summary: string;
+  elementReviews: ElementReviewResult[];
+  compiledAt: string;
+  skippedCount: number;
+  totalCount: number;
 }

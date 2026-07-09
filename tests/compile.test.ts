@@ -1,0 +1,294 @@
+/**
+ * Compile 功能测试
+ *
+ * 测试结构预检、哈希计算、失效逻辑、compile 状态持久化。
+ */
+
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import {
+  createTestDb,
+  cleanupDb,
+  makeClaim,
+  makeGround,
+  makeWarrant,
+  makeBacking,
+  makeRebuttal,
+  seedBasicArgument,
+} from "./helpers.ts";
+import { structuralPreCheck, findAffectedClaimIds, invalidateCompiledClaims } from "../src/compile-service.ts";
+import { computeNodeHash, loadArgumentContext } from "../src/compile-reviewers.ts";
+import * as repo from "../src/repo.ts";
+import type { Database } from "bun:sqlite";
+
+let db: Database;
+
+beforeEach(() => {
+  db = createTestDb();
+});
+
+afterEach(() => {
+  cleanupDb(db);
+});
+
+// =============================================================================
+// 结构预检
+// =============================================================================
+
+describe("structuralPreCheck", () => {
+  test("Claim 不存在时返回错误", () => {
+    const errors = structuralPreCheck(db, 999);
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("not found");
+  });
+
+  test("非 Claim 类型节点返回错误", () => {
+    const ground = makeGround(db);
+    const errors = structuralPreCheck(db, ground.id);
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("is not a Claim");
+  });
+
+  test("Claim 无 Warrant 时返回错误", () => {
+    const claim = makeClaim(db, "Test claim");
+    const errors = structuralPreCheck(db, claim.id);
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("no Warrants");
+  });
+
+  test("Warrant 无 Ground 时返回错误", () => {
+    const claim = makeClaim(db, "Test claim");
+    makeWarrant(db, claim.id, [], "Test warrant");
+    const errors = structuralPreCheck(db, claim.id);
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("no Grounds");
+  });
+
+  test("Warrant 引用不存在的 Ground 时返回错误", () => {
+    const claim = makeClaim(db, "Test claim");
+    // Manually create warrant with non-existent ground ID
+    const now = new Date().toISOString().slice(0, 19);
+    const data = JSON.stringify({ claim_id: claim.id, ground_ids: [999] });
+    db.prepare("INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('warrant', 'test', ?, ?, ?)").run(data, now, now);
+    const errors = structuralPreCheck(db, claim.id);
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("not found");
+  });
+
+  test("完整论证结构通过预检", () => {
+    const { claim } = seedBasicArgument(db);
+    const errors = structuralPreCheck(db, claim.id);
+    expect(errors.length).toBe(0);
+  });
+});
+
+// =============================================================================
+// 哈希计算
+// =============================================================================
+
+describe("computeNodeHash", () => {
+  test("相同内容产生相同哈希", () => {
+    const row = repo.getNodeById(db, makeClaim(db, "Hello").id)!;
+    const hash1 = computeNodeHash(row);
+    const hash2 = computeNodeHash(row);
+    expect(hash1).toBe(hash2);
+    expect(hash1.length).toBe(64); // SHA-256 hex
+  });
+
+  test("不同内容产生不同哈希", () => {
+    const row1 = repo.getNodeById(db, makeClaim(db, "Hello").id)!;
+    const row2 = repo.getNodeById(db, makeClaim(db, "World").id)!;
+    expect(computeNodeHash(row1)).not.toBe(computeNodeHash(row2));
+  });
+
+  test("content 修改后哈希变化", () => {
+    const claim = makeClaim(db, "Original");
+    const row1 = repo.getNodeById(db, claim.id)!;
+    const hash1 = computeNodeHash(row1);
+
+    repo.updateNodeFields(db, claim.id, { content: "Modified" });
+    const row2 = repo.getNodeById(db, claim.id)!;
+    const hash2 = computeNodeHash(row2);
+
+    expect(hash1).not.toBe(hash2);
+  });
+
+  test("data JSON 修改后哈希变化", () => {
+    const claim = makeClaim(db, "Same content");
+    const row1 = repo.getNodeById(db, claim.id)!;
+    const hash1 = computeNodeHash(row1);
+
+    const data = JSON.parse(row1.data);
+    data.qualifier = "probably";
+    repo.updateNodeFields(db, claim.id, { data });
+    const row2 = repo.getNodeById(db, claim.id)!;
+    const hash2 = computeNodeHash(row2);
+
+    expect(hash1).not.toBe(hash2);
+  });
+});
+
+// =============================================================================
+// Argument 上下文加载
+// =============================================================================
+
+describe("loadArgumentContext", () => {
+  test("加载完整论证子图", () => {
+    const { claim, ground1, ground2, warrant, backing } = seedBasicArgument(db);
+    const ctx = loadArgumentContext(db, claim.id);
+    expect(ctx).not.toBeNull();
+    expect(ctx!.claimRow.id).toBe(claim.id);
+    expect(ctx!.warrantRows.length).toBe(1);
+    expect(ctx!.warrantRows[0].id).toBe(warrant.id);
+    expect(ctx!.groundRows.length).toBe(2);
+    expect(ctx!.backingRows.length).toBe(1);
+    // 哈希数量 = claim + warrant + 2 grounds + backing = 5
+    expect(Object.keys(ctx!.currentHashes).length).toBe(5);
+  });
+
+  test("不存在的 Claim 返回 null", () => {
+    const ctx = loadArgumentContext(db, 999);
+    expect(ctx).toBeNull();
+  });
+});
+
+// =============================================================================
+// 失效管理：findAffectedClaimIds
+// =============================================================================
+
+describe("findAffectedClaimIds", () => {
+  test("修改 Claim 自身受影响", () => {
+    const { claim } = seedBasicArgument(db);
+    const affected = findAffectedClaimIds(db, claim.id);
+    expect(affected).toContain(claim.id);
+  });
+
+  test("修改 Warrant 影响其 Claim", () => {
+    const { claim, warrant } = seedBasicArgument(db);
+    const affected = findAffectedClaimIds(db, warrant.id);
+    expect(affected).toContain(claim.id);
+  });
+
+  test("修改 Ground 影响引用它的 Warrant 的 Claim", () => {
+    const { claim, ground1 } = seedBasicArgument(db);
+    const affected = findAffectedClaimIds(db, ground1.id);
+    expect(affected).toContain(claim.id);
+  });
+
+  test("修改 Backing 影响其 Warrant 的 Claim", () => {
+    const { claim, backing } = seedBasicArgument(db);
+    const affected = findAffectedClaimIds(db, backing.id);
+    expect(affected).toContain(claim.id);
+  });
+
+  test("修改 Rebuttal(target=claim) 影响 Claim", () => {
+    const { claim } = seedBasicArgument(db);
+    const rebuttal = makeRebuttal(db, claim.id, "claim", "Counter argument");
+    const affected = findAffectedClaimIds(db, rebuttal.id);
+    expect(affected).toContain(claim.id);
+  });
+
+  test("修改 Rebuttal(target=warrant) 影响 Claim", () => {
+    const { claim, warrant } = seedBasicArgument(db);
+    const rebuttal = makeRebuttal(db, warrant.id, "warrant", "Counter argument");
+    const affected = findAffectedClaimIds(db, rebuttal.id);
+    expect(affected).toContain(claim.id);
+  });
+});
+
+// =============================================================================
+// Compile 状态持久化
+// =============================================================================
+
+describe("compile_state CRUD", () => {
+  test("saveCompileState + getCompileState", () => {
+    const claim = makeClaim(db, "Test");
+    const hashes = { 1: "abc", 2: "def" };
+    repo.saveCompileState(db, claim.id, "passed", "All good", hashes);
+    const state = repo.getCompileState(db, claim.id);
+    expect(state).not.toBeNull();
+    expect(state!.claimId).toBe(claim.id);
+    expect(state!.verdict).toBe("passed");
+    expect(state!.summary).toBe("All good");
+    expect(state!.nodeHashes).toEqual(hashes);
+  });
+
+  test("getCompileState 不存在时返回 null", () => {
+    const state = repo.getCompileState(db, 999);
+    expect(state).toBeNull();
+  });
+
+  test("deleteCompileState 删除后查询为 null", () => {
+    const claim = makeClaim(db, "Test");
+    repo.saveCompileState(db, claim.id, "passed", "", {});
+    repo.deleteCompileState(db, claim.id);
+    expect(repo.getCompileState(db, claim.id)).toBeNull();
+  });
+
+  test("saveCompileState 覆盖更新（INSERT OR REPLACE）", () => {
+    const claim = makeClaim(db, "Test");
+    repo.saveCompileState(db, claim.id, "failed", "First", { 1: "old" });
+    repo.saveCompileState(db, claim.id, "passed", "Second", { 1: "new" });
+    const state = repo.getCompileState(db, claim.id);
+    expect(state!.verdict).toBe("passed");
+    expect(state!.summary).toBe("Second");
+    expect(state!.nodeHashes).toEqual({ 1: "new" });
+  });
+});
+
+// =============================================================================
+// invalidateCompiledClaims
+// =============================================================================
+
+describe("invalidateCompiledClaims", () => {
+  test("修改 compiled Claim 的节点后清除 compiled 状态", () => {
+    const { claim, ground1 } = seedBasicArgument(db);
+
+    // 手动设置 compiled = true
+    const claimRow = repo.getNodeById(db, claim.id)!;
+    const data = JSON.parse(claimRow.data);
+    data.compiled = true;
+    data.compiled_at = "2025-01-01T00:00:00";
+    repo.updateNodeFields(db, claim.id, { data });
+
+    // 保存 compile_state
+    repo.saveCompileState(db, claim.id, "passed", "OK", {});
+
+    // 修改 ground → 触发失效
+    const warnings = invalidateCompiledClaims(db, ground1.id);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain("compiled status has been cleared");
+
+    // 验证 compiled 标志已清除
+    const updatedClaim = repo.getNodeById(db, claim.id)!;
+    const updatedData = JSON.parse(updatedClaim.data);
+    expect(updatedData.compiled).toBe(false);
+
+    // 验证 compile_state 已删除
+    expect(repo.getCompileState(db, claim.id)).toBeNull();
+  });
+
+  test("修改非 compiled Claim 的节点后无警告", () => {
+    const { ground1 } = seedBasicArgument(db);
+    const warnings = invalidateCompiledClaims(db, ground1.id);
+    expect(warnings.length).toBe(0);
+  });
+
+  test("修改不相关节点不影响任何 Claim", () => {
+    const { claim } = seedBasicArgument(db);
+
+    // 设置 compiled
+    const claimRow = repo.getNodeById(db, claim.id)!;
+    const data = JSON.parse(claimRow.data);
+    data.compiled = true;
+    repo.updateNodeFields(db, claim.id, { data });
+
+    // 创建一个独立的 ground（不属于任何 warrant）
+    const orphanGround = makeGround(db, { content: "Orphan ground" });
+    const warnings = invalidateCompiledClaims(db, orphanGround.id);
+    expect(warnings.length).toBe(0);
+
+    // Claim 仍然 compiled
+    const updatedClaim = repo.getNodeById(db, claim.id)!;
+    expect(JSON.parse(updatedClaim.data).compiled).toBe(true);
+  });
+});

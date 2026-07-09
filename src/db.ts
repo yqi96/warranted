@@ -66,6 +66,14 @@ export function initializeSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_nodes_ground_ref_claim ON nodes(
       CAST(json_extract(data, '$.ref_claim_id') AS INTEGER)
     ) WHERE type = 'ground' AND json_extract(data, '$.ref_claim_id') IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS compile_state (
+      claim_id    INTEGER PRIMARY KEY,
+      verdict     TEXT    NOT NULL DEFAULT 'passed',
+      summary     TEXT    NOT NULL DEFAULT '',
+      node_hashes TEXT    NOT NULL DEFAULT '{}',
+      created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 }
 

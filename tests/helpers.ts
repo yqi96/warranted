@@ -240,3 +240,53 @@ export function seedBasicArgument(db: Database): SeedResult {
   );
   return { claim: updatedClaim, ground1, ground2, warrant, backing };
 }
+
+// =============================================================================
+// Compile / 自动验证辅助
+// =============================================================================
+
+/**
+ * 创建一个已 compiled 的 Claim（含 compile_state 记录）。
+ * 可选提供 argumentHash，否则使用 null。
+ */
+export function makeCompiledClaim(
+  db: Database,
+  content: string = "Compiled claim",
+  argumentHash?: string
+): ClaimNode {
+  const claim = makeClaim(db, content);
+  const now = new Date().toISOString().slice(0, 19);
+  // Set compiled=true in data
+  const data = JSON.parse(db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id)!.data);
+  data.compiled = true;
+  data.compiled_at = now;
+  db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(data), claim.id);
+  // Save compile_state
+  db.prepare(
+    "INSERT OR REPLACE INTO compile_state (claim_id, verdict, summary, node_hashes, argument_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(claim.id, "passed", "Test compiled claim", "{}", argumentHash ?? null, now);
+  return { ...claim, status: "proposed" };
+}
+
+/**
+ * 创建链式推理结构：parentClaim ← Warrant ← Ground(ref_claim_id = subClaimId)
+ * 返回创建的 Ground 和 Warrant。
+ */
+export function makeChainReasoning(
+  db: Database,
+  parentClaimId: number,
+  subClaimId: number,
+  warrantContent: string = "Chain reasoning warrant"
+): { ground: GroundNode; warrant: WarrantNode } {
+  const ground = makeGround(db, {
+    content: `Reference to Claim #${subClaimId}`,
+    refClaimId: subClaimId,
+  });
+  const warrant = makeWarrant(
+    db,
+    parentClaimId,
+    [ground.id],
+    warrantContent
+  );
+  return { ground, warrant };
+}

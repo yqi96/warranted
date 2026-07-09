@@ -68,13 +68,20 @@ export function initializeSchema(db: Database): void {
     ) WHERE type = 'ground' AND json_extract(data, '$.ref_claim_id') IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS compile_state (
-      claim_id    INTEGER PRIMARY KEY,
-      verdict     TEXT    NOT NULL DEFAULT 'passed',
-      summary     TEXT    NOT NULL DEFAULT '',
-      node_hashes TEXT    NOT NULL DEFAULT '{}',
-      created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+      claim_id       INTEGER PRIMARY KEY,
+      verdict        TEXT    NOT NULL DEFAULT 'passed',
+      summary        TEXT    NOT NULL DEFAULT '',
+      node_hashes    TEXT    NOT NULL DEFAULT '{}',
+      argument_hash  TEXT,
+      created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
     );
   `);
+
+  // Migration: 为已有数据库添加 argument_hash 列
+  const columns = db.prepare("PRAGMA table_info(compile_state)").all() as Array<{ name: string }>;
+  if (columns.length > 0 && !columns.some(c => c.name === "argument_hash")) {
+    db.exec("ALTER TABLE compile_state ADD COLUMN argument_hash TEXT");
+  }
 }
 
 /**

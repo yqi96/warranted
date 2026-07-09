@@ -119,6 +119,7 @@ export interface ClaimData {
   qualifier?: string | null;
   compiled?: boolean;
   compiled_at?: string;
+  stale?: boolean;
 }
 
 export interface GroundData {
@@ -283,6 +284,7 @@ export interface CompileState {
   verdict: CompileVerdict;
   summary: string;
   nodeHashes: Record<number, string>; // { nodeId: sha256hash }
+  argumentHash?: string; // Merkle Root 哈希
   createdAt: string;
 }
 
@@ -308,4 +310,15 @@ export interface CompileResult {
   compiledAt: string;
   skippedCount: number;
   totalCount: number;
+}
+
+// =============================================================================
+// 自动验证类型
+// =============================================================================
+
+export interface AutoVerifyResult {
+  claimId: number;
+  action: "auto-reviewed" | "marked-stale" | "no-change" | "skipped";
+  compileResult?: CompileResult;
+  message?: string;
 }

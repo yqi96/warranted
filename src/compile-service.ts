@@ -11,9 +11,13 @@ import type {
   CompileResult,
   CompileVerdict,
   ElementReviewResult,
+  AutoVerifyResult,
+  NodeRow,
 } from "./types.ts";
 import * as repo from "./repo.ts";
 import { runCompileReviewers } from "./compile-reviewers.ts";
+import { computeArgumentHash } from "./merkle-hash.ts";
+import { findWarrantsUsingGround } from "./service.ts";
 import { WARNINGS } from "./content.ts";
 
 // =============================================================================
@@ -138,16 +142,18 @@ export async function compileArgument(
   }
   const summary = summaryParts.join(" ");
 
-  // 5. 存储 compile_state
-  repo.saveCompileState(db, claimId, verdict, summary, currentHashes);
+  // 5. 存储 compile_state（含 argument_hash）
+  const argHash = computeArgumentHash(db, claimId);
+  repo.saveCompileState(db, claimId, verdict, summary, currentHashes, argHash);
 
-  // 6. 如果 passed：设置 compiled 标志
+  // 6. 如果 passed：设置 compiled 标志 + 清除 stale
   if (verdict === "passed") {
     const claimRow = repo.getNodeById(db, claimId);
     if (claimRow) {
       const data = JSON.parse(claimRow.data);
       data.compiled = true;
       data.compiled_at = compiledAt;
+      data.stale = false;
       repo.updateNodeFields(db, claimId, { data });
     }
   }
@@ -168,9 +174,9 @@ export async function compileArgument(
 // =============================================================================
 
 /**
- * 根据被修改节点类型，向上查找受影响的 Claim ID。
+ * 根据被修改节点类型，向上查找直接受影响的 Claim ID（不含链式传播）。
  */
-export function findAffectedClaimIds(db: Database, nodeId: number): number[] {
+function findAffectedClaimIdsDirect(db: Database, nodeId: number): number[] {
   const row = repo.getNodeById(db, nodeId);
   if (!row) return [];
   const data = JSON.parse(row.data);
@@ -223,6 +229,41 @@ export function findAffectedClaimIds(db: Database, nodeId: number): number[] {
 }
 
 /**
+ * 根据被修改节点，向上查找所有受影响的 Claim ID（含链式推理 BFS 传播）。
+ *
+ * 两步走：
+ * 1. findAffectedClaimIdsDirect: 直接受影响（同结构内的 claim/warrant/ground/backing/rebuttal）
+ * 2. BFS 链式传播：对每个受影响的 Claim，通过 Ground.ref_claim_id 向上找父 Claim
+ */
+export function findAffectedClaimIds(db: Database, nodeId: number): number[] {
+  // Step 1: 直接受影响的 Claim
+  const directIds = findAffectedClaimIdsDirect(db, nodeId);
+
+  // Step 2: 通过链式推理向上传播（BFS）
+  const allAffected = new Set<number>(directIds);
+  const queue = [...directIds];
+
+  while (queue.length > 0) {
+    const claimId = queue.shift()!;
+    // 找到所有 ref_claim_id = claimId 的 Ground（即引用该 Claim 作为证据的 Ground）
+    const refGrounds = repo.findGroundsByRefClaim(db, claimId);
+    for (const g of refGrounds) {
+      // 找到引用该 Ground 的所有 Warrant
+      const usingWarrants = findWarrantsUsingGround(db, g.id);
+      for (const w of usingWarrants) {
+        const wData = JSON.parse(w.data);
+        if (wData.claim_id && !allAffected.has(wData.claim_id)) {
+          allAffected.add(wData.claim_id);
+          queue.push(wData.claim_id); // 继续向上传播
+        }
+      }
+    }
+  }
+
+  return [...allAffected];
+}
+
+/**
  * 清除受影响 Claim 的 compiled 状态。
  * 返回需要通知 agent 的 Warning 消息。
  */
@@ -242,4 +283,62 @@ export function invalidateCompiledClaims(db: Database, nodeId: number): string[]
   }
 
   return warnings;
+}
+
+// =============================================================================
+// 自动验证
+// =============================================================================
+
+/**
+ * 变更后自动验证。
+ * 对每个受影响的 Claim：
+ * - 已 compiled 且 argument hash 变化 → 自动触发两阶段审查（利用 smart skip）
+ * - 已 compiled 且 argument hash 未变 → 跳过
+ * - 未 compiled → 标记 stale
+ * - 无 reviewConfig → 仅标记 stale，不调 LLM
+ */
+export async function autoVerifyAfterMutation(
+  db: Database,
+  config: ReviewConfig | null,
+  affectedClaimIds: number[]
+): Promise<AutoVerifyResult[]> {
+  // 并行处理所有受影响的 Claim
+  const promises = affectedClaimIds.map(async (claimId): Promise<AutoVerifyResult> => {
+    const claimRow = repo.getNodeById(db, claimId);
+    if (!claimRow || claimRow.type !== "claim") {
+      return { claimId, action: "skipped", message: "Claim not found" };
+    }
+
+    const claimData = JSON.parse(claimRow.data);
+    const prevState = repo.getCompileState(db, claimId);
+
+    // 计算当前 argument hash
+    const newArgHash = computeArgumentHash(db, claimId);
+
+    // 已 compiled 的 Claim：比较 argument hash
+    if (prevState && prevState.verdict === "passed" && prevState.argumentHash) {
+      if (prevState.argumentHash === newArgHash) {
+        // 哈希未变 — 无需任何操作
+        return { claimId, action: "no-change" };
+      }
+      // 哈希变化 → 需要重新 review
+      if (!config) {
+        // 无 reviewConfig → 标记 stale
+        repo.setClaimStale(db, claimId, true);
+        repo.clearCompiledFlag(db, claimId);
+        return { claimId, action: "marked-stale", message: "Review not configured" };
+      }
+      // 自动触发两阶段审查（利用 smart skip 只 review 变化节点）
+      const compileResult = await compileArgument(db, config, claimId);
+      return { claimId, action: "auto-reviewed", compileResult };
+    }
+
+    // 未 compiled 的 Claim → 标记 stale
+    if (!claimData.stale) {
+      repo.setClaimStale(db, claimId, true);
+    }
+    return { claimId, action: "marked-stale" };
+  });
+
+  return Promise.all(promises);
 }

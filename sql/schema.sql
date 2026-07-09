@@ -43,9 +43,10 @@ CREATE INDEX IF NOT EXISTS idx_nodes_ground_ref_claim ON nodes(
 
 -- Compile 状态表（compile 工具使用）
 CREATE TABLE IF NOT EXISTS compile_state (
-    claim_id    INTEGER PRIMARY KEY,
-    verdict     TEXT    NOT NULL DEFAULT 'passed',
-    summary     TEXT    NOT NULL DEFAULT '',
-    node_hashes TEXT    NOT NULL DEFAULT '{}',
-    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    claim_id       INTEGER PRIMARY KEY,
+    verdict        TEXT    NOT NULL DEFAULT 'passed',
+    summary        TEXT    NOT NULL DEFAULT '',
+    node_hashes    TEXT    NOT NULL DEFAULT '{}',
+    argument_hash  TEXT,
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );

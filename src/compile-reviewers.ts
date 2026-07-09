@@ -9,7 +9,6 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { createHash } from "crypto";
 import { dirname } from "path";
 import type { ReviewConfig } from "./review-config.ts";
 import type { NodeRow, ElementReviewResult } from "./types.ts";
@@ -21,20 +20,8 @@ import {
   buildGroundReviewPrompt,
   buildChainReviewPrompt,
 } from "./compile-prompts.ts";
+import { computeNodeHash } from "./merkle-hash.ts";
 import { log } from "./logger.ts";
-
-// =============================================================================
-// 哈希计算
-// =============================================================================
-
-/** 计算节点的内容哈希（SHA-256），覆盖 content + data */
-export function computeNodeHash(row: NodeRow): string {
-  const canonical = JSON.stringify({
-    content: row.content,
-    data: JSON.parse(row.data),
-  });
-  return createHash("sha256").update(canonical).digest("hex");
-}
 
 // =============================================================================
 // 参数收集

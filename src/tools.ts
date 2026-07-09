@@ -17,12 +17,11 @@ import {
   MutuallyExclusiveModeError,
   StatusTransitionError,
 } from "./errors.ts";
-import type { ArgumentResult, Stats, ToulminNode, CompileResult } from "./types.ts";
+import type { ArgumentResult, Stats, ToulminNode, CompileResult, AutoVerifyResult } from "./types.ts";
 import { log, summarizeInput, summarizeOutput } from "./logger.ts";
 import { ELEMENTS, HINTS, WARNINGS } from "./content.ts";
 import type { ReviewConfig } from "./review-config.ts";
-import { executeArgumentReview, executeGroundReview } from "./review-sync.ts";
-import { detectConnectedChain } from "./service.ts";
+import { executeGroundReview } from "./review-sync.ts";
 import * as compileService from "./compile-service.ts";
 
 // =============================================================================
@@ -216,9 +215,28 @@ function formatCompileResult(result: CompileResult): string {
   return lines.join("\n");
 }
 
-// =============================================================================
-// 日志包装器
-// =============================================================================
+function formatAutoVerifyResults(results: AutoVerifyResult[]): string {
+  const lines: string[] = [];
+  for (const r of results) {
+    switch (r.action) {
+      case "auto-reviewed":
+        if (r.compileResult) {
+          lines.push(formatCompileResult(r.compileResult));
+        }
+        break;
+      case "marked-stale":
+        lines.push(`Claim #${r.claimId} marked as stale — review needed${r.message ? ` (${r.message})` : ""}.`);
+        break;
+      case "no-change":
+        // Silent — hash unchanged, no action needed
+        break;
+      case "skipped":
+        // Silent — claim not found or not applicable
+        break;
+    }
+  }
+  return lines.length > 0 ? lines.join("\n") : "";
+}
 
 type ToolHandler = (input: any) => Promise<{ content: { type: string; text: string }[] }>;
 
@@ -344,23 +362,16 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("create_warrant", async ({ claim_id, content, ground_ids }: { claim_id: number; content: string; ground_ids?: number[] }) => {
       try {
         const warrant = service.createWarrant(db, { content, claimId: claim_id, groundIds: ground_ids });
-        const lines = [`Created warrant #${warrant.id}: ${warrant.content}`];
+        let text = `Created warrant #${warrant.id}: ${warrant.content}`;
 
-        // 执行推理链审查
+        // 自动验证
         if (reviewConfig) {
           try {
-            const chain = detectConnectedChain(db, warrant.id);
-            if (chain) {
-              const reviewResult = await executeArgumentReview(
-                reviewConfig,
-                db,
-                chain.claimId,
-                chain.warrantId,
-                chain.groundIds
-              );
-              if (reviewResult) {
-                lines.push("", formatReviewResult("Argument Review", reviewResult));
-              }
+            const affectedIds = compileService.findAffectedClaimIds(db, warrant.id);
+            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+            const verifyText = formatAutoVerifyResults(verifyResults);
+            if (verifyText) {
+              text += "\n\n" + verifyText;
             }
           } catch {
             // 审查失败不影响主流程
@@ -368,7 +379,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         }
 
         return {
-          content: [{ type: "text", text: lines.join("\n") }],
+          content: [{ type: "text", text }],
         };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
@@ -393,8 +404,24 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("create_backing", async ({ warrant_id, content, attachments }: { warrant_id: number; content: string; attachments?: string[] }) => {
       try {
         const backing = service.createBacking(db, { content, warrantId: warrant_id, attachments });
+        let text = `Created backing #${backing.id}: ${backing.content}`;
+
+        // 自动验证
+        if (reviewConfig) {
+          try {
+            const affectedIds = compileService.findAffectedClaimIds(db, backing.id);
+            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+            const verifyText = formatAutoVerifyResults(verifyResults);
+            if (verifyText) {
+              text += "\n\n" + verifyText;
+            }
+          } catch {
+            // 审查失败不影响主流程
+          }
+        }
+
         return {
-          content: [{ type: "text", text: `Created backing #${backing.id}: ${backing.content}` }],
+          content: [{ type: "text", text }],
         };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
@@ -420,8 +447,24 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("create_rebuttal", async ({ target_id, target_type, content, attachments }: { target_id: number; target_type: "claim" | "warrant"; content: string; attachments?: string[] }) => {
       try {
         const rebuttal = service.createRebuttal(db, { content, targetId: target_id, targetType: target_type, attachments });
+        let text = `Created rebuttal #${rebuttal.id}: ${rebuttal.content}`;
+
+        // 自动验证
+        if (reviewConfig) {
+          try {
+            const affectedIds = compileService.findAffectedClaimIds(db, rebuttal.id);
+            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+            const verifyText = formatAutoVerifyResults(verifyResults);
+            if (verifyText) {
+              text += "\n\n" + verifyText;
+            }
+          } catch {
+            // 审查失败不影响主流程
+          }
+        }
+
         return {
-          content: [{ type: "text", text: `Created rebuttal #${rebuttal.id}: ${rebuttal.content}` }],
+          content: [{ type: "text", text }],
         };
       } catch (e) {
         return { content: [{ type: "text", text: formatError(e) }] };
@@ -562,42 +605,30 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           text += "\n\n" + warnings.join("\n");
         }
 
-        // 执行审查
-        if (reviewConfig) {
+        // Ground verification → verified: 执行证据审查
+        if (reviewConfig && node.type === "ground" && opts.verification === "verified") {
           try {
-            // Ground verification → verified: 执行证据审查
-            if (node.type === "ground" && opts.verification === "verified") {
-              const reviewResult = await executeGroundReview(reviewConfig, db, node.id);
-              if (reviewResult) {
-                text += "\n\n" + formatReviewResult("Ground Evidence Review", reviewResult);
-              }
-            }
-
-            // Warrant ground_ids.add: 检查链路连通
-            if (node.type === "warrant" && opts.ground_ids?.add) {
-              const chain = detectConnectedChain(db, node.id);
-              if (chain) {
-                const reviewResult = await executeArgumentReview(
-                  reviewConfig,
-                  db,
-                  chain.claimId,
-                  chain.warrantId,
-                  chain.groundIds
-                );
-                if (reviewResult) {
-                  text += "\n\n" + formatReviewResult("Argument Review", reviewResult);
-                }
-              }
+            const reviewResult = await executeGroundReview(reviewConfig, db, node.id);
+            if (reviewResult) {
+              text += "\n\n" + formatReviewResult("Ground Evidence Review", reviewResult);
             }
           } catch {
             // 审查失败不影响主流程
           }
         }
 
-        // Invalidate compiled status of affected claims
-        const compileWarnings = compileService.invalidateCompiledClaims(db, opts.node_id);
-        if (compileWarnings.length > 0) {
-          text += "\n\n" + compileWarnings.join("\n");
+        // 自动验证（哈希比较 + 自动触发 review）
+        if (reviewConfig) {
+          try {
+            const affectedIds = compileService.findAffectedClaimIds(db, opts.node_id);
+            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+            const verifyText = formatAutoVerifyResults(verifyResults);
+            if (verifyText) {
+              text += "\n\n" + verifyText;
+            }
+          } catch {
+            // 审查失败不影响主流程
+          }
         }
 
         return {
@@ -624,15 +655,25 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("delete_node", async ({ node_id, cascade }: { node_id: number; cascade?: boolean }) => {
       try {
+        // Bug 修复：删除前计算受影响的 Claim（删除后节点不存在会导致 findAffectedClaimIds 返回空）
+        const affectedIds = compileService.findAffectedClaimIds(db, node_id);
+
         const warnings = service.deleteNode(db, node_id, cascade);
         let text = `Deleted node #${node_id}`;
         if (warnings.length > 0) {
           text += "\n\n" + warnings.join("\n");
         }
-        // Invalidate compiled status of affected claims
-        const compileWarnings = compileService.invalidateCompiledClaims(db, node_id);
-        if (compileWarnings.length > 0) {
-          text += "\n\n" + compileWarnings.join("\n");
+        // 自动验证
+        if (reviewConfig && affectedIds.length > 0) {
+          try {
+            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+            const verifyText = formatAutoVerifyResults(verifyResults);
+            if (verifyText) {
+              text += "\n\n" + verifyText;
+            }
+          } catch {
+            // 审查失败不影响主流程
+          }
         }
         return { content: [{ type: "text", text }] };
       } catch (e) {

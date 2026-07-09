@@ -123,12 +123,16 @@ export const HINTS = {
 
   compileSuccess: (claimId: number) =>
     `Hint: Claim #${claimId} compiled successfully. ` +
-    `If you modify any node in this argument, the compiled status will be auto-cleared ` +
-    `and you will be prompted to re-compile.`,
+    `If you modify any node in this argument, the system will auto-detect the change ` +
+    `and trigger a re-review.`,
 
   compileFailed: (claimId: number) =>
     `Hint: Compile failed for Claim #${claimId}. ` +
     `Please address the issues above and call compile again.`,
+
+  claimStale: (claimId: number) =>
+    `Hint: Claim #${claimId} has pending changes that need review. ` +
+    `Call compile to verify the argument.`,
 } as const;
 
 // =============================================================================
@@ -164,6 +168,11 @@ export const WARNINGS = {
   /** Compile 失效 */
   compileInvalidated: (claimId: number, nodeId: number) =>
     `Warning: Claim #${claimId}'s compiled status has been cleared ` +
-    `because node #${nodeId} in its argument chain was modified. ` +
-    `Re-compile Claim #${claimId} to re-verify the argument.`,
+    `because node #${nodeId} in its argument chain was modified.`,
+
+  /** 自动审查触发 */
+  autoReviewTriggered: (claimId: number, triggerNode?: number) =>
+    `Auto-review triggered for Claim #${claimId}` +
+    (triggerNode ? ` due to changes in node #${triggerNode}` : "") +
+    `.`,
 } as const;

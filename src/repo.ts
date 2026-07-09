@@ -209,25 +209,27 @@ export function saveCompileState(
   claimId: number,
   verdict: string,
   summary: string,
-  nodeHashes: Record<number, string>
+  nodeHashes: Record<number, string>,
+  argumentHash?: string
 ): void {
   const now = new Date().toISOString().slice(0, 19);
   const stmt = db.prepare(
-    "INSERT OR REPLACE INTO compile_state (claim_id, verdict, summary, node_hashes, created_at) VALUES (?, ?, ?, ?, ?)"
+    "INSERT OR REPLACE INTO compile_state (claim_id, verdict, summary, node_hashes, argument_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)"
   );
-  stmt.run(claimId, verdict, summary, JSON.stringify(nodeHashes), now);
+  stmt.run(claimId, verdict, summary, JSON.stringify(nodeHashes), argumentHash ?? null, now);
 }
 
 /** 获取 compile 状态 */
 export function getCompileState(db: Database, claimId: number): CompileState | null {
   const stmt = db.prepare("SELECT * FROM compile_state WHERE claim_id = ?");
-  const row = stmt.get(claimId) as { claim_id: number; verdict: string; summary: string; node_hashes: string; created_at: string } | null;
+  const row = stmt.get(claimId) as { claim_id: number; verdict: string; summary: string; node_hashes: string; argument_hash: string | null; created_at: string } | null;
   if (!row) return null;
   return {
     claimId: row.claim_id,
     verdict: row.verdict as "passed" | "failed",
     summary: row.summary,
     nodeHashes: JSON.parse(row.node_hashes),
+    argumentHash: row.argument_hash ?? undefined,
     createdAt: row.created_at,
   };
 }
@@ -246,6 +248,15 @@ export function clearCompiledFlag(db: Database, claimId: number): void {
   if (!data.compiled) return;
   data.compiled = false;
   delete data.compiled_at;
+  updateNodeFields(db, claimId, { data });
+}
+
+/** 设置 ClaimData 的 stale 标志 */
+export function setClaimStale(db: Database, claimId: number, stale: boolean): void {
+  const row = getNodeById(db, claimId);
+  if (!row || row.type !== "claim") return;
+  const data = JSON.parse(row.data);
+  data.stale = stale;
   updateNodeFields(db, claimId, { data });
 }
 

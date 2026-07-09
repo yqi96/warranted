@@ -16,7 +16,8 @@ import {
   seedBasicArgument,
 } from "./helpers.ts";
 import { structuralPreCheck, findAffectedClaimIds, invalidateCompiledClaims } from "../src/compile-service.ts";
-import { computeNodeHash, loadArgumentContext } from "../src/compile-reviewers.ts";
+import { loadArgumentContext } from "../src/compile-reviewers.ts";
+import { computeNodeHash } from "../src/merkle-hash.ts";
 import * as repo from "../src/repo.ts";
 import type { Database } from "bun:sqlite";
 
@@ -112,7 +113,7 @@ describe("computeNodeHash", () => {
     expect(hash1).not.toBe(hash2);
   });
 
-  test("data JSON 修改后哈希变化", () => {
+  test("data 修改不影响哈希（只哈希 content）", () => {
     const claim = makeClaim(db, "Same content");
     const row1 = repo.getNodeById(db, claim.id)!;
     const hash1 = computeNodeHash(row1);
@@ -123,7 +124,7 @@ describe("computeNodeHash", () => {
     const row2 = repo.getNodeById(db, claim.id)!;
     const hash2 = computeNodeHash(row2);
 
-    expect(hash1).not.toBe(hash2);
+    expect(hash1).toBe(hash2);
   });
 });
 

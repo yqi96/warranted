@@ -103,11 +103,22 @@ function skippedResult(reviewer: "claim" | "warrant" | "ground", nodeId: number)
   return {
     reviewer,
     nodeId,
-    verdict: "pass",
-    summary: "Skipped — content unchanged since last compile.",
-    issues: [],
+    errors: [],
+    warnings: [],
     skipped: true,
   };
+}
+
+/** 从 LLM 原始响应中解析 errors/warnings */
+function parseReviewResponse(raw: string): { errors: string[]; warnings: string[] } {
+  const parsed = parseLLMResponse(raw, "");
+  const errors: string[] = ((parsed.errors as Array<any>) || []).map(e =>
+    typeof e === "string" ? e : e.message || String(e)
+  );
+  const warnings: string[] = ((parsed.warnings as Array<any>) || []).map(w =>
+    typeof w === "string" ? w : w.message || String(w)
+  );
+  return { errors, warnings };
 }
 
 async function reviewClaim(
@@ -123,28 +134,25 @@ async function reviewClaim(
   });
 
   try {
+    const t0 = Date.now();
+    log("compile_review", "OK", 0, `START claim_reviewer: claim=#${ctx.claimRow.id}`);
     const raw = await callAgent(config, prompt, [], cwd);
-    const parsed = parseLLMResponse(raw, "concerns");
+    const elapsed = Date.now() - t0;
+    const { errors, warnings } = parseReviewResponse(raw);
+    log("compile_review", "OK", elapsed, `END claim_reviewer: claim=#${ctx.claimRow.id} → ${errors.length} error(s), ${warnings.length} warning(s)`);
     return {
       reviewer: "claim",
       nodeId: ctx.claimRow.id,
-      verdict: (parsed.verdict as string) || "concerns",
-      summary: (parsed.summary as string) || "",
-      issues: ((parsed.issues as Array<any>) || []).map(i => ({
-        severity: i.severity || "info",
-        element: i.element,
-        nodeId: i.nodeId,
-        message: i.message || "",
-      })),
+      errors,
+      warnings,
     };
   } catch (error) {
     log("compile_claim_review", "ERR", 0, `claim=#${ctx.claimRow.id}: ${error}`);
     return {
       reviewer: "claim",
       nodeId: ctx.claimRow.id,
-      verdict: "concerns",
-      summary: `Claim review failed due to error: ${error}`,
-      issues: [{ severity: "info", message: `Reviewer error: ${error}` }],
+      errors: [`Reviewer error: ${error}`],
+      warnings: [],
     };
   }
 }
@@ -171,28 +179,25 @@ async function reviewWarrant(
   });
 
   try {
+    const t0 = Date.now();
+    log("compile_review", "OK", 0, `START warrant_reviewer: warrant=#${wRow.id}`);
     const raw = await callAgent(config, prompt, [], cwd);
-    const parsed = parseLLMResponse(raw, "concerns");
+    const elapsed = Date.now() - t0;
+    const { errors, warnings } = parseReviewResponse(raw);
+    log("compile_review", "OK", elapsed, `END warrant_reviewer: warrant=#${wRow.id} → ${errors.length} error(s), ${warnings.length} warning(s)`);
     return {
       reviewer: "warrant",
       nodeId: wRow.id,
-      verdict: (parsed.verdict as string) || "concerns",
-      summary: (parsed.summary as string) || "",
-      issues: ((parsed.issues as Array<any>) || []).map(i => ({
-        severity: i.severity || "info",
-        element: i.element,
-        nodeId: i.nodeId,
-        message: i.message || "",
-      })),
+      errors,
+      warnings,
     };
   } catch (error) {
     log("compile_warrant_review", "ERR", 0, `warrant=#${wRow.id}: ${error}`);
     return {
       reviewer: "warrant",
       nodeId: wRow.id,
-      verdict: "concerns",
-      summary: `Warrant review failed due to error: ${error}`,
-      issues: [{ severity: "info", message: `Reviewer error: ${error}` }],
+      errors: [`Reviewer error: ${error}`],
+      warnings: [],
     };
   }
 }
@@ -214,28 +219,25 @@ async function reviewGround(
   });
 
   try {
+    const t0 = Date.now();
+    log("compile_review", "OK", 0, `START ground_reviewer: ground=#${gRow.id}`);
     const raw = await callAgent(config, prompt, [], cwd);
-    const parsed = parseLLMResponse(raw, "concerns");
+    const elapsed = Date.now() - t0;
+    const { errors, warnings } = parseReviewResponse(raw);
+    log("compile_review", "OK", elapsed, `END ground_reviewer: ground=#${gRow.id} → ${errors.length} error(s), ${warnings.length} warning(s)`);
     return {
       reviewer: "ground",
       nodeId: gRow.id,
-      verdict: (parsed.verdict as string) || "concerns",
-      summary: (parsed.summary as string) || "",
-      issues: ((parsed.issues as Array<any>) || []).map(i => ({
-        severity: i.severity || "info",
-        element: i.element,
-        nodeId: i.nodeId,
-        message: i.message || "",
-      })),
+      errors,
+      warnings,
     };
   } catch (error) {
     log("compile_ground_review", "ERR", 0, `ground=#${gRow.id}: ${error}`);
     return {
       reviewer: "ground",
       nodeId: gRow.id,
-      verdict: "concerns",
-      summary: `Ground review failed due to error: ${error}`,
-      issues: [{ severity: "info", message: `Reviewer error: ${error}` }],
+      errors: [`Reviewer error: ${error}`],
+      warnings: [],
     };
   }
 }
@@ -292,26 +294,23 @@ async function reviewChain(
   });
 
   try {
+    const t0 = Date.now();
+    log("compile_review", "OK", 0, `START chain_reviewer: claim=#${ctx.claimRow.id}`);
     const raw = await callAgent(config, prompt, [], cwd);
-    const parsed = parseLLMResponse(raw, "concerns");
+    const elapsed = Date.now() - t0;
+    const { errors, warnings } = parseReviewResponse(raw);
+    log("compile_review", "OK", elapsed, `END chain_reviewer: claim=#${ctx.claimRow.id} → ${errors.length} error(s), ${warnings.length} warning(s)`);
     return {
       reviewer: "chain",
-      verdict: (parsed.verdict as string) || "concerns",
-      summary: (parsed.summary as string) || "",
-      issues: ((parsed.issues as Array<any>) || []).map(i => ({
-        severity: i.severity || "info",
-        element: i.element,
-        nodeId: i.nodeId,
-        message: i.message || "",
-      })),
+      errors,
+      warnings,
     };
   } catch (error) {
     log("compile_chain_review", "ERR", 0, `claim=#${ctx.claimRow.id}: ${error}`);
     return {
       reviewer: "chain",
-      verdict: "concerns",
-      summary: `Chain review failed due to error: ${error}`,
-      issues: [{ severity: "info", message: `Reviewer error: ${error}` }],
+      errors: [`Reviewer error: ${error}`],
+      warnings: [],
     };
   }
 }
@@ -336,9 +335,8 @@ export async function runCompileReviewers(
       elementReviews: [{
         reviewer: "claim",
         nodeId: claimId,
-        verdict: "fail",
-        summary: `Claim #${claimId} not found.`,
-        issues: [{ severity: "major", message: "Claim not found" }],
+        errors: [`Claim #${claimId} not found.`],
+        warnings: [],
       }],
       currentHashes: {},
     };
@@ -387,13 +385,26 @@ export async function runCompileReviewers(
 
   const stage1Results = await Promise.all(stage1Promises);
 
-  // 检查阶段一是否有 fail
-  const hasFailure = stage1Results.some(r => r.verdict === "fail");
+  // 记录阶段一各 reviewer 结果
+  const stage1Summary = stage1Results.map(r => {
+    const node = r.nodeId ? `=#${r.nodeId}` : "";
+    const skip = r.skipped ? "(skip)" : "";
+    const status = r.errors.length > 0 ? "ERROR" : r.warnings.length > 0 ? "WARN" : "PASS";
+    return `${r.reviewer}${node}:${status}${skip}`;
+  }).join(", ");
+  log("compile_stage1", "OK", 0, `claim=#${claimId} → ${stage1Summary}`);
 
-  if (hasFailure) {
-    // 阶段一有 fail → 不进入阶段二
+  // 检查阶段一是否有 error
+  const hasError = stage1Results.some(r => r.errors.length > 0);
+
+  if (hasError) {
+    // 阶段一有 error → 不进入阶段二
+    const failed = stage1Results
+      .filter(r => r.errors.length > 0)
+      .map(r => `${r.reviewer}=#${r.nodeId}`)
+      .join(", ");
     log("compile_stage1", "ERR", 0,
-      `claim=#${claimId} → failed, skipping chain review`
+      `claim=#${claimId} → stage 1 failed: [${failed}], skipping stage 2`
     );
     return { elementReviews: stage1Results, currentHashes: ctx.currentHashes };
   }
@@ -401,11 +412,15 @@ export async function runCompileReviewers(
   // ===========================================================================
   // 阶段二：逻辑链审查（始终运行）
   // ===========================================================================
+  log("compile_stage2", "OK", 0, `claim=#${claimId} → starting chain review`);
+  const t1 = Date.now();
   const chainResult = await reviewChain(config, ctx, cwd);
+  const chainElapsed = Date.now() - t1;
   const allResults = [...stage1Results, chainResult];
 
-  log("compile_stage2", "OK ", 0,
-    `claim=#${claimId} → chain verdict=${chainResult.verdict}`
+  const chainStatus = chainResult.errors.length > 0 ? "ERROR" : chainResult.warnings.length > 0 ? "WARN" : "PASS";
+  log("compile_stage2", "OK", chainElapsed,
+    `claim=#${claimId} → chain: ${chainStatus}, ${chainResult.errors.length} error(s), ${chainResult.warnings.length} warning(s)`
   );
 
   return { elementReviews: allResults, currentHashes: ctx.currentHashes };

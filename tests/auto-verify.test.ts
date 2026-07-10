@@ -123,6 +123,105 @@ describe("autoVerifyAfterMutation", () => {
     const updatedData = JSON.parse(repo.getNodeById(db, claim.id)!.data);
     expect(updatedData.stale).toBe(true);
   });
+
+  // ===========================================================================
+  // Case 2: 从未审查过 → 结构完整性检测
+  // ===========================================================================
+
+  test("未审查 + 结构完整 + 无 config → marked-stale", async () => {
+    const { claim } = seedBasicArgument(db);
+    // 不设置 compile_state，不设置 compiled
+
+    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+
+    expect(results[0].action).toBe("marked-stale");
+    expect(results[0].message).toContain("Review not configured");
+
+    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
+    expect(data.stale).toBe(true);
+  });
+
+  test("未审查 + 结构不完整（无 warrant）→ marked-stale", async () => {
+    const claim = makeClaim(db, "Bare claim, no warrant");
+
+    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+
+    expect(results[0].action).toBe("marked-stale");
+
+    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
+    expect(data.stale).toBe(true);
+  });
+
+  test("未审查 + 结构不完整（warrant 无 ground）→ marked-stale", async () => {
+    const claim = makeClaim(db, "Claim with empty warrant");
+    // 创建 warrant 但不关联 ground
+    makeWarrant(db, claim.id, [], "Warrant without grounds");
+
+    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+
+    expect(results[0].action).toBe("marked-stale");
+  });
+
+  // ===========================================================================
+  // Case 1 扩展：failed review 也用哈希比较
+  // ===========================================================================
+
+  test("failed review + 哈希未变 → no-change", async () => {
+    const { claim } = seedBasicArgument(db);
+    const argHash = computeArgumentHash(db, claim.id);
+
+    // 存储 failed compile_state（有 argumentHash）
+    repo.saveCompileState(db, claim.id, "failed", "Issues found", {}, argHash);
+    // 不设置 compiled=true（因为审查失败了）
+
+    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+
+    expect(results[0].action).toBe("no-change");
+  });
+
+  test("failed review + 哈希变化 + 无 config → marked-stale（不清除 compiled）", async () => {
+    const { claim } = seedBasicArgument(db);
+    const argHash = computeArgumentHash(db, claim.id);
+
+    // 存储 failed compile_state
+    repo.saveCompileState(db, claim.id, "failed", "Issues found", {}, argHash);
+
+    // 修改 content → 哈希变化
+    repo.updateNodeFields(db, claim.id, { content: "Modified claim" });
+
+    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+
+    expect(results[0].action).toBe("marked-stale");
+    expect(results[0].message).toContain("Review not configured");
+
+    // verdict=failed 时不调用 clearCompiledFlag（因为没有 compiled 可清）
+    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
+    expect(data.stale).toBe(true);
+  });
+
+  test("passed review + 哈希变化 + 无 config → 清除 compiled + marked-stale", async () => {
+    const { claim } = seedBasicArgument(db);
+    const argHash = computeArgumentHash(db, claim.id);
+
+    // 存储 passed compile_state
+    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
+    data.compiled = true;
+    data.compiled_at = "2025-01-01";
+    repo.updateNodeFields(db, claim.id, { data });
+    repo.saveCompileState(db, claim.id, "passed", "ok", {}, argHash);
+
+    // 修改 content → 哈希变化
+    repo.updateNodeFields(db, claim.id, { content: "Modified claim" });
+
+    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+
+    expect(results[0].action).toBe("marked-stale");
+
+    // passed review 时应清除 compiled
+    const updatedData = JSON.parse(repo.getNodeById(db, claim.id)!.data);
+    expect(updatedData.compiled).toBe(false);
+    expect(updatedData.stale).toBe(true);
+  });
 });
 
 // =============================================================================

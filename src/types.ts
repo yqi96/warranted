@@ -291,14 +291,8 @@ export interface CompileState {
 export interface ElementReviewResult {
   reviewer: "claim" | "warrant" | "ground" | "chain";
   nodeId?: number;
-  verdict: string;
-  summary: string;
-  issues: Array<{
-    severity: "major" | "minor" | "info";
-    element?: string;
-    nodeId?: number;
-    message: string;
-  }>;
+  errors: string[];
+  warnings: string[];
   skipped?: boolean;
 }
 
@@ -310,6 +304,7 @@ export interface CompileResult {
   compiledAt: string;
   skippedCount: number;
   totalCount: number;
+  firstCompile: boolean;
 }
 
 // =============================================================================

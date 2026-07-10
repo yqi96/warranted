@@ -177,36 +177,40 @@ function formatStats(stats: Stats): string {
 
 function formatCompileResult(result: CompileResult): string {
   const lines: string[] = [];
-  const verdictLabel = result.verdict === "passed" ? "PASSED" : "FAILED";
-  lines.push(`## Compile: Claim #${result.claimId}`);
-  lines.push("");
-  lines.push(`**Verdict**: ${verdictLabel}`);
-  lines.push(`**Summary**: ${result.summary}`);
-  lines.push("");
+  const totalErrors = result.elementReviews.reduce((sum, r) => sum + r.errors.length, 0);
+  const totalWarnings = result.elementReviews.reduce((sum, r) => sum + r.warnings.length, 0);
+  const passed = result.verdict === "passed";
 
-  // Element review details
-  lines.push("### Review Details");
+  // Header line: claim ID only if not (firstCompile AND failed)
+  const showId = !(result.firstCompile && !passed);
+  if (showId) {
+    lines.push(`Claim #${result.claimId}: ${passed ? "EXECUTION SUCCESS" : "EXECUTION FAILED"}`);
+  } else {
+    lines.push(`EXECUTION FAILED`);
+  }
+
+  // Stats line: N errors, M warnings
+  lines.push(`${totalErrors} error(s), ${totalWarnings} warning(s).`);
+
+  // List all errors and warnings
   for (const r of result.elementReviews) {
-    const skippedLabel = r.skipped ? " (skipped — unchanged)" : "";
-    const nodeIdLabel = r.nodeId ? ` #${r.nodeId}` : "";
-    const verdictIcon = r.verdict === "pass" ? "PASS" : r.verdict === "fail" ? "FAIL" : "CONCERNS";
-    lines.push(`- **${r.reviewer}${nodeIdLabel}**: ${verdictIcon}${skippedLabel}`);
-    if (r.issues.length > 0 && !r.skipped) {
-      for (const issue of r.issues) {
-        const prefix = issue.severity === "major" ? "  - [major]" : issue.severity === "minor" ? "  - [minor]" : "  - [info]";
-        lines.push(`${prefix}: ${issue.message}`);
-      }
+    if (r.skipped) continue;
+    const nodeLabel = r.nodeId ? ` #${r.nodeId}` : "";
+    for (const err of r.errors) {
+      lines.push(`  [ERROR] ${r.reviewer}${nodeLabel}: ${err}`);
+    }
+    for (const warn of r.warnings) {
+      lines.push(`  [WARNING] ${r.reviewer}${nodeLabel}: ${warn}`);
     }
   }
 
-  lines.push("");
-  lines.push(`---`);
-  lines.push(`Compiled at: ${result.compiledAt}`);
+  // Skipped info
   if (result.skippedCount > 0) {
-    lines.push(`Skipped ${result.skippedCount} of ${result.totalCount} reviewers (content unchanged since last compile).`);
+    lines.push(`${result.skippedCount} of ${result.totalCount} reviewers skipped (content unchanged).`);
   }
 
-  if (result.verdict === "passed") {
+  // Hints
+  if (passed) {
     lines.push("", HINTS.compileSuccess(result.claimId));
   } else {
     lines.push("", HINTS.compileFailed(result.claimId));
@@ -364,18 +368,16 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         const warrant = service.createWarrant(db, { content, claimId: claim_id, groundIds: ground_ids });
         let text = `Created warrant #${warrant.id}: ${warrant.content}`;
 
-        // 自动验证
-        if (reviewConfig) {
-          try {
-            const affectedIds = compileService.findAffectedClaimIds(db, warrant.id);
-            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-            const verifyText = formatAutoVerifyResults(verifyResults);
-            if (verifyText) {
-              text += "\n\n" + verifyText;
-            }
-          } catch {
-            // 审查失败不影响主流程
+        // 自动验证（哈希比较 + 结构完整性检测）
+        try {
+          const affectedIds = compileService.findAffectedClaimIds(db, warrant.id);
+          const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+          const verifyText = formatAutoVerifyResults(verifyResults);
+          if (verifyText) {
+            text += "\n\n" + verifyText;
           }
+        } catch {
+          // 审查失败不影响主流程
         }
 
         return {
@@ -406,18 +408,16 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         const backing = service.createBacking(db, { content, warrantId: warrant_id, attachments });
         let text = `Created backing #${backing.id}: ${backing.content}`;
 
-        // 自动验证
-        if (reviewConfig) {
-          try {
-            const affectedIds = compileService.findAffectedClaimIds(db, backing.id);
-            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-            const verifyText = formatAutoVerifyResults(verifyResults);
-            if (verifyText) {
-              text += "\n\n" + verifyText;
-            }
-          } catch {
-            // 审查失败不影响主流程
+        // 自动验证（哈希比较 + 结构完整性检测）
+        try {
+          const affectedIds = compileService.findAffectedClaimIds(db, backing.id);
+          const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+          const verifyText = formatAutoVerifyResults(verifyResults);
+          if (verifyText) {
+            text += "\n\n" + verifyText;
           }
+        } catch {
+          // 审查失败不影响主流程
         }
 
         return {
@@ -449,18 +449,16 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         const rebuttal = service.createRebuttal(db, { content, targetId: target_id, targetType: target_type, attachments });
         let text = `Created rebuttal #${rebuttal.id}: ${rebuttal.content}`;
 
-        // 自动验证
-        if (reviewConfig) {
-          try {
-            const affectedIds = compileService.findAffectedClaimIds(db, rebuttal.id);
-            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-            const verifyText = formatAutoVerifyResults(verifyResults);
-            if (verifyText) {
-              text += "\n\n" + verifyText;
-            }
-          } catch {
-            // 审查失败不影响主流程
+        // 自动验证（哈希比较 + 结构完整性检测）
+        try {
+          const affectedIds = compileService.findAffectedClaimIds(db, rebuttal.id);
+          const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+          const verifyText = formatAutoVerifyResults(verifyResults);
+          if (verifyText) {
+            text += "\n\n" + verifyText;
           }
+        } catch {
+          // 审查失败不影响主流程
         }
 
         return {
@@ -617,18 +615,16 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           }
         }
 
-        // 自动验证（哈希比较 + 自动触发 review）
-        if (reviewConfig) {
-          try {
-            const affectedIds = compileService.findAffectedClaimIds(db, opts.node_id);
-            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-            const verifyText = formatAutoVerifyResults(verifyResults);
-            if (verifyText) {
-              text += "\n\n" + verifyText;
-            }
-          } catch {
-            // 审查失败不影响主流程
+        // 自动验证（哈希比较 + 结构完整性检测）
+        try {
+          const affectedIds = compileService.findAffectedClaimIds(db, opts.node_id);
+          const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+          const verifyText = formatAutoVerifyResults(verifyResults);
+          if (verifyText) {
+            text += "\n\n" + verifyText;
           }
+        } catch {
+          // 审查失败不影响主流程
         }
 
         return {
@@ -663,8 +659,8 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         if (warnings.length > 0) {
           text += "\n\n" + warnings.join("\n");
         }
-        // 自动验证
-        if (reviewConfig && affectedIds.length > 0) {
+        // 自动验证（哈希比较 + 结构完整性检测）
+        if (affectedIds.length > 0) {
           try {
             const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
             const verifyText = formatAutoVerifyResults(verifyResults);

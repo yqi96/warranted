@@ -283,7 +283,6 @@ export interface CompileState {
   claimId: number;
   verdict: CompileVerdict;
   summary: string;
-  nodeHashes: Record<number, string>; // { nodeId: sha256hash }
   argumentHash?: string; // Merkle Root 哈希
   createdAt: string;
 }
@@ -300,11 +299,8 @@ export interface CompileResult {
   claimId: number;
   verdict: CompileVerdict;
   summary: string;
-  elementReviews: ElementReviewResult[];
+  elementReviews: ElementReviewResult[]; // 仅 chain review
   compiledAt: string;
-  skippedCount: number;
-  totalCount: number;
-  firstCompile: boolean;
 }
 
 // =============================================================================

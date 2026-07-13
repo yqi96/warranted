@@ -35,7 +35,6 @@ Rules:
 export interface ClaimReviewData {
   id: number;
   content: string;
-  status: string;
   qualifier?: string | null;
 }
 
@@ -51,13 +50,8 @@ export function buildClaimReviewPrompt(data: ClaimReviewData): string {
 **Claim**: A conclusion whose merit must be established. It is the "umbrella statement" that all other parts of the argument must support.
 - Example: "Phenomenon X exhibits property Y under condition Z" (needs experimental evidence to establish)
 - Example: "Method A outperforms Method B on metric X" (needs experimental comparison to prove)
-- NOT a methodology or observation process
-- NOT a data availability statement
-- NOT a description of what was done (that belongs in Backing)
 ${qualifierText ? `
-**Qualifier**: Degree of certainty about the Claim (e.g., "robustly", "presumably", "likely").
-- NOT scope limitations (those belong in Rebuttal)
-- NOT methodological caveats` : ""}
+**Qualifier**: Degree of certainty about the Claim (e.g., "robustly", "presumably", "likely").` : ""}
 
 ## Common Confusions (Claim vs other elements)
 
@@ -73,8 +67,7 @@ ${qualifierText ? `
 
 ## Claim to Review
 
-**Claim** (#${data.id}): ${data.content}
-- Status: ${data.status}${qualifierText}
+**Claim** (#${data.id}): ${data.content}${qualifierText}
 
 ## Review Checklist
 
@@ -92,26 +85,16 @@ ${OUTPUT_FORMAT}`;
 export interface WarrantReviewData {
   id: number;
   content: string;
-  claimContent: string;
-  claimId: number;
-  groundContents: Array<{ id: number; content: string }>;
 }
 
 export function buildWarrantReviewPrompt(data: WarrantReviewData): string {
-  const groundsText = data.groundContents
-    .map(g => `  - Ground #${g.id}: ${g.content}`)
-    .join("\n");
-
   return `You are a rigorous scientific argumentation reviewer. Your task is to evaluate whether a Warrant element correctly follows the Toulmin definition of a Warrant.
 
 ## Toulmin Warrant Definition
 
-**Warrant**: A domain-general inference-licensing principle that authorizes the move from Ground to Claim. Must hold beyond this specific argument.
+**Warrant**: A domain-general inference-licensing principle that authorizes the move from Ground to Claim.
 - Example: "When multiple independent methods converge on the same result, that result likely reflects a real phenomenon rather than method-specific artifacts"
 - Example: "Consistent findings across independent datasets indicate a systematic effect rather than random variation"
-- NOT an if-then bridge ("If [specific Ground] then [specific Claim]")
-- NOT a causal explanation of why the Ground leads to the Claim
-- Must be a GENERAL principle, not specific to this argument
 
 ## Common Confusions (Warrant vs other elements)
 
@@ -119,7 +102,7 @@ export function buildWarrantReviewPrompt(data: WarrantReviewData): string {
   - Correct Warrant: "When independent methods converge, the shared result likely reflects reality rather than artifacts" (inference rule)
   - Wrong (causal): "Because data X physically causes Y, the result is valid" (causal mechanism → belongs in Backing)
 
-- **Warrant vs if-then bridge**: "If [specific Ground] then [specific Claim]" merely restates the argument. A Warrant must be a general rule applicable beyond this case.
+- **Warrant vs if-then bridge**: "If [specific Ground] then [specific Claim]" merely restates the argument. A Warrant must be a general rule, not a case-specific bridge.
   - Wrong: "If method A yields result R, then the conclusion is valid"
   - Correct: "Methods that demonstrate consistent results across independent tests are considered reliable"
 
@@ -135,17 +118,11 @@ export function buildWarrantReviewPrompt(data: WarrantReviewData): string {
 
 **Warrant** (#${data.id}): ${data.content}
 
-**Supports Claim** (#${data.claimId}): ${data.claimContent}
-
-**Linked Grounds**:
-${groundsText}
-
 ## Review Checklist
 
-1. **Is it a domain-general principle?** Does this warrant hold beyond this specific argument? Could it apply to other similar arguments?
+1. **Is it a domain-general principle?** Could this principle apply to other similar arguments, or is it tied to a single specific case?
 2. **Is it an if-then bridge?** Does it merely restate "If [Ground] then [Claim]"? That would be WRONG.
 3. **Is it a causal explanation?** Does it explain WHY the ground leads to the claim rather than LICENSING the inference? That would be WRONG.
-4. **Does it correctly authorize the inference?** Does it connect these specific types of grounds to this type of claim?
 
 ${OUTPUT_FORMAT}`;
 }
@@ -157,8 +134,6 @@ ${OUTPUT_FORMAT}`;
 export interface GroundReviewData {
   id: number;
   content: string;
-  source: string;
-  verification: string;
 }
 
 export function buildGroundReviewPrompt(data: GroundReviewData): string {
@@ -169,17 +144,8 @@ export function buildGroundReviewPrompt(data: GroundReviewData): string {
 **Ground**: Independent evidence/facts that support the Claim. Must be a research RESULT — what was found, observed, produced, or discovered.
 - Example: "Method A yields result X" (an observed/computed finding)
 - Example: "The experiment produced output value Y" (a computed result)
-- NOT a data availability statement ("Database contains N records available at X")
-- NOT a methodology description ("We used regression analysis")
-- NOT an input dataset description ("The dataset consists of N samples from...")
-- Test: Does this state what was FOUND/PRODUCED, or what was USED/AVAILABLE? Only the former is a valid Ground.
 
 ## Common Confusions (Ground vs other elements)
-
-- **Ground vs Claim**: If the statement restates the conclusion, it's circular and not a valid Ground. A Ground must be independent evidence that exists even if the Claim were false.
-  - Claim: "The method is reliable"
-  - Ground (valid): "Method A yields result X with accuracy Y" (independent fact)
-  - Ground (circular, invalid): "The method is reliable because it produces good results" (restates the claim)
 
 - **Ground vs Backing**: A Ground is a research RESULT (what was found/produced — the OUTPUT); a Backing is methodology (how it was done — the INPUT). Key test: does this describe what was FOUND, or what was USED?
   - Ground (output): "Method A produces result X with accuracy Y"
@@ -189,21 +155,18 @@ export function buildGroundReviewPrompt(data: GroundReviewData): string {
   - Data availability (NOT a Ground): "The database contains N records from period X"
   - Ground (valid): "M out of N records show pattern X"
 
-- **Ground vs hypothesis**: A hypothesis stated as a Ground without verification is a placeholder, not evidence. If verification status is "pending", the Ground is asserted but not yet confirmed — flag this as a concern.
+- **Ground vs hypothesis**: A hypothesis is a prediction, not a finding. If the statement predicts what might be found rather than stating what was found, it is a hypothesis, not a valid Ground.
 
 ## Ground to Review
 
 **Ground** (#${data.id}): ${data.content}
-- Source: ${data.source}
-- Verification: ${data.verification}
 
 ## Review Checklist
 
 1. **Is it a research result?** Does this statement describe what was found, observed, produced, or discovered?
-2. **Is it independent of the claim?** Is this evidence that exists separately from the conclusion it supports?
-3. **Is it NOT a data availability statement?** It should not merely state what data is available.
-4. **Is it NOT a methodology description?** It should not describe what methods were used (that belongs in Backing).
-5. **Is the source type appropriate?** Does the declared source (${data.source}) match the nature of this ground?
+2. **Is it NOT a data availability statement?** It should not merely state what data is available.
+3. **Is it NOT a methodology description?** It should not describe what methods were used (that belongs in Backing).
+4. **Is it NOT a hypothesis?** It should state what was found, not predict what might be found.
 
 ${OUTPUT_FORMAT}`;
 }
@@ -213,11 +176,11 @@ ${OUTPUT_FORMAT}`;
 // =============================================================================
 
 export interface ChainReviewData {
-  claim: { id: number; content: string; status: string; qualifier?: string | null };
+  claim: { id: number; content: string; qualifier?: string | null };
   warrants: Array<{
     id: number;
     content: string;
-    grounds: Array<{ id: number; content: string; source: string; verification: string }>;
+    grounds: Array<{ id: number; content: string }>;
     backings: Array<{ id: number; content: string }>;
   }>;
   rebuttals: Array<{ id: number; content: string; targetType: string }>;
@@ -230,7 +193,7 @@ export function buildChainReviewPrompt(data: ChainReviewData): string {
 
   const warrantsText = data.warrants.map(w => {
     const groundsText = w.grounds
-      .map(g => `    - Ground #${g.id} (${g.source}/${g.verification}): ${g.content}`)
+      .map(g => `    - Ground #${g.id}: ${g.content}`)
       .join("\n");
     const backingsText = w.backings.length > 0
       ? `\n  Backings:\n${w.backings.map(b => `    - Backing #${b.id}: ${b.content}`).join("\n")}`
@@ -264,15 +227,11 @@ Evaluate the following, assuming all Grounds are factually true:
 
 4. **Evidence sufficiency**: Are the Grounds SUFFICIENT to support the Claim? Is there enough evidence to convince a reasonable skeptic? A single weak Ground for a strong Claim is a concern.
 
-5. **Evidence credibility**: Are the Grounds from CREDIBLE sources? Does the source type (e.g., literature, computation) match the nature of the claim being made?
+5. **Warrant-Backing completeness**: If a Warrant relies on a specific methodology or authority, is there a corresponding Backing? An unsupported Warrant is a structural gap.
 
-6. **Warrant-Backing completeness**: If a Warrant relies on a specific methodology or authority, is there a corresponding Backing? An unsupported Warrant is a structural gap.
+6. **Qualifier appropriateness**: If a qualifier is present, does it correctly reflect the overall strength of the argument? Is the argument strong enough to support the qualifier's degree of certainty?
 
-7. **Completeness**: Is the argument complete? Are there obvious gaps in the reasoning chain?
-
-8. **Qualifier appropriateness**: If a qualifier is present, does it correctly reflect the overall strength of the argument? Is the argument strong enough to support the qualifier's degree of certainty?
-
-9. **Rebuttal coverage**: Are there obvious counter-arguments or limitations that are NOT captured by existing Rebuttals? If the Claim is unqualified, are Rebuttals especially necessary?
+7. **Rebuttal coverage**: Are there obvious counter-arguments or limitations that are NOT captured by existing Rebuttals? If the Claim is unqualified, are Rebuttals especially necessary?
 
 ${OUTPUT_FORMAT}`;
 }

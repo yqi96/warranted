@@ -118,21 +118,15 @@ export interface GroundEvidenceReviewData {
     source: string;
     verification: string;
     attachments: string[];
-    refClaimId?: number | null;
   };
-  referencedClaim?: { id: number; content: string } | null;
 }
 
 export function buildGroundEvidencePrompt(data: GroundEvidenceReviewData): string {
-  const { ground, referencedClaim } = data;
+  const { ground } = data;
 
   const attachmentsText = ground.attachments.length > 0
     ? ground.attachments.map(a => `  - ${a}`).join("\n")
     : "  (none)";
-
-  const refClaimText = referencedClaim
-    ? `\n\n**Chain reasoning**: This Ground references Claim #${referencedClaim.id}: ${referencedClaim.content}`
-    : "";
 
   return `You are a rigorous scientific evidence reviewer. Your task is to evaluate whether a Ground's attachments provide sufficient evidence to support its claimed correctness.
 
@@ -144,35 +138,45 @@ IMPORTANT: Before answering, you MUST use your Read tool to read every attachmen
 - Source: ${ground.source}
 - Verification: ${ground.verification}
 - Attachments:
-${attachmentsText}${refClaimText}
+${attachmentsText}
 
 ## Review Checklist
 
-1. **Attachment sufficiency**: Are the listed attachments sufficient to independently verify the Ground's correctness?
-   - For "observed" grounds: Are there experimental results, data files, or observation logs?
-   - For "literature" grounds: Is there a specific citation or reference?
-   - For "hypothesis" grounds marked verified: Is there independent verification evidence?
+Evaluate the following and report any issues found:
+
+1. **Attachment accessibility**: Can all listed attachment files be read? Report an error for any file that does not exist or cannot be accessed.
 
 2. **Description document**: Is there a description document (e.g., ground-<topic>.md) among the attachments that explains:
    - What the ground states
    - How the evidence was produced
    - Where the files come from
+   Report an error if no such document exists. Report a warning if the document exists but does not cover all three aspects.
 
-3. **Content-attachment consistency**: Does the Ground's content accurately describe what the attachments contain?
+3. **Evidence sufficiency**: Are the attachments sufficient to independently verify the Ground's correctness?
+   - For "observed" grounds: Are there experimental results, data files, or observation logs?
+   - For "literature" grounds: Is there a specific citation or reference?
+   - For "hypothesis" grounds marked verified: Is there independent verification evidence?
+   Report an error if the evidence is insufficient. Report a warning if partial evidence exists but gaps remain.
 
-4. **Source appropriateness**: Is the declared source type (${ground.source}) correct given the evidence?
+4. **Content-attachment consistency**: Does the Ground's content accurately describe what the attachments contain? Report an error if the content directly contradicts the attachments. Report a warning for minor discrepancies that don't change the meaning.
+
+5. **Source appropriateness**: Is the declared source type (${ground.source}) correct given the evidence? Report a warning if the source type is debatable but not clearly wrong.
 
 ## Output Format
 
 Respond in JSON:
 {
-  "verdict": "sufficient" | "insufficient" | "needs_improvement",
-  "summary": "One-paragraph assessment",
-  "issues": [
-    {
-      "severity": "major" | "minor" | "info",
-      "message": "Specific issue"
-    }
+  "errors": [
+    "Specific description of the error"
+  ],
+  "warnings": [
+    "Specific description of the warning"
   ]
-}`;
+}
+
+Rules:
+- "errors": The Ground cannot be marked as verified. The verification will be REJECTED.
+- "warnings": Minor issues that should be addressed but don't block verification. The operation will PROCEED.
+- If both arrays are empty, the evidence is sufficient and the Ground passes cleanly.
+- If errors is non-empty, the Ground is REJECTED regardless of warnings.`;
 }

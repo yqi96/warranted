@@ -8,6 +8,7 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import * as service from "./service.ts";
+import * as repo from "./repo.ts";
 import {
   ToulminError,
   NotFoundError,
@@ -21,7 +22,7 @@ import type { ArgumentResult, Stats, ToulminNode, CompileResult, AutoVerifyResul
 import { log, summarizeInput, summarizeOutput } from "./logger.ts";
 import { ELEMENTS, HINTS, WARNINGS } from "./content.ts";
 import type { ReviewConfig } from "./review-config.ts";
-import { executeGroundReview } from "./review-sync.ts";
+import { executeGroundReview, type GroundReviewResult } from "./review-sync.ts";
 import * as compileService from "./compile-service.ts";
 
 // =============================================================================
@@ -38,26 +39,34 @@ function formatError(e: unknown): string {
   return `Unknown error: ${String(e)}`;
 }
 
-function formatReviewResult(title: string, result: { verdict: string; summary: string; issues: Array<{ severity: string; element?: string; nodeId?: number; message: string }> }): string {
-  const lines = [`## ${title}`];
-  
-  if (result.issues.length > 0) {
-    lines.push("", "Issues:");
-    for (const issue of result.issues) {
-      const prefix = issue.severity === "major" ? "⚠️" : issue.severity === "minor" ? "⚡" : "ℹ️";
-      const elementInfo = issue.element ? ` [${issue.element}]` : "";
-      const nodeInfo = issue.nodeId ? ` #${issue.nodeId}` : "";
-      lines.push(`  ${prefix}${elementInfo}${nodeInfo}: ${issue.message}`);
+/** 格式化 Ground 证据审查结果 */
+function formatGroundReviewResult(result: GroundReviewResult): string {
+  const lines: string[] = [];
+  if (result.errors.length > 0) {
+    lines.push("EXECUTION FAILED");
+    lines.push(`${result.errors.length} error(s), ${result.warnings.length} warning(s).`);
+    for (const err of result.errors) {
+      lines.push(`  [ERROR] ground: ${err}`);
     }
-    
-    // 明确要求修复或撤回
-    lines.push(
-      "",
-      "**CRITICAL**: The status update has been applied, but the issues above MUST be resolved immediately. You are required to either fix all identified problems or revert the status change. Do not proceed with other tasks until this is addressed."
-    );
+    for (const warn of result.warnings) {
+      lines.push(`  [WARNING] ground: ${warn}`);
+    }
+  } else if (result.warnings.length > 0) {
+    lines.push(`Ground evidence review passed with ${result.warnings.length} warning(s):`);
+    for (const warn of result.warnings) {
+      lines.push(`  [WARNING] ground: ${warn}`);
+    }
   }
-  
   return lines.join("\n");
+}
+
+/** 将 Ground 的 verification 回退为 pending */
+function revertGroundVerification(db: Database, groundId: number): void {
+  const row = repo.getNodeById(db, groundId);
+  if (!row) return;
+  const data = JSON.parse(row.data);
+  data.verification = "pending";
+  repo.updateNodeFields(db, groundId, { data });
 }
 
 function formatNode(node: ToulminNode): string {
@@ -181,20 +190,10 @@ function formatCompileResult(result: CompileResult): string {
   const totalWarnings = result.elementReviews.reduce((sum, r) => sum + r.warnings.length, 0);
   const passed = result.verdict === "passed";
 
-  // Header line: claim ID only if not (firstCompile AND failed)
-  const showId = !(result.firstCompile && !passed);
-  if (showId) {
-    lines.push(`Claim #${result.claimId}: ${passed ? "EXECUTION SUCCESS" : "EXECUTION FAILED"}`);
-  } else {
-    lines.push(`EXECUTION FAILED`);
-  }
-
-  // Stats line: N errors, M warnings
+  lines.push(`Claim #${result.claimId}: ${passed ? "EXECUTION SUCCESS" : "EXECUTION FAILED"}`);
   lines.push(`${totalErrors} error(s), ${totalWarnings} warning(s).`);
 
-  // List all errors and warnings
   for (const r of result.elementReviews) {
-    if (r.skipped) continue;
     const nodeLabel = r.nodeId ? ` #${r.nodeId}` : "";
     for (const err of r.errors) {
       lines.push(`  [ERROR] ${r.reviewer}${nodeLabel}: ${err}`);
@@ -204,12 +203,6 @@ function formatCompileResult(result: CompileResult): string {
     }
   }
 
-  // Skipped info
-  if (result.skippedCount > 0) {
-    lines.push(`${result.skippedCount} of ${result.totalCount} reviewers skipped (content unchanged).`);
-  }
-
-  // Hints
   if (passed) {
     lines.push("", HINTS.compileSuccess(result.claimId));
   } else {
@@ -286,6 +279,23 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("create_claim", async ({ content, qualifier }: { content: string; qualifier?: string }) => {
       try {
+        // 阻断式定义审查
+        if (reviewConfig) {
+          const review = await compileService.reviewNodeDefinition(reviewConfig, "claim", content, qualifier);
+          if (review.errors.length > 0) {
+            const lines: string[] = ["EXECUTION FAILED"];
+            lines.push(`${review.errors.length} error(s), ${review.warnings.length} warning(s).`);
+            for (const err of review.errors) {
+              lines.push(`  [ERROR] claim: ${err}`);
+            }
+            for (const warn of review.warnings) {
+              lines.push(`  [WARNING] claim: ${warn}`);
+            }
+            return { content: [{ type: "text", text: lines.join("\n") }] };
+          }
+        }
+
+        // 审查通过 → 创建节点
         const claim = service.createClaim(db, content, qualifier);
         const lines = [`Created claim #${claim.id}: ${claim.content}`];
         lines.push("", HINTS.claimNoWarrants);
@@ -316,6 +326,23 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("create_ground", async (opts: any) => {
       try {
+        // 阻断式定义审查
+        if (reviewConfig) {
+          const review = await compileService.reviewNodeDefinition(reviewConfig, "ground", opts.content || "");
+          if (review.errors.length > 0) {
+            const lines: string[] = ["EXECUTION FAILED"];
+            lines.push(`${review.errors.length} error(s), ${review.warnings.length} warning(s).`);
+            for (const err of review.errors) {
+              lines.push(`  [ERROR] ground: ${err}`);
+            }
+            for (const warn of review.warnings) {
+              lines.push(`  [WARNING] ground: ${warn}`);
+            }
+            return { content: [{ type: "text", text: lines.join("\n") }] };
+          }
+        }
+
+        // 审查通过 → 创建节点
         const ground = service.createGround(db, {
           content: opts.content,
           source: opts.source,
@@ -332,8 +359,13 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         if (reviewConfig && opts.verification === "verified") {
           try {
             const reviewResult = await executeGroundReview(reviewConfig, db, ground.id);
-            if (reviewResult) {
-              lines.push("", formatReviewResult("Ground Evidence Review", reviewResult));
+            if (reviewResult.errors.length > 0) {
+              // 阻断: 回退 verification 为 pending
+              revertGroundVerification(db, ground.id);
+              lines.push(`\nGround #${ground.id} verification reverted to pending.`);
+              lines.push("", formatGroundReviewResult(reviewResult));
+            } else if (reviewResult.warnings.length > 0) {
+              lines.push("", formatGroundReviewResult(reviewResult));
             }
           } catch {
             // 审查失败不影响主流程
@@ -365,6 +397,23 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("create_warrant", async ({ claim_id, content, ground_ids }: { claim_id: number; content: string; ground_ids?: number[] }) => {
       try {
+        // 阻断式定义审查
+        if (reviewConfig) {
+          const review = await compileService.reviewNodeDefinition(reviewConfig, "warrant", content);
+          if (review.errors.length > 0) {
+            const lines: string[] = ["EXECUTION FAILED"];
+            lines.push(`${review.errors.length} error(s), ${review.warnings.length} warning(s).`);
+            for (const err of review.errors) {
+              lines.push(`  [ERROR] warrant: ${err}`);
+            }
+            for (const warn of review.warnings) {
+              lines.push(`  [WARNING] warrant: ${warn}`);
+            }
+            return { content: [{ type: "text", text: lines.join("\n") }] };
+          }
+        }
+
+        // 审查通过 → 创建节点
         const warrant = service.createWarrant(db, { content, claimId: claim_id, groundIds: ground_ids });
         let text = `Created warrant #${warrant.id}: ${warrant.content}`;
 
@@ -589,6 +638,30 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("update_node", async (opts: any) => {
       try {
+        // 如果更新了 content，先做阻断式定义审查
+        if (reviewConfig && opts.content !== undefined) {
+          const existingNode = repo.getNodeById(db, opts.node_id);
+          if (existingNode && (existingNode.type === "claim" || existingNode.type === "warrant" || existingNode.type === "ground")) {
+            const review = await compileService.reviewNodeDefinition(
+              reviewConfig,
+              existingNode.type as "claim" | "warrant" | "ground",
+              opts.content,
+              opts.qualifier
+            );
+            if (review.errors.length > 0) {
+              const lines: string[] = ["EXECUTION FAILED"];
+              lines.push(`${review.errors.length} error(s), ${review.warnings.length} warning(s).`);
+              for (const err of review.errors) {
+                lines.push(`  [ERROR] ${existingNode.type}: ${err}`);
+              }
+              for (const warn of review.warnings) {
+                lines.push(`  [WARNING] ${existingNode.type}: ${warn}`);
+              }
+              return { content: [{ type: "text", text: lines.join("\n") }] };
+            }
+          }
+        }
+
         const { node, warnings } = service.updateNode(db, opts.node_id, {
           content: opts.content,
           attachments: opts.attachments,
@@ -607,8 +680,13 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         if (reviewConfig && node.type === "ground" && opts.verification === "verified") {
           try {
             const reviewResult = await executeGroundReview(reviewConfig, db, node.id);
-            if (reviewResult) {
-              text += "\n\n" + formatReviewResult("Ground Evidence Review", reviewResult);
+            if (reviewResult.errors.length > 0) {
+              // 阻断: 回退 verification 为 pending
+              revertGroundVerification(db, node.id);
+              text += `\nGround #${node.id} verification reverted to pending.`;
+              text += "\n\n" + formatGroundReviewResult(reviewResult);
+            } else if (reviewResult.warnings.length > 0) {
+              text += "\n\n" + formatGroundReviewResult(reviewResult);
             }
           } catch {
             // 审查失败不影响主流程
@@ -678,29 +756,4 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     })
   );
 
-  // ===========================================================================
-  // 13. compile
-  // ===========================================================================
-  server.registerTool(
-    "compile",
-    {
-      title: "Compile Argument",
-      description: ELEMENTS.compile.description,
-      inputSchema: {
-        claim_id: z.number().describe(ELEMENTS.compile.claimId),
-      },
-    },
-    withLog("compile", async ({ claim_id }: { claim_id: number }) => {
-      try {
-        if (!reviewConfig) {
-          return { content: [{ type: "text", text: "Error: Review is not configured. Cannot compile. The --review-config flag is required." }] };
-        }
-        const result = await compileService.compileArgument(db, reviewConfig, claim_id);
-        const text = formatCompileResult(result);
-        return { content: [{ type: "text", text }] };
-      } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
-      }
-    })
-  );
 }

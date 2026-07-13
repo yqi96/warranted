@@ -10,6 +10,7 @@ import { buildArgumentReviewPrompt, buildGroundEvidencePrompt } from "./review-p
 import { callAgent, parseLLMResponse } from "./review-llm.ts";
 import { writeFileSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
+import { log } from "./logger.ts";
 import * as repo from "./repo.ts";
 
 // =============================================================================
@@ -101,60 +102,72 @@ export async function executeArgumentReview(
 // Ground Evidence Review（同步）
 // =============================================================================
 
+/** Ground 证据审查结果 */
+export interface GroundReviewResult {
+  errors: string[];
+  warnings: string[];
+}
+
 export async function executeGroundReview(
   config: ReviewConfig,
   db: Database,
   groundId: number
-): Promise<ReviewResult | null> {
+): Promise<GroundReviewResult> {
   // 1. 从数据库读取 Ground 数据
   const groundRow = repo.getNodeById(db, groundId);
-  if (!groundRow) return null;
+  if (!groundRow) {
+    return { errors: [`Ground #${groundId} not found.`], warnings: [] };
+  }
 
   const groundData = JSON.parse(groundRow.data);
 
-  // 2. 如果有 ref_ass_id，读取 referenced Claim
-  let referencedClaim = null;
-  if (groundData.ref_ass_id) {
-    const claimRow = repo.getNodeById(db, groundData.ref_ass_id);
-    if (claimRow) {
-      referencedClaim = {
-        id: groundData.ref_ass_id,
-        content: claimRow.content,  // content 是独立字段
-      };
-    }
+  // 2. 链式推理 Ground（有 ref_claim_id）跳过证据审查
+  if (groundData.ref_claim_id !== null && groundData.ref_claim_id !== undefined) {
+    log("ground_review", "OK", 0,
+      `START ground_reviewer: ground=#${groundId} (chain reasoning → skip)`);
+    log("ground_review", "OK", 0,
+      `END ground_reviewer: ground=#${groundId} → skipped (chain reasoning, ref_claim_id=${groundData.ref_claim_id})`);
+    return { errors: [], warnings: [] };
   }
 
   // 3. 构建 Prompt
   const prompt = buildGroundEvidencePrompt({
     ground: {
       id: groundId,
-      content: groundRow.content,  // content 是独立字段
+      content: groundRow.content,
       source: groundData.source || "unknown",
       verification: groundData.verification || "pending",
       attachments: groundData.attachments || [],
-      refClaimId: groundData.ref_ass_id,
     },
-    referencedClaim,
   });
 
   // 4. 调用 LLM
   try {
-    const cwd = dirname(dirname(config.dbPath));  // .toulmin 的父目录（项目根目录）
+    const cwd = dirname(dirname(config.dbPath));
+    log("ground_review", "OK", 0,
+      `START ground_reviewer: ground=#${groundId}`);
+    const t0 = Date.now();
+
     const response = await callAgent(config, prompt, groundData.attachments || [], cwd);
-    const result = parseLLMResponse(response, "insufficient") as unknown as ReviewResult;
+    const elapsed = Date.now() - t0;
+    const parsed = parseLLMResponse(response, "");
+    const errors: string[] = ((parsed.errors as Array<any>) || []).map(e =>
+      typeof e === "string" ? e : e.message || String(e)
+    );
+    const warnings: string[] = ((parsed.warnings as Array<any>) || []).map(w =>
+      typeof w === "string" ? w : w.message || String(w)
+    );
+
+    log("ground_review", "OK", elapsed,
+      `END ground_reviewer: ground=#${groundId} → ${errors.length} error(s), ${warnings.length} warning(s)`);
 
     // 5. 保存结果到 review 目录
-    saveReviewResult(config, "ground_evidence", { groundId }, result);
+    saveGroundReviewFile(config, groundId, { errors, warnings });
 
-    // 6. 如果 verdict 不是 sufficient，返回结果
-    if (result.verdict !== "sufficient") {
-      return result;
-    }
-
-    return null; // sufficient 时静默
+    return { errors, warnings };
   } catch (error) {
-    console.error(`[Toulmin Review] Ground review failed: ${error}`);
-    return null;
+    log("ground_review", "ERR", 0, `ground=#${groundId}: ${error}`);
+    return { errors: [`Reviewer error: ${error}`], warnings: [] };
   }
 }
 
@@ -162,6 +175,23 @@ export async function executeGroundReview(
 // 工具函数
 // =============================================================================
 
+/** 将 Ground 证据审查结果保存为独立 JSON 文件到 reviews/ 目录 */
+function saveGroundReviewFile(
+  config: ReviewConfig,
+  groundId: number,
+  result: GroundReviewResult
+): void {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filename = `ground_evidence_ground${groundId}_${timestamp}.json`;
+  const filepath = join(config.reviewDir, filename);
+
+  mkdirSync(config.reviewDir, { recursive: true });
+  writeFileSync(filepath, JSON.stringify({
+    groundId,
+    reviewedAt: new Date().toISOString().slice(0, 19),
+    ...result,
+  }, null, 2), "utf-8");
+}
 
 function saveReviewResult(
   config: ReviewConfig,

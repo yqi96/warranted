@@ -39,8 +39,8 @@ afterEach(() => {
 // =============================================================================
 
 describe("工具注册", () => {
-  test("注册了 12 个工具", () => {
-    expect(Object.keys(tools).length).toBe(12);
+  test("注册了 11 个工具", () => {
+    expect(Object.keys(tools).length).toBe(11);
   });
 
   test("所有必需工具已注册", () => {
@@ -48,7 +48,7 @@ describe("工具注册", () => {
       "create_claim", "create_ground", "create_warrant",
       "create_backing", "create_rebuttal",
       "list_claims", "get_argument", "search_nodes",
-      "get_stats", "update_node", "delete_node", "compile",
+      "get_stats", "update_node", "delete_node",
     ];
     for (const name of expected) {
       expect(tools[name]).toBeTruthy();

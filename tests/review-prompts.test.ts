@@ -101,24 +101,7 @@ describe("buildGroundEvidencePrompt", () => {
     expect(prompt).toContain("observed");
   });
 
-  test("包含引用 Claim", () => {
-    const prompt = buildGroundEvidencePrompt({
-      ground: {
-        id: 5,
-        content: "引用证据",
-        source: "hypothesis",
-        verification: "verified",
-        attachments: ["/proof.md"],
-        refClaimId: 1,
-      },
-      referencedClaim: { id: 1, content: "被引用的主张" },
-    });
-
-    expect(prompt).toContain("Claim #1");
-    expect(prompt).toContain("被引用的主张");
-  });
-
-  test("输出格式要求包含 verdict", () => {
+  test("输出格式要求包含 errors 和 warnings", () => {
     const prompt = buildGroundEvidencePrompt({
       ground: {
         id: 5,
@@ -129,9 +112,8 @@ describe("buildGroundEvidencePrompt", () => {
       },
     });
 
-    expect(prompt).toContain('"sufficient"');
-    expect(prompt).toContain('"insufficient"');
-    expect(prompt).toContain('"needs_improvement"');
+    expect(prompt).toContain('"errors"');
+    expect(prompt).toContain('"warnings"');
   });
 
   test("Ground 证据 Prompt 也指示 agent 读取附件", () => {

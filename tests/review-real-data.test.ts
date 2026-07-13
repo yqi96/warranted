@@ -118,7 +118,7 @@ describe("真实数据审查测试", () => {
       }
 
       expect(result.verdict).toBeTruthy();
-      expect(["sound", "concerns", "invalid"]).toContain(result.verdict);
+      expect(["sound", "concerns", "invalid"]).toContain(result.verdict as string);
     }, { timeout: 180_000 });
   }
 
@@ -148,13 +148,16 @@ describe("真实数据审查测试", () => {
       console.error(`[Integration] Attachments:`, groundData.attachments);
 
       const raw = await callAgent(config, prompt, groundData.attachments || [], PROJECT_DIR);
-      const result = parseLLMResponse(raw, "needs_improvement");
+      const result = parseLLMResponse(raw, "");
 
-      console.error(`[Integration] Verdict: ${result.verdict}`);
-      console.error(`[Integration] Summary: ${result.summary}`);
+      const errors = (result.errors as string[]) || [];
+      const warnings = (result.warnings as string[]) || [];
+      console.error(`[Integration] Errors: ${errors.length}, Warnings: ${warnings.length}`);
+      for (const e of errors) console.error(`  [ERROR] ${e}`);
+      for (const w of warnings) console.error(`  [WARNING] ${w}`);
 
-      expect(result.verdict).toBeTruthy();
-      expect(["sufficient", "insufficient", "needs_improvement"]).toContain(result.verdict);
+      expect(Array.isArray(errors)).toBe(true);
+      expect(Array.isArray(warnings)).toBe(true);
     }, { timeout: 180_000 });
   }
 });

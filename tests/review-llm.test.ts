@@ -28,12 +28,20 @@ describe("parseLLMResponse", () => {
     expect(result.verdict).toBe("invalid");
   });
 
-  test("无 verdict 字段时使用 fallback", () => {
+  test("无 verdict 字段时直接返回解析结果", () => {
     const raw = JSON.stringify({ summary: "Some analysis without verdict" });
 
     const result = parseLLMResponse(raw, "concerns");
-    expect(result.verdict).toBe("concerns");
-    expect(result._raw).toBe(raw);
+    expect(result.summary).toBe("Some analysis without verdict");
+    expect(result.verdict).toBeUndefined();
+  });
+
+  test("errors/warnings 格式直接返回", () => {
+    const raw = JSON.stringify({ errors: ["error1"], warnings: ["warning1"] });
+
+    const result = parseLLMResponse(raw, "concerns");
+    expect(result.errors).toEqual(["error1"]);
+    expect(result.warnings).toEqual(["warning1"]);
   });
 
   test("无效 JSON 时使用 fallback", () => {

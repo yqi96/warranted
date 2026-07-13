@@ -1,7 +1,10 @@
 /**
  * Toulmin MCP — Compile Service 层
  *
- * 编译编排：结构预检 → 两阶段审查 → 汇总 → 存储状态
+ * compile 包含多项检查，不同时机触发：
+ * - 节点定义检查：节点 content 变化时触发（reviewNodeDefinition）
+ * - 逻辑链检查：论证图哈希变化时触发（compileArgument → runChainReview）
+ *
  * 失效管理：节点修改时清除受影响 Claim 的 compiled 状态
  */
 
@@ -12,31 +15,35 @@ import type {
   CompileVerdict,
   ElementReviewResult,
   AutoVerifyResult,
-  NodeRow,
 } from "./types.ts";
 import * as repo from "./repo.ts";
-import { runCompileReviewers } from "./compile-reviewers.ts";
+import { runChainReview } from "./compile-reviewers.ts";
 import { computeArgumentHash } from "./merkle-hash.ts";
 import { findWarrantsUsingGround } from "./service.ts";
 import { WARNINGS } from "./content.ts";
 import { log } from "./logger.ts";
 import { writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { callAgent, parseLLMResponse } from "./review-llm.ts";
+import {
+  buildClaimReviewPrompt,
+  buildWarrantReviewPrompt,
+  buildGroundReviewPrompt,
+} from "./compile-prompts.ts";
 
 // =============================================================================
 // 审查结果持久化
-// ============================================================================
+// =============================================================================
 
-/** 将单个 reviewer 的审查结果保存为独立 JSON 文件到 reviews/ 目录 */
-function saveReviewResultFile(
+/** 将逻辑链审查结果保存为独立 JSON 文件到 reviews/ 目录 */
+function saveChainReviewFile(
   config: ReviewConfig,
   claimId: number,
   review: ElementReviewResult,
   compiledAt: string
 ): void {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const nodePart = review.nodeId ? `_${review.nodeId}` : "";
-  const filename = `compile_claim${claimId}_${review.reviewer}${nodePart}_${timestamp}.json`;
+  const filename = `compile_claim${claimId}_chain_${timestamp}.json`;
   const filepath = join(config.reviewDir, filename);
 
   mkdirSync(config.reviewDir, { recursive: true });
@@ -45,6 +52,81 @@ function saveReviewResultFile(
     compiledAt,
     ...review,
   }, null, 2), "utf-8");
+}
+
+/** 将节点定义审查结果保存为独立 JSON 文件到 reviews/ 目录 */
+function saveNodeReviewFile(
+  config: ReviewConfig,
+  elementType: "claim" | "warrant" | "ground",
+  content: string,
+  result: { errors: string[]; warnings: string[] },
+  reviewedAt: string
+): void {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filename = `create_${elementType}_${timestamp}.json`;
+  const filepath = join(config.reviewDir, filename);
+
+  mkdirSync(config.reviewDir, { recursive: true });
+  writeFileSync(filepath, JSON.stringify({
+    type: "create",
+    elementType,
+    content,
+    reviewedAt,
+    ...result,
+  }, null, 2), "utf-8");
+}
+
+// =============================================================================
+// 节点定义检查（content 变化时触发）
+// =============================================================================
+
+/**
+ * 对 content 执行节点定义审查。
+ * create 时阻断（errors 非空 → 不入库），update 时非阻断（仅报告）。
+ * 审查结果保存到 reviews/ 目录。
+ */
+export async function reviewNodeDefinition(
+  config: ReviewConfig,
+  elementType: "claim" | "warrant" | "ground",
+  content: string,
+  qualifier?: string | null
+): Promise<{ errors: string[]; warnings: string[] }> {
+  const cwd = dirname(dirname(config.dbPath));
+  const reviewedAt = new Date().toISOString().slice(0, 19);
+  let prompt: string;
+
+  if (elementType === "claim") {
+    prompt = buildClaimReviewPrompt({
+      id: 0,
+      content,
+      qualifier: qualifier ?? null,
+    });
+  } else if (elementType === "warrant") {
+    prompt = buildWarrantReviewPrompt({ id: 0, content });
+  } else {
+    prompt = buildGroundReviewPrompt({ id: 0, content });
+  }
+
+  let result: { errors: string[]; warnings: string[] };
+
+  try {
+    const raw = await callAgent(config, prompt, [], cwd);
+    const parsed = parseLLMResponse(raw, "");
+    const errors: string[] = ((parsed.errors as Array<any>) || []).map(e =>
+      typeof e === "string" ? e : e.message || String(e)
+    );
+    const warnings: string[] = ((parsed.warnings as Array<any>) || []).map(w =>
+      typeof w === "string" ? w : w.message || String(w)
+    );
+    result = { errors, warnings };
+  } catch (error) {
+    result = { errors: [`Reviewer error: ${error}`], warnings: [] };
+  }
+
+  // 保存审查结果到 reviews/ 目录
+  saveNodeReviewFile(config, elementType, content, result, reviewedAt);
+
+  return result;
 }
 
 // =============================================================================
@@ -58,7 +140,6 @@ function saveReviewResultFile(
 export function structuralPreCheck(db: Database, claimId: number): string[] {
   const errors: string[] = [];
 
-  // Claim 存在
   const claimRow = repo.getNodeById(db, claimId);
   if (!claimRow) {
     errors.push(`Claim #${claimId} not found.`);
@@ -69,14 +150,12 @@ export function structuralPreCheck(db: Database, claimId: number): string[] {
     return errors;
   }
 
-  // 有 Warrant
   const warrants = repo.findWarrantsByClaim(db, claimId);
   if (warrants.length === 0) {
     errors.push(`Claim #${claimId} has no Warrants. Create at least one Warrant first.`);
     return errors;
   }
 
-  // 每个 Warrant 有 Ground，且 Ground 节点存在
   for (const w of warrants) {
     const wData = JSON.parse(w.data);
     const groundIds: number[] = wData.ground_ids || [];
@@ -98,15 +177,12 @@ export function structuralPreCheck(db: Database, claimId: number): string[] {
 }
 
 // =============================================================================
-// Compile 主流程
+// 逻辑链审查（论证图哈希变化时触发）
 // =============================================================================
 
 /**
- * 编译 Claim 的完整 argument：
- * 1. 结构预检
- * 2. 两阶段 LLM 审查
- * 3. 汇总结果
- * 4. 存储 compile_state + 设置 compiled 标志
+ * 对 Claim 的 argument 执行逻辑链审查。
+ * 由 auto-review 在论证图哈希变化时触发。
  */
 export async function compileArgument(
   db: Database,
@@ -115,70 +191,49 @@ export async function compileArgument(
 ): Promise<CompileResult> {
   const compiledAt = new Date().toISOString().slice(0, 19);
   const t0 = Date.now();
-  log("compile", "OK", 0, `START claim=#${claimId}`);
+  log("review_dispatch", "OK", 0, `START chain review claim=#${claimId}`);
 
   // 1. 结构预检
   const structuralErrors = structuralPreCheck(db, claimId);
   if (structuralErrors.length > 0) {
-    log("compile", "ERR", 0, `claim=#${claimId} → structural pre-check failed: ${structuralErrors.join("; ")}`);
+    log("review_dispatch", "ERR", 0, `claim=#${claimId} → structural pre-check failed: ${structuralErrors.join("; ")}`);
     return {
       claimId,
       verdict: "failed" as CompileVerdict,
       summary: `Structural pre-check failed: ${structuralErrors.join("; ")}`,
       elementReviews: [{
-        reviewer: "claim" as const,
-        nodeId: claimId,
+        reviewer: "chain" as const,
         errors: structuralErrors,
         warnings: [],
       }],
       compiledAt,
-      skippedCount: 0,
-      totalCount: 0,
-      firstCompile: true,
     };
   }
 
-  // 2. 加载上次的 node_hashes
-  const prevState = repo.getCompileState(db, claimId);
-  const previousHashes: Record<number, string> = prevState?.nodeHashes || {};
+  // 2. 运行逻辑链审查
+  const { elementReviews } = await runChainReview(config, db, claimId);
 
-  // 检查 Claim 是否曾经成功编译过
-  const claimRowBefore = repo.getNodeById(db, claimId);
-  const wasPreviouslyCompiled = claimRowBefore ?
-    !!(JSON.parse(claimRowBefore.data).compiled) : false;
-
-  // 3. 运行两阶段审查
-  const { elementReviews, currentHashes } = await runCompileReviewers(
-    config, db, claimId, previousHashes
-  );
-
-  // 4. 汇总结果
-  const skippedCount = elementReviews.filter(r => r.skipped).length;
-  const totalCount = elementReviews.length;
+  // 3. 汇总结果
   const hasError = elementReviews.some(r => r.errors.length > 0);
   const verdict: CompileVerdict = hasError ? "failed" : "passed";
 
-  // 汇总 summary
   const totalErrors = elementReviews.reduce((sum, r) => sum + r.errors.length, 0);
   const totalWarnings = elementReviews.reduce((sum, r) => sum + r.warnings.length, 0);
   const summaryParts: string[] = [];
   if (hasError) {
-    summaryParts.push(`Compile failed with ${totalErrors} error(s) from ${elementReviews.filter(r => r.errors.length > 0).length} reviewer(s).`);
+    summaryParts.push(`Compile failed with ${totalErrors} error(s).`);
   } else if (totalWarnings > 0) {
     summaryParts.push(`Compile passed with ${totalWarnings} warning(s) noted.`);
   } else {
-    summaryParts.push("Compile passed. All reviewers confirmed the argument is sound.");
-  }
-  if (skippedCount > 0) {
-    summaryParts.push(`${skippedCount} reviewer(s) skipped (content unchanged).`);
+    summaryParts.push("Compile passed. Argument is logically sound.");
   }
   const summary = summaryParts.join(" ");
 
-  // 5. 存储 compile_state（含 argument_hash）
+  // 4. 存储 compile_state（含 argument_hash）
   const argHash = computeArgumentHash(db, claimId);
-  repo.saveCompileState(db, claimId, verdict, summary, currentHashes, argHash);
+  repo.saveCompileState(db, claimId, verdict, summary, argHash);
 
-  // 6. 更新 compiled/stale 标志
+  // 5. 更新 compiled/stale 标志
   const claimRow = repo.getNodeById(db, claimId);
   if (claimRow) {
     const data = JSON.parse(claimRow.data);
@@ -187,7 +242,6 @@ export async function compileArgument(
       data.compiled_at = compiledAt;
       data.stale = false;
     } else {
-      // 审查失败 → 清除 compiled（如果之前是 compiled 的）+ 标记 stale
       if (data.compiled) {
         data.compiled = false;
       }
@@ -197,12 +251,12 @@ export async function compileArgument(
   }
 
   const elapsed = Date.now() - t0;
-  log("compile", "OK", elapsed, `END claim=#${claimId} → verdict=${verdict}, skipped=${skippedCount}/${totalCount}, "${summary.slice(0, 80)}"`);
+  log("review_dispatch", "OK", elapsed, `END claim=#${claimId} → verdict=${verdict}, "${summary.slice(0, 80)}"`);
 
-  // 7. 保存每个 reviewer 的审查结果到 reviews/ 目录（独立文件）
+  // 6. 保存审查结果到 reviews/ 目录
   for (const review of elementReviews) {
     try {
-      saveReviewResultFile(config, claimId, review, compiledAt);
+      saveChainReviewFile(config, claimId, review, compiledAt);
     } catch {
       // 保存失败不影响主流程
     }
@@ -214,9 +268,6 @@ export async function compileArgument(
     summary,
     elementReviews,
     compiledAt,
-    skippedCount,
-    totalCount,
-    firstCompile: !wasPreviouslyCompiled,
   };
 }
 
@@ -243,7 +294,6 @@ function findAffectedClaimIdsDirect(db: Database, nodeId: number): number[] {
       break;
 
     case "ground":
-      // 找到引用该 Ground 的所有 Warrant，再找其 Claim
       const allWarrants = repo.listNodesByType(db, "warrant");
       for (const w of allWarrants) {
         const wData = JSON.parse(w.data);
@@ -254,7 +304,6 @@ function findAffectedClaimIdsDirect(db: Database, nodeId: number): number[] {
       break;
 
     case "backing": {
-      // Backing → Warrant → Claim
       const wRow = repo.getNodeById(db, data.warrant_id);
       if (wRow) {
         const wData = JSON.parse(wRow.data);
@@ -281,31 +330,22 @@ function findAffectedClaimIdsDirect(db: Database, nodeId: number): number[] {
 
 /**
  * 根据被修改节点，向上查找所有受影响的 Claim ID（含链式推理 BFS 传播）。
- *
- * 两步走：
- * 1. findAffectedClaimIdsDirect: 直接受影响（同结构内的 claim/warrant/ground/backing/rebuttal）
- * 2. BFS 链式传播：对每个受影响的 Claim，通过 Ground.ref_claim_id 向上找父 Claim
  */
 export function findAffectedClaimIds(db: Database, nodeId: number): number[] {
-  // Step 1: 直接受影响的 Claim
   const directIds = findAffectedClaimIdsDirect(db, nodeId);
-
-  // Step 2: 通过链式推理向上传播（BFS）
   const allAffected = new Set<number>(directIds);
   const queue = [...directIds];
 
   while (queue.length > 0) {
     const claimId = queue.shift()!;
-    // 找到所有 ref_claim_id = claimId 的 Ground（即引用该 Claim 作为证据的 Ground）
     const refGrounds = repo.findGroundsByRefClaim(db, claimId);
     for (const g of refGrounds) {
-      // 找到引用该 Ground 的所有 Warrant
       const usingWarrants = findWarrantsUsingGround(db, g.id);
       for (const w of usingWarrants) {
         const wData = JSON.parse(w.data);
         if (wData.claim_id && !allAffected.has(wData.claim_id)) {
           allAffected.add(wData.claim_id);
-          queue.push(wData.claim_id); // 继续向上传播
+          queue.push(wData.claim_id);
         }
       }
     }
@@ -316,7 +356,6 @@ export function findAffectedClaimIds(db: Database, nodeId: number): number[] {
 
 /**
  * 清除受影响 Claim 的 compiled 状态。
- * 返回需要通知 agent 的 Warning 消息。
  */
 export function invalidateCompiledClaims(db: Database, nodeId: number): string[] {
   const affectedIds = findAffectedClaimIds(db, nodeId);
@@ -343,22 +382,19 @@ export function invalidateCompiledClaims(db: Database, nodeId: number): string[]
 /**
  * 变更后自动验证。
  *
- * 三种情况：
- * - Case 1: 有 compile_state 且有 argumentHash（之前审查过，无论 pass/fail）
- *   → 哈希比较：未变→跳过，变了→自动触发审查（smart skip）
- * - Case 2: 从未审查过（无 compile_state 或无 argumentHash）
- *   → 结构完整（ground→warrant→claim 链路成立）→ 自动触发首次 LLM 审查
- *   → 结构不完整 → 标记 stale
- * - 无 reviewConfig → 仅标记 stale，不调 LLM
+ * - 有 compile_state + argumentHash 未变 → no-change
+ * - 有 compile_state + argumentHash 变了 → 自动触发逻辑链审查
+ * - 无 compile_state + 结构完整 → 自动触发首次逻辑链审查
+ * - 无 compile_state + 结构不完整 → 标记 stale
+ * - 无 reviewConfig → 标记 stale
  */
 export async function autoVerifyAfterMutation(
   db: Database,
   config: ReviewConfig | null,
   affectedClaimIds: number[]
 ): Promise<AutoVerifyResult[]> {
-  log("auto_verify", "OK", 0, `triggered for ${affectedClaimIds.length} claim(s): [${affectedClaimIds.join(", ")}]`);
+  log("auto_review", "OK", 0, `triggered for ${affectedClaimIds.length} claim(s): [${affectedClaimIds.join(", ")}]`);
 
-  // 并行处理所有受影响的 Claim
   const promises = affectedClaimIds.map(async (claimId): Promise<AutoVerifyResult> => {
     const t0 = Date.now();
     const claimRow = repo.getNodeById(db, claimId);
@@ -367,49 +403,43 @@ export async function autoVerifyAfterMutation(
     }
 
     const prevState = repo.getCompileState(db, claimId);
-
-    // 计算当前 argument hash
     const newArgHash = computeArgumentHash(db, claimId);
 
-    // Case 1: 有 compile_state 且有 argumentHash（之前审查过，无论 pass/fail）
+    // Case 1: 有 compile_state 且有 argumentHash
     if (prevState && prevState.argumentHash) {
       if (prevState.argumentHash === newArgHash) {
-        // 哈希未变 — 无需任何操作
-        log("auto_verify", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged → no-change`);
+        log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged → no-change`);
         return { claimId, action: "no-change" };
       }
-      // 哈希变化 → 需要重新 review
+      // 哈希变化 → 需要重新审查
       if (!config) {
-        log("auto_verify", "OK", Date.now() - t0, `claim=#${claimId}: hash changed, no config → marked-stale`);
+        log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash changed, no config → marked-stale`);
         repo.setClaimStale(db, claimId, true);
         if (prevState.verdict === "passed") {
           repo.clearCompiledFlag(db, claimId);
         }
         return { claimId, action: "marked-stale", message: "Review not configured" };
       }
-      // 自动触发两阶段审查（利用 smart skip 只 review 变化节点）
-      log("auto_verify", "OK", 0, `claim=#${claimId}: hash changed → auto-review`);
+      log("auto_review", "OK", 0, `claim=#${claimId}: hash changed → auto-review`);
       const compileResult = await compileArgument(db, config, claimId);
       return { claimId, action: "auto-reviewed", compileResult };
     }
 
-    // Case 2: 从未审查过（无 compile_state 或无 argumentHash）
+    // Case 2: 从未审查过
     const structuralErrors = structuralPreCheck(db, claimId);
     if (structuralErrors.length === 0) {
-      // 结构完整 → 触发首次 LLM 审查
       if (config) {
-        log("auto_verify", "OK", 0, `claim=#${claimId}: structure complete → first review`);
+        log("auto_review", "OK", 0, `claim=#${claimId}: structure complete → first review`);
         const compileResult = await compileArgument(db, config, claimId);
         return { claimId, action: "auto-reviewed", compileResult };
       }
-      // 无 config → 标记 stale
-      log("auto_verify", "OK", Date.now() - t0, `claim=#${claimId}: structure complete, no config → marked-stale`);
+      log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: structure complete, no config → marked-stale`);
       repo.setClaimStale(db, claimId, true);
       return { claimId, action: "marked-stale", message: "Review not configured" };
     }
 
     // 结构不完整 → 标记 stale
-    log("auto_verify", "OK", Date.now() - t0, `claim=#${claimId}: structure incomplete → marked-stale`);
+    log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: structure incomplete → marked-stale`);
     const claimData = JSON.parse(claimRow.data);
     if (!claimData.stale) {
       repo.setClaimStale(db, claimId, true);
@@ -418,8 +448,7 @@ export async function autoVerifyAfterMutation(
   });
 
   const results = await Promise.all(promises);
-  // 记录每个 claim 的处理结果
   const summary = results.map(r => `claim=#${r.claimId}:${r.action}`).join(", ");
-  log("auto_verify", "OK", 0, `completed: ${summary}`);
+  log("auto_review", "OK", 0, `completed: ${summary}`);
   return results;
 }

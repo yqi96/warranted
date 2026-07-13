@@ -4,6 +4,7 @@
  * 测试 autoVerifyAfterMutation 的逻辑分支（不含 LLM 调用）。
  */
 
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   createTestDb,
   cleanupDb,
@@ -44,7 +45,7 @@ describe("autoVerifyAfterMutation", () => {
     data.compiled = true;
     data.compiled_at = "2025-01-01";
     repo.updateNodeFields(db, claim.id, { data });
-    repo.saveCompileState(db, claim.id, "passed", "ok", {}, argHash);
+    repo.saveCompileState(db, claim.id, "passed", "ok", argHash);
 
     const results = await autoVerifyAfterMutation(db, null, [claim.id]);
 
@@ -75,7 +76,7 @@ describe("autoVerifyAfterMutation", () => {
     data.compiled = true;
     data.compiled_at = "2025-01-01";
     repo.updateNodeFields(db, claim.id, { data });
-    repo.saveCompileState(db, claim.id, "passed", "ok", {}, argHash);
+    repo.saveCompileState(db, claim.id, "passed", "ok", argHash);
 
     // Modify content → hash will change
     repo.updateNodeFields(db, claim.id, { content: "Modified claim" });
@@ -171,7 +172,7 @@ describe("autoVerifyAfterMutation", () => {
     const argHash = computeArgumentHash(db, claim.id);
 
     // 存储 failed compile_state（有 argumentHash）
-    repo.saveCompileState(db, claim.id, "failed", "Issues found", {}, argHash);
+    repo.saveCompileState(db, claim.id, "failed", "Issues found", argHash);
     // 不设置 compiled=true（因为审查失败了）
 
     const results = await autoVerifyAfterMutation(db, null, [claim.id]);
@@ -184,7 +185,7 @@ describe("autoVerifyAfterMutation", () => {
     const argHash = computeArgumentHash(db, claim.id);
 
     // 存储 failed compile_state
-    repo.saveCompileState(db, claim.id, "failed", "Issues found", {}, argHash);
+    repo.saveCompileState(db, claim.id, "failed", "Issues found", argHash);
 
     // 修改 content → 哈希变化
     repo.updateNodeFields(db, claim.id, { content: "Modified claim" });
@@ -208,7 +209,7 @@ describe("autoVerifyAfterMutation", () => {
     data.compiled = true;
     data.compiled_at = "2025-01-01";
     repo.updateNodeFields(db, claim.id, { data });
-    repo.saveCompileState(db, claim.id, "passed", "ok", {}, argHash);
+    repo.saveCompileState(db, claim.id, "passed", "ok", argHash);
 
     // 修改 content → 哈希变化
     repo.updateNodeFields(db, claim.id, { content: "Modified claim" });

@@ -38,7 +38,7 @@ export async function callAgent(
       // 工作目录（agent 在此目录下搜索和读取文件）
       ...(cwd ? { cwd } : {}),
       // 禁用所有 MCP 服务器（reviewer 不需要 MCP 工具）
-      mcpServers: [],
+      mcpServers: {},
     },
   });
 
@@ -59,11 +59,12 @@ export async function callAgent(
 
 /**
  * 解析 Agent 的 JSON 响应。
- * 如果解析失败，将原始文本包装为 concerns verdict。
+ * 期望格式：{ errors: [], warnings: [] }
+ * 如果解析失败，将原始文本包装为 errors fallback。
  */
 export function parseLLMResponse(
   raw: string,
-  fallbackVerdict: string
+  _fallback: string
 ): Record<string, unknown> {
   // 尝试提取 JSON 块（Agent 可能用 ```json 包裹）
   let jsonText = raw.trim();
@@ -74,23 +75,11 @@ export function parseLLMResponse(
 
   try {
     const parsed = JSON.parse(jsonText);
-    if (parsed && typeof parsed === "object" && parsed.verdict) {
+    if (parsed && typeof parsed === "object") {
       return parsed;
     }
-    return {
-      verdict: fallbackVerdict,
-      summary: parsed?.summary || jsonText.slice(0, 500),
-      issues: [],
-      suggestions: [],
-      _raw: raw,
-    };
+    return { errors: [jsonText.slice(0, 500)], warnings: [] };
   } catch {
-    return {
-      verdict: fallbackVerdict,
-      summary: raw.slice(0, 500),
-      issues: [],
-      suggestions: [],
-      _raw: raw,
-    };
+    return { errors: [raw.slice(0, 500)], warnings: [] };
   }
 }

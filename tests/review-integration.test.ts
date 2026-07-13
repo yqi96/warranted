@@ -60,7 +60,7 @@ Respond in JSON:
 
     const result = parseLLMResponse(raw, "concerns");
     expect(result.verdict).toBeTruthy();
-    expect(["sound", "concerns", "invalid"]).toContain(result.verdict);
+    expect(["sound", "concerns", "invalid"]).toContain(result.verdict as string);
     console.error("[Integration] Parsed verdict:", result.verdict);
     console.error("[Integration] Parsed summary:", result.summary);
   }, { timeout: 120_000 });

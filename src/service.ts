@@ -14,6 +14,7 @@ import type {
   WarrantNode,
   BackingNode,
   RebuttalNode,
+  ClaimData,
   ClaimStatus,
   GroundSource,
   VerificationStatus,
@@ -226,7 +227,7 @@ export function createClaim(db: Database, content: string, qualifier?: string | 
   if (!content || !content.trim()) {
     throw new ValidationError("Claim content cannot be empty");
   }
-  const data: Record<string, unknown> = { status: "proposed" };
+  const data: ClaimData = { status: "proposed" };
   if (qualifier) data.qualifier = qualifier;
   const row = repo.insertNode(db, "claim", content.trim(), data);
   return toClaimNode(row);

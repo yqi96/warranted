@@ -2,6 +2,7 @@
  * Toulmin MCP — Merkle Tree 哈希计算测试
  */
 
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   createTestDb,
   cleanupDb,

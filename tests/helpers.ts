@@ -210,7 +210,7 @@ export interface SeedResult {
 export function seedBasicArgument(db: Database): SeedResult {
   const claim = makeClaim(db, "核心主张：方法A优于方法B");
   // Set qualifier on the claim via repo
-  const claimData = JSON.parse(db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id)!.data);
+  const claimData = JSON.parse((db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string }).data);
   claimData.qualifier = "仅在图像分类任务上验证";
   db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(claimData), claim.id);
   const updatedClaim = { ...claim } as any;
@@ -257,7 +257,7 @@ export function makeCompiledClaim(
   const claim = makeClaim(db, content);
   const now = new Date().toISOString().slice(0, 19);
   // Set compiled=true in data
-  const data = JSON.parse(db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id)!.data);
+  const data = JSON.parse((db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string }).data);
   data.compiled = true;
   data.compiled_at = now;
   db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(data), claim.id);

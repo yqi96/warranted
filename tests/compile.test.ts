@@ -142,8 +142,6 @@ describe("loadArgumentContext", () => {
     expect(ctx!.warrantRows[0].id).toBe(warrant.id);
     expect(ctx!.groundRows.length).toBe(2);
     expect(ctx!.backingRows.length).toBe(1);
-    // 哈希数量 = claim + warrant + 2 grounds + backing = 5
-    expect(Object.keys(ctx!.currentHashes).length).toBe(5);
   });
 
   test("不存在的 Claim 返回 null", () => {
@@ -203,14 +201,12 @@ describe("findAffectedClaimIds", () => {
 describe("compile_state CRUD", () => {
   test("saveCompileState + getCompileState", () => {
     const claim = makeClaim(db, "Test");
-    const hashes = { 1: "abc", 2: "def" };
-    repo.saveCompileState(db, claim.id, "passed", "All good", hashes);
+    repo.saveCompileState(db, claim.id, "passed", "All good");
     const state = repo.getCompileState(db, claim.id);
     expect(state).not.toBeNull();
     expect(state!.claimId).toBe(claim.id);
     expect(state!.verdict).toBe("passed");
     expect(state!.summary).toBe("All good");
-    expect(state!.nodeHashes).toEqual(hashes);
   });
 
   test("getCompileState 不存在时返回 null", () => {
@@ -220,19 +216,18 @@ describe("compile_state CRUD", () => {
 
   test("deleteCompileState 删除后查询为 null", () => {
     const claim = makeClaim(db, "Test");
-    repo.saveCompileState(db, claim.id, "passed", "", {});
+    repo.saveCompileState(db, claim.id, "passed", "");
     repo.deleteCompileState(db, claim.id);
     expect(repo.getCompileState(db, claim.id)).toBeNull();
   });
 
   test("saveCompileState 覆盖更新（INSERT OR REPLACE）", () => {
     const claim = makeClaim(db, "Test");
-    repo.saveCompileState(db, claim.id, "failed", "First", { 1: "old" });
-    repo.saveCompileState(db, claim.id, "passed", "Second", { 1: "new" });
+    repo.saveCompileState(db, claim.id, "failed", "First");
+    repo.saveCompileState(db, claim.id, "passed", "Second");
     const state = repo.getCompileState(db, claim.id);
     expect(state!.verdict).toBe("passed");
     expect(state!.summary).toBe("Second");
-    expect(state!.nodeHashes).toEqual({ 1: "new" });
   });
 });
 
@@ -252,7 +247,7 @@ describe("invalidateCompiledClaims", () => {
     repo.updateNodeFields(db, claim.id, { data });
 
     // 保存 compile_state
-    repo.saveCompileState(db, claim.id, "passed", "OK", {});
+    repo.saveCompileState(db, claim.id, "passed", "OK");
 
     // 修改 ground → 触发失效
     const warnings = invalidateCompiledClaims(db, ground1.id);

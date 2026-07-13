@@ -209,14 +209,13 @@ export function saveCompileState(
   claimId: number,
   verdict: string,
   summary: string,
-  nodeHashes: Record<number, string>,
   argumentHash?: string
 ): void {
   const now = new Date().toISOString().slice(0, 19);
   const stmt = db.prepare(
     "INSERT OR REPLACE INTO compile_state (claim_id, verdict, summary, node_hashes, argument_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)"
   );
-  stmt.run(claimId, verdict, summary, JSON.stringify(nodeHashes), argumentHash ?? null, now);
+  stmt.run(claimId, verdict, summary, "{}", argumentHash ?? null, now);
 }
 
 /** 获取 compile 状态 */
@@ -228,7 +227,6 @@ export function getCompileState(db: Database, claimId: number): CompileState | n
     claimId: row.claim_id,
     verdict: row.verdict as "passed" | "failed",
     summary: row.summary,
-    nodeHashes: JSON.parse(row.node_hashes),
     argumentHash: row.argument_hash ?? undefined,
     createdAt: row.created_at,
   };

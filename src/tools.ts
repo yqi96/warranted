@@ -18,11 +18,11 @@ import {
   MutuallyExclusiveModeError,
   StatusTransitionError,
 } from "./errors.ts";
-import type { ArgumentResult, Stats, ToulminNode, CompileResult, AutoVerifyResult } from "./types.ts";
+import type { ArgumentResult, Stats, ToulminNode, AutoVerifyResult, NodeRow } from "./types.ts";
 import { log, summarizeInput, summarizeOutput } from "./logger.ts";
 import { ELEMENTS, HINTS, WARNINGS } from "./content.ts";
 import type { ReviewConfig } from "./review-config.ts";
-import { executeGroundReview, type GroundReviewResult } from "./review-sync.ts";
+import { executeGroundReview, reviewGroundEvidencePreCreate } from "./review-sync.ts";
 import * as compileService from "./compile-service.ts";
 
 // =============================================================================
@@ -30,34 +30,9 @@ import * as compileService from "./compile-service.ts";
 // =============================================================================
 
 function formatError(e: unknown): string {
-  if (e instanceof ToulminError) {
-    return `Error: ${e.message}`;
-  }
-  if (e instanceof Error) {
-    return `Error: ${e.message}`;
-  }
-  return `Unknown error: ${String(e)}`;
-}
-
-/** 格式化 Ground 证据审查结果 */
-function formatGroundReviewResult(result: GroundReviewResult): string {
-  const lines: string[] = [];
-  if (result.errors.length > 0) {
-    lines.push("EXECUTION FAILED");
-    lines.push(`${result.errors.length} error(s), ${result.warnings.length} warning(s).`);
-    for (const err of result.errors) {
-      lines.push(`  [ERROR] ground: ${err}`);
-    }
-    for (const warn of result.warnings) {
-      lines.push(`  [WARNING] ground: ${warn}`);
-    }
-  } else if (result.warnings.length > 0) {
-    lines.push(`Ground evidence review passed with ${result.warnings.length} warning(s):`);
-    for (const warn of result.warnings) {
-      lines.push(`  [WARNING] ground: ${warn}`);
-    }
-  }
-  return lines.join("\n");
+  if (e instanceof ToulminError) return e.message;
+  if (e instanceof Error) return e.message;
+  return String(e);
 }
 
 /** 将 Ground 的 verification 回退为 pending */
@@ -71,6 +46,21 @@ function revertGroundVerification(db: Database, groundId: number): void {
 
 function formatNode(node: ToulminNode): string {
   const base = `[${node.type} #${node.id}] ${node.content}`;
+  switch (node.type) {
+    case "claim":
+      return `${base} (status: ${node.status})`;
+    case "ground":
+      return `${base} (source: ${node.source}, verification: ${node.verification})`;
+    case "warrant":
+      return `${base} (claim_id: ${node.claimId}, ground_ids: [${node.groundIds.join(", ")}])`;
+    default:
+      return base;
+  }
+}
+
+/** 不含 content 的简短节点格式（用于 update 返回） */
+function formatNodeBrief(node: ToulminNode): string {
+  const base = `[${node.type} #${node.id}]`;
   switch (node.type) {
     case "claim":
       return `${base} (status: ${node.status})`;
@@ -184,58 +174,128 @@ function formatStats(stats: Stats): string {
   return lines.join("\n");
 }
 
-function formatCompileResult(result: CompileResult): string {
-  const lines: string[] = [];
-  const totalErrors = result.elementReviews.reduce((sum, r) => sum + r.errors.length, 0);
-  const totalWarnings = result.elementReviews.reduce((sum, r) => sum + r.warnings.length, 0);
-  const passed = result.verdict === "passed";
-
-  lines.push(`Claim #${result.claimId}: ${passed ? "EXECUTION SUCCESS" : "EXECUTION FAILED"}`);
-  lines.push(`${totalErrors} error(s), ${totalWarnings} warning(s).`);
-
-  for (const r of result.elementReviews) {
-    const nodeLabel = r.nodeId ? ` #${r.nodeId}` : "";
-    for (const err of r.errors) {
-      lines.push(`  [ERROR] ${r.reviewer}${nodeLabel}: ${err}`);
-    }
-    for (const warn of r.warnings) {
-      lines.push(`  [WARNING] ${r.reviewer}${nodeLabel}: ${warn}`);
-    }
-  }
-
-  if (passed) {
-    lines.push("", HINTS.compileSuccess(result.claimId));
-  } else {
-    lines.push("", HINTS.compileFailed(result.claimId));
-  }
-
-  return lines.join("\n");
-}
-
-function formatAutoVerifyResults(results: AutoVerifyResult[]): string {
-  const lines: string[] = [];
+/** 收集链式审查的所有 errors 和 warnings */
+function collectChainReviewIssues(results: AutoVerifyResult[]): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
   for (const r of results) {
-    switch (r.action) {
-      case "auto-reviewed":
-        if (r.compileResult) {
-          lines.push(formatCompileResult(r.compileResult));
-        }
-        break;
-      case "marked-stale":
-        lines.push(`Claim #${r.claimId} marked as stale — review needed${r.message ? ` (${r.message})` : ""}.`);
-        break;
-      case "no-change":
-        // Silent — hash unchanged, no action needed
-        break;
-      case "skipped":
-        // Silent — claim not found or not applicable
-        break;
+    if (r.action === "auto-reviewed" && r.compileResult) {
+      for (const er of r.compileResult.elementReviews) {
+        errors.push(...er.errors);
+        warnings.push(...er.warnings);
+      }
     }
   }
-  return lines.length > 0 ? lines.join("\n") : "";
+  return { errors, warnings };
 }
 
-type ToolHandler = (input: any) => Promise<{ content: { type: string; text: string }[] }>;
+/** 格式化 errors/warnings 为文本行 */
+function formatReviewIssues(errors: string[], warnings: string[]): string {
+  const parts: string[] = [];
+  for (const e of errors) parts.push(`Error: ${e}`);
+  for (const w of warnings) parts.push(`Warning: ${w}`);
+  return parts.join("\n");
+}
+
+type ToolResult = { content: { type: string; text: string }[]; isError?: boolean };
+type ToolHandler = (input: any) => Promise<ToolResult>;
+
+/** 构造成功返回 */
+function ok(text: string): ToolResult {
+  return { content: [{ type: "text", text }] };
+}
+
+/** 构造失败返回（isError: true，不抛异常） */
+function fail(text: string): ToolResult {
+  return { content: [{ type: "text", text }], isError: true };
+}
+
+// =============================================================================
+// 删除快照与回滚
+// =============================================================================
+
+interface DeleteSnapshot {
+  deletedNodes: NodeRow[];   // 被删除的节点（需重新插入）
+  modifiedNodes: NodeRow[];   // 被修改的节点（需恢复旧数据）
+}
+
+/** 删除前快照：收集所有将被删除或修改的节点 */
+function snapshotForDeletion(db: Database, nodeId: number): DeleteSnapshot {
+  const deletedNodes: NodeRow[] = [];
+  const modifiedNodes: NodeRow[] = [];
+  const row = repo.getNodeById(db, nodeId);
+  if (!row) return { deletedNodes, modifiedNodes };
+
+  switch (row.type) {
+    case "ground": {
+      deletedNodes.push(row);
+      deletedNodes.push(...repo.findRebuttalsByTarget(db, nodeId));
+      // 引用此 ground 的 warrant 会被修改（ground_ids 移除）
+      for (const w of repo.listNodesByType(db, "warrant")) {
+        const wData = JSON.parse(w.data);
+        if ((wData.ground_ids || []).includes(nodeId)) {
+          modifiedNodes.push({ ...w });
+        }
+      }
+      break;
+    }
+    case "warrant": {
+      deletedNodes.push(row);
+      deletedNodes.push(...repo.findBackingsByWarrant(db, nodeId));
+      deletedNodes.push(...repo.findRebuttalsByTarget(db, nodeId, "warrant"));
+      break;
+    }
+    case "backing":
+    case "rebuttal": {
+      deletedNodes.push(row);
+      break;
+    }
+    case "claim": {
+      deletedNodes.push(row);
+      const warrants = repo.findWarrantsByClaim(db, nodeId);
+      for (const w of warrants) {
+        deletedNodes.push(w);
+        deletedNodes.push(...repo.findBackingsByWarrant(db, w.id));
+        deletedNodes.push(...repo.findRebuttalsByTarget(db, w.id, "warrant"));
+      }
+      deletedNodes.push(...repo.findRebuttalsByTarget(db, nodeId, "claim"));
+      const refGrounds = repo.findGroundsByRefClaim(db, nodeId);
+      for (const g of refGrounds) {
+        deletedNodes.push(g);
+        deletedNodes.push(...repo.findRebuttalsByTarget(db, g.id));
+        // 引用此 ground 的 warrant 会被修改
+        for (const w of repo.listNodesByType(db, "warrant")) {
+          const wData = JSON.parse(w.data);
+          if ((wData.ground_ids || []).includes(g.id)) {
+            modifiedNodes.push({ ...w });
+          }
+        }
+      }
+      break;
+    }
+  }
+  return { deletedNodes, modifiedNodes };
+}
+
+/** 从快照恢复：重新插入被删除的节点，恢复被修改的节点 */
+function restoreFromSnapshot(db: Database, snapshot: DeleteSnapshot): void {
+  // 1. 恢复被删除的节点（按 ID 升序插入，保证引用关系）
+  const sorted = [...snapshot.deletedNodes].sort((a, b) => a.id - b.id);
+  for (const node of sorted) {
+    try {
+      repo.restoreNode(db, node);
+    } catch {
+      // 节点可能已存在（部分删除失败时）
+    }
+  }
+  // 2. 恢复被修改的节点
+  for (const node of snapshot.modifiedNodes) {
+    repo.updateNodeFields(db, node.id, {
+      content: node.content,
+      data: JSON.parse(node.data),
+    });
+  }
+}
 
 // =============================================================================
 // 工具注册
@@ -243,7 +303,7 @@ type ToolHandler = (input: any) => Promise<{ content: { type: string; text: stri
 
 export function registerTools(server: any, db: Database, reviewConfig: ReviewConfig | null = null): void {
 
-  /** 包装 handler，自动记录工具名、输入、结果摘要和耗时，并注入审查通知 */
+  /** 包装 handler，自动记录工具名、输入、结果摘要和耗时 */
   function withLog(toolName: string, handler: ToolHandler): ToolHandler {
     return async (input: any) => {
       const start = Date.now();
@@ -251,12 +311,10 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
       try {
         const result = await handler(input);
         const ms = Date.now() - start;
-        let text = result.content?.[0]?.text ?? "";
-        const status = text.startsWith("Error:") ? "ERR" : "OK ";
-
-
+        const text = result.content?.[0]?.text ?? "";
+        const status = result.isError ? "ERR" : "OK ";
         log(toolName, status as "OK" | "ERR", ms, `${inputSummary} → ${summarizeOutput(text)}`);
-        return { content: [{ type: "text", text }] };
+        return result;
       } catch (e) {
         const ms = Date.now() - start;
         log(toolName, "ERR", ms, `${inputSummary} → ${String(e)}`);
@@ -279,31 +337,14 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("create_claim", async ({ content, qualifier }: { content: string; qualifier?: string }) => {
       try {
-        // 阻断式定义审查
         if (reviewConfig) {
           const review = await compileService.reviewNodeDefinition(reviewConfig, "claim", content, qualifier);
-          if (review.errors.length > 0) {
-            const lines: string[] = ["EXECUTION FAILED"];
-            lines.push(`${review.errors.length} error(s), ${review.warnings.length} warning(s).`);
-            for (const err of review.errors) {
-              lines.push(`  [ERROR] claim: ${err}`);
-            }
-            for (const warn of review.warnings) {
-              lines.push(`  [WARNING] claim: ${warn}`);
-            }
-            return { content: [{ type: "text", text: lines.join("\n") }] };
-          }
+          if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
         }
-
-        // 审查通过 → 创建节点
         const claim = service.createClaim(db, content, qualifier);
-        const lines = [`Created claim #${claim.id}: ${claim.content}`];
-        lines.push("", HINTS.claimNoWarrants);
-        return {
-          content: [{ type: "text", text: lines.join("\n") }],
-        };
+        return ok(`Created claim #${claim.id}\n\n${HINTS.claimNoWarrants}`);
       } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
+        return fail(formatError(e));
       }
     })
   );
@@ -326,23 +367,18 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("create_ground", async (opts: any) => {
       try {
-        // 阻断式定义审查
         if (reviewConfig) {
           const review = await compileService.reviewNodeDefinition(reviewConfig, "ground", opts.content || "");
-          if (review.errors.length > 0) {
-            const lines: string[] = ["EXECUTION FAILED"];
-            lines.push(`${review.errors.length} error(s), ${review.warnings.length} warning(s).`);
-            for (const err of review.errors) {
-              lines.push(`  [ERROR] ground: ${err}`);
-            }
-            for (const warn of review.warnings) {
-              lines.push(`  [WARNING] ground: ${warn}`);
-            }
-            return { content: [{ type: "text", text: lines.join("\n") }] };
-          }
+          if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
         }
-
-        // 审查通过 → 创建节点
+        if (reviewConfig && opts.verification === "verified" && !opts.ref_claim_id) {
+          const reviewResult = await reviewGroundEvidencePreCreate(reviewConfig, {
+            content: opts.content || "",
+            source: opts.source || "unknown",
+            attachments: opts.attachments || [],
+          });
+          if (reviewResult.errors.length > 0) return fail(formatReviewIssues(reviewResult.errors, reviewResult.warnings));
+        }
         const ground = service.createGround(db, {
           content: opts.content,
           source: opts.source,
@@ -350,33 +386,11 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           attachments: opts.attachments,
           refClaimId: opts.ref_claim_id,
         });
-        const lines = [`Created ground #${ground.id}: ${ground.content}`];
-        if (opts.verification === "pending") {
-          lines.push("", HINTS.groundPending);
-        }
-
-        // 直接创建为 verified: 执行证据审查
-        if (reviewConfig && opts.verification === "verified") {
-          try {
-            const reviewResult = await executeGroundReview(reviewConfig, db, ground.id);
-            if (reviewResult.errors.length > 0) {
-              // 阻断: 回退 verification 为 pending
-              revertGroundVerification(db, ground.id);
-              lines.push(`\nGround #${ground.id} verification reverted to pending.`);
-              lines.push("", formatGroundReviewResult(reviewResult));
-            } else if (reviewResult.warnings.length > 0) {
-              lines.push("", formatGroundReviewResult(reviewResult));
-            }
-          } catch {
-            // 审查失败不影响主流程
-          }
-        }
-
-        return {
-          content: [{ type: "text", text: lines.join("\n") }],
-        };
+        const lines = [`Created ground #${ground.id}`];
+        if (opts.verification === "pending") lines.push("", HINTS.groundPending);
+        return ok(lines.join("\n"));
       } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
+        return fail(formatError(e));
       }
     })
   );
@@ -397,43 +411,30 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("create_warrant", async ({ claim_id, content, ground_ids }: { claim_id: number; content: string; ground_ids?: number[] }) => {
       try {
-        // 阻断式定义审查
         if (reviewConfig) {
           const review = await compileService.reviewNodeDefinition(reviewConfig, "warrant", content);
-          if (review.errors.length > 0) {
-            const lines: string[] = ["EXECUTION FAILED"];
-            lines.push(`${review.errors.length} error(s), ${review.warnings.length} warning(s).`);
-            for (const err of review.errors) {
-              lines.push(`  [ERROR] warrant: ${err}`);
-            }
-            for (const warn of review.warnings) {
-              lines.push(`  [WARNING] warrant: ${warn}`);
-            }
-            return { content: [{ type: "text", text: lines.join("\n") }] };
-          }
+          if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
         }
-
-        // 审查通过 → 创建节点
+        // 试执行
         const warrant = service.createWarrant(db, { content, claimId: claim_id, groundIds: ground_ids });
-        let text = `Created warrant #${warrant.id}: ${warrant.content}`;
-
-        // 自动验证（哈希比较 + 结构完整性检测）
-        try {
-          const affectedIds = compileService.findAffectedClaimIds(db, warrant.id);
-          const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-          const verifyText = formatAutoVerifyResults(verifyResults);
-          if (verifyText) {
-            text += "\n\n" + verifyText;
-          }
-        } catch {
-          // 审查失败不影响主流程
+        // 链式审查（阻断式：失败则回滚）
+        if (reviewConfig) {
+          try {
+            const affectedIds = compileService.findAffectedClaimIds(db, warrant.id);
+            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+            const { errors, warnings } = collectChainReviewIssues(verifyResults);
+            if (errors.length > 0) {
+              service.deleteNode(db, warrant.id, false);
+              return fail(formatReviewIssues(errors, warnings));
+            }
+            let text = `Created warrant #${warrant.id}`;
+            if (warnings.length > 0) text += "\n" + formatReviewIssues([], warnings);
+            return ok(text);
+          } catch { /* 审查本身出错不阻断 */ }
         }
-
-        return {
-          content: [{ type: "text", text }],
-        };
+        return ok(`Created warrant #${warrant.id}`);
       } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
+        return fail(formatError(e));
       }
     })
   );
@@ -455,25 +456,24 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("create_backing", async ({ warrant_id, content, attachments }: { warrant_id: number; content: string; attachments?: string[] }) => {
       try {
         const backing = service.createBacking(db, { content, warrantId: warrant_id, attachments });
-        let text = `Created backing #${backing.id}: ${backing.content}`;
-
-        // 自动验证（哈希比较 + 结构完整性检测）
-        try {
-          const affectedIds = compileService.findAffectedClaimIds(db, backing.id);
-          const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-          const verifyText = formatAutoVerifyResults(verifyResults);
-          if (verifyText) {
-            text += "\n\n" + verifyText;
-          }
-        } catch {
-          // 审查失败不影响主流程
+        // 链式审查（阻断式：失败则回滚）
+        if (reviewConfig) {
+          try {
+            const affectedIds = compileService.findAffectedClaimIds(db, backing.id);
+            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+            const { errors, warnings } = collectChainReviewIssues(verifyResults);
+            if (errors.length > 0) {
+              service.deleteNode(db, backing.id, false);
+              return fail(formatReviewIssues(errors, warnings));
+            }
+            let text = `Created backing #${backing.id}`;
+            if (warnings.length > 0) text += "\n" + formatReviewIssues([], warnings);
+            return ok(text);
+          } catch { /* 审查本身出错不阻断 */ }
         }
-
-        return {
-          content: [{ type: "text", text }],
-        };
+        return ok(`Created backing #${backing.id}`);
       } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
+        return fail(formatError(e));
       }
     })
   );
@@ -496,25 +496,24 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("create_rebuttal", async ({ target_id, target_type, content, attachments }: { target_id: number; target_type: "claim" | "warrant"; content: string; attachments?: string[] }) => {
       try {
         const rebuttal = service.createRebuttal(db, { content, targetId: target_id, targetType: target_type, attachments });
-        let text = `Created rebuttal #${rebuttal.id}: ${rebuttal.content}`;
-
-        // 自动验证（哈希比较 + 结构完整性检测）
-        try {
-          const affectedIds = compileService.findAffectedClaimIds(db, rebuttal.id);
-          const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-          const verifyText = formatAutoVerifyResults(verifyResults);
-          if (verifyText) {
-            text += "\n\n" + verifyText;
-          }
-        } catch {
-          // 审查失败不影响主流程
+        // 链式审查（阻断式：失败则回滚）
+        if (reviewConfig) {
+          try {
+            const affectedIds = compileService.findAffectedClaimIds(db, rebuttal.id);
+            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+            const { errors, warnings } = collectChainReviewIssues(verifyResults);
+            if (errors.length > 0) {
+              service.deleteNode(db, rebuttal.id, false);
+              return fail(formatReviewIssues(errors, warnings));
+            }
+            let text = `Created rebuttal #${rebuttal.id}`;
+            if (warnings.length > 0) text += "\n" + formatReviewIssues([], warnings);
+            return ok(text);
+          } catch { /* 审查本身出错不阻断 */ }
         }
-
-        return {
-          content: [{ type: "text", text }],
-        };
+        return ok(`Created rebuttal #${rebuttal.id}`);
       } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
+        return fail(formatError(e));
       }
     })
   );
@@ -534,13 +533,11 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("list_claims", async ({ status }: { status?: string }) => {
       try {
         const claims = service.listClaims(db, status);
-        if (claims.length === 0) {
-          return { content: [{ type: "text", text: "No claims found." }] };
-        }
+        if (claims.length === 0) return ok("No claims found.");
         const lines = claims.map(c => `#${c.id} [${c.status}] ${c.content}`);
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return ok(lines.join("\n"));
       } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
+        return fail(formatError(e));
       }
     })
   );
@@ -560,9 +557,9 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("get_argument", async ({ node_id }: { node_id: number }) => {
       try {
         const result = service.getArgument(db, node_id);
-        return { content: [{ type: "text", text: formatArgument(result) }] };
+        return ok(formatArgument(result));
       } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
+        return fail(formatError(e));
       }
     })
   );
@@ -583,13 +580,11 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("search_nodes", async ({ keyword, node_type }: { keyword: string; node_type?: string }) => {
       try {
         const results = service.searchNodesService(db, keyword, node_type);
-        if (results.length === 0) {
-          return { content: [{ type: "text", text: "No matching nodes found." }] };
-        }
+        if (results.length === 0) return ok("No matching nodes found.");
         const lines = results.map(n => formatNode(n));
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return ok(lines.join("\n"));
       } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
+        return fail(formatError(e));
       }
     })
   );
@@ -607,9 +602,9 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("get_stats", async () => {
       try {
         const stats = service.getStats(db);
-        return { content: [{ type: "text", text: formatStats(stats) }] };
+        return ok(formatStats(stats));
       } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
+        return fail(formatError(e));
       }
     })
   );
@@ -638,7 +633,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("update_node", async (opts: any) => {
       try {
-        // 如果更新了 content，先做阻断式定义审查
+        // 阻断式定义审查（如果更新了 content）
         if (reviewConfig && opts.content !== undefined) {
           const existingNode = repo.getNodeById(db, opts.node_id);
           if (existingNode && (existingNode.type === "claim" || existingNode.type === "warrant" || existingNode.type === "ground")) {
@@ -648,21 +643,17 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
               opts.content,
               opts.qualifier
             );
-            if (review.errors.length > 0) {
-              const lines: string[] = ["EXECUTION FAILED"];
-              lines.push(`${review.errors.length} error(s), ${review.warnings.length} warning(s).`);
-              for (const err of review.errors) {
-                lines.push(`  [ERROR] ${existingNode.type}: ${err}`);
-              }
-              for (const warn of review.warnings) {
-                lines.push(`  [WARNING] ${existingNode.type}: ${warn}`);
-              }
-              return { content: [{ type: "text", text: lines.join("\n") }] };
-            }
+            if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
           }
         }
 
-        const { node, warnings } = service.updateNode(db, opts.node_id, {
+        // 保存旧状态用于回滚
+        const oldRow = repo.getNodeById(db, opts.node_id);
+        const oldContent = oldRow?.content;
+        const oldData = oldRow?.data;
+
+        // 试执行
+        const { node, warnings: serviceWarnings } = service.updateNode(db, opts.node_id, {
           content: opts.content,
           attachments: opts.attachments,
           status: opts.status,
@@ -671,45 +662,46 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           ground_ids: opts.ground_ids,
           qualifier: opts.qualifier,
         });
-        let text = `Updated ${formatNode(node)}`;
-        if (warnings.length > 0) {
-          text += "\n\n" + warnings.join("\n");
-        }
 
-        // Ground verification → verified: 执行证据审查
+        // Ground 证据审查（阻断式：失败则回退 verification）
         if (reviewConfig && node.type === "ground" && opts.verification === "verified") {
           try {
             const reviewResult = await executeGroundReview(reviewConfig, db, node.id);
             if (reviewResult.errors.length > 0) {
-              // 阻断: 回退 verification 为 pending
               revertGroundVerification(db, node.id);
-              text += `\nGround #${node.id} verification reverted to pending.`;
-              text += "\n\n" + formatGroundReviewResult(reviewResult);
-            } else if (reviewResult.warnings.length > 0) {
-              text += "\n\n" + formatGroundReviewResult(reviewResult);
+              return fail(formatReviewIssues(reviewResult.errors, reviewResult.warnings));
             }
-          } catch {
-            // 审查失败不影响主流程
-          }
+          } catch { /* 审查本身出错不阻断 */ }
         }
 
-        // 自动验证（哈希比较 + 结构完整性检测）
-        try {
-          const affectedIds = compileService.findAffectedClaimIds(db, opts.node_id);
-          const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-          const verifyText = formatAutoVerifyResults(verifyResults);
-          if (verifyText) {
-            text += "\n\n" + verifyText;
-          }
-        } catch {
-          // 审查失败不影响主流程
+        // 链式审查（阻断式：失败则回滚整个更新）
+        if (reviewConfig) {
+          try {
+            const affectedIds = compileService.findAffectedClaimIds(db, opts.node_id);
+            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
+            const { errors, warnings } = collectChainReviewIssues(verifyResults);
+            if (errors.length > 0) {
+              // 回滚到旧状态
+              if (oldRow) {
+                repo.updateNodeFields(db, opts.node_id, {
+                  content: oldContent!,
+                  data: JSON.parse(oldData!),
+                });
+              }
+              return fail(formatReviewIssues(errors, warnings));
+            }
+            let text = `Updated ${formatNodeBrief(node)}`;
+            if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
+            if (warnings.length > 0) text += "\n" + formatReviewIssues([], warnings);
+            return ok(text);
+          } catch { /* 审查本身出错不阻断 */ }
         }
 
-        return {
-          content: [{ type: "text", text }],
-        };
+        let text = `Updated ${formatNodeBrief(node)}`;
+        if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
+        return ok(text);
       } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
+        return fail(formatError(e));
       }
     })
   );
@@ -729,29 +721,33 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("delete_node", async ({ node_id, cascade }: { node_id: number; cascade?: boolean }) => {
       try {
-        // Bug 修复：删除前计算受影响的 Claim（删除后节点不存在会导致 findAffectedClaimIds 返回空）
+        // 1. 计算受影响的 claim IDs（删除前）
         const affectedIds = compileService.findAffectedClaimIds(db, node_id);
-
-        const warnings = service.deleteNode(db, node_id, cascade);
-        let text = `Deleted node #${node_id}`;
-        if (warnings.length > 0) {
-          text += "\n\n" + warnings.join("\n");
-        }
-        // 自动验证（哈希比较 + 结构完整性检测）
-        if (affectedIds.length > 0) {
+        // 2. 快照：保存所有将被删除/修改的节点
+        const snapshot = snapshotForDeletion(db, node_id);
+        // 3. 执行删除
+        const serviceWarnings = service.deleteNode(db, node_id, cascade);
+        // 4. 链式审查（阻断式：失败则回滚）
+        if (reviewConfig && affectedIds.length > 0) {
           try {
             const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-            const verifyText = formatAutoVerifyResults(verifyResults);
-            if (verifyText) {
-              text += "\n\n" + verifyText;
+            const { errors, warnings } = collectChainReviewIssues(verifyResults);
+            if (errors.length > 0) {
+              // 回滚：恢复所有被删除/修改的节点
+              restoreFromSnapshot(db, snapshot);
+              return fail(formatReviewIssues(errors, warnings));
             }
-          } catch {
-            // 审查失败不影响主流程
-          }
+            let text = `Deleted node #${node_id}`;
+            if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
+            if (warnings.length > 0) text += "\n" + formatReviewIssues([], warnings);
+            return ok(text);
+          } catch { /* 审查本身出错不阻断 */ }
         }
-        return { content: [{ type: "text", text }] };
+        let text = `Deleted node #${node_id}`;
+        if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
+        return ok(text);
       } catch (e) {
-        return { content: [{ type: "text", text: formatError(e) }] };
+        return fail(formatError(e));
       }
     })
   );

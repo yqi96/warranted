@@ -47,15 +47,15 @@ describe("parseLLMResponse", () => {
   test("无效 JSON 时使用 fallback", () => {
     const raw = "This is not JSON at all, just a text response.";
 
-    const result = parseLLMResponse(raw, "needs_improvement");
-    expect(result.verdict).toBe("needs_improvement");
-    expect(result.summary).toContain("not JSON");
-    expect(result._raw).toBe(raw);
+    const result = parseLLMResponse(raw, "");
+    expect((result.errors as any[]).length).toBe(1);
+    expect(result.warnings).toEqual([]);
   });
 
   test("空字符串时使用 fallback", () => {
-    const result = parseLLMResponse("", "concerns");
-    expect(result.verdict).toBe("concerns");
+    const result = parseLLMResponse("", "");
+    expect((result.errors as any[]).length).toBe(1);
+    expect(result.warnings).toEqual([]);
   });
 
   test("保留原始 issues 和 suggestions", () => {

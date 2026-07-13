@@ -108,6 +108,47 @@ export interface GroundReviewResult {
   warnings: string[];
 }
 
+/** 创建前证据审查：不依赖 DB，接受参数直接审查 */
+export async function reviewGroundEvidencePreCreate(
+  config: ReviewConfig,
+  params: { content: string; source: string; attachments: string[] }
+): Promise<GroundReviewResult> {
+  const prompt = buildGroundEvidencePrompt({
+    ground: {
+      id: 0, // 尚未创建
+      content: params.content,
+      source: params.source,
+      verification: "verified",
+      attachments: params.attachments,
+    },
+  });
+
+  try {
+    const cwd = dirname(dirname(config.dbPath));
+    log("ground_review", "OK", 0, `START ground_reviewer: pre-create`);
+    const t0 = Date.now();
+
+    const response = await callAgent(config, prompt, params.attachments, cwd);
+    const elapsed = Date.now() - t0;
+    const parsed = parseLLMResponse(response, "");
+    const errors: string[] = ((parsed.errors as Array<any>) || []).map(e =>
+      typeof e === "string" ? e : e.message || String(e)
+    );
+    const warnings: string[] = ((parsed.warnings as Array<any>) || []).map(w =>
+      typeof w === "string" ? w : w.message || String(w)
+    );
+
+    log("ground_review", "OK", elapsed,
+      `END ground_reviewer: pre-create → ${errors.length} error(s), ${warnings.length} warning(s)`);
+
+    return { errors, warnings };
+  } catch (error) {
+    log("ground_review", "ERR", 0, `pre-create: ${error}`);
+    return { errors: [`Reviewer error: ${error}`], warnings: [] };
+  }
+}
+
+/** 已有 Ground 证据审查：从 DB 读取，审查并保存结果 */
 export async function executeGroundReview(
   config: ReviewConfig,
   db: Database,

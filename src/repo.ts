@@ -63,6 +63,14 @@ export function updateNodeFields(
   return { ...existing, content: newContent, data: newData, updated_at: now };
 }
 
+/** 恢复已删除的节点（保留原 ID），用于回滚 */
+export function restoreNode(db: Database, node: NodeRow): void {
+  const stmt = db.prepare(
+    "INSERT INTO nodes (id, type, content, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+  );
+  stmt.run(node.id, node.type, node.content, node.data, node.created_at, node.updated_at);
+}
+
 /** 删除节点 */
 export function deleteNodeById(db: Database, id: number): boolean {
   const stmt = db.prepare("DELETE FROM nodes WHERE id = ?");

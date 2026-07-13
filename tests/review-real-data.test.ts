@@ -109,16 +109,16 @@ describe("真实数据审查测试", () => {
       console.error(`[Integration] Prompt length: ${prompt.length} chars`);
 
       const raw = await callAgent(config, prompt, [], PROJECT_DIR);
-      const result = parseLLMResponse(raw, "concerns");
+      const result = parseLLMResponse(raw, "");
 
-      console.error(`[Integration] Verdict: ${result.verdict}`);
-      console.error(`[Integration] Summary: ${result.summary}`);
-      if (Array.isArray(result.issues)) {
-        console.error("[Integration] Issues:", JSON.stringify(result.issues, null, 2));
+      // Argument review 可能返回旧格式 {verdict, summary, issues} 或新格式 {errors, warnings}
+      if (result.verdict) {
+        console.error(`[Integration] Verdict: ${result.verdict}`);
+        expect(["sound", "concerns", "invalid"]).toContain(result.verdict as string);
+      } else {
+        console.error(`[Integration] Errors: ${(result.errors as any[])?.length ?? 0}`);
+        expect(result.errors).toBeDefined();
       }
-
-      expect(result.verdict).toBeTruthy();
-      expect(["sound", "concerns", "invalid"]).toContain(result.verdict as string);
     }, { timeout: 180_000 });
   }
 

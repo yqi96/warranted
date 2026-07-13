@@ -64,12 +64,11 @@ describe("create_claim 工具", () => {
   test("成功创建并返回文本", async () => {
     const result = await tools.create_claim.handler({ content: "测试主张" });
     expect(result.content[0].text).toContain("Created claim #1");
-    expect(result.content[0].text).toContain("测试主张");
   });
 
   test("空 content 返回错误文本", async () => {
     const result = await tools.create_claim.handler({ content: "" });
-    expect(result.content[0].text).toContain("Error");
+    expect(result.isError).toBe(true);
   });
 });
 
@@ -103,7 +102,7 @@ describe("create_ground 工具", () => {
       verification: "verified",
       ref_claim_id: claim.id,
     });
-    expect(result.content[0].text).toContain("Error");
+    expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("mutually exclusive");
   });
 });
@@ -129,7 +128,7 @@ describe("create_warrant 工具", () => {
       claim_id: 999,
       content: "规则",
     });
-    expect(result.content[0].text).toContain("Error");
+    expect(result.isError).toBe(true);
   });
 });
 
@@ -178,7 +177,7 @@ describe("get_argument 工具", () => {
 
   test("不存在节点返回错误", async () => {
     const result = await tools.get_argument.handler({ node_id: 999 });
-    expect(result.content[0].text).toContain("Error");
+    expect(result.isError).toBe(true);
   });
 });
 
@@ -225,7 +224,6 @@ describe("update_node 工具", () => {
       content: "更新后",
     });
     expect(result.content[0].text).toContain("Updated");
-    expect(result.content[0].text).toContain("更新后");
   });
 
   test("更新不存在节点返回错误", async () => {
@@ -233,7 +231,7 @@ describe("update_node 工具", () => {
       node_id: 999,
       content: "x",
     });
-    expect(result.content[0].text).toContain("Error");
+    expect(result.isError).toBe(true);
   });
 });
 
@@ -252,7 +250,7 @@ describe("delete_node 工具", () => {
   test("删除 Claim 无 cascade 返回错误", async () => {
     const claim = makeClaim(db);
     const result = await tools.delete_node.handler({ node_id: claim.id, cascade: false });
-    expect(result.content[0].text).toContain("Error");
+    expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("cascade");
   });
 });

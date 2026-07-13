@@ -58,10 +58,14 @@ Respond in JSON:
     expect(raw).toBeTruthy();
     console.error("[Integration] Agent raw response (first 500 chars):\n", raw.slice(0, 500));
 
-    const result = parseLLMResponse(raw, "concerns");
-    expect(result.verdict).toBeTruthy();
-    expect(["sound", "concerns", "invalid"]).toContain(result.verdict as string);
-    console.error("[Integration] Parsed verdict:", result.verdict);
-    console.error("[Integration] Parsed summary:", result.summary);
+    const result = parseLLMResponse(raw, "");
+    // Argument review 可能返回旧格式 {verdict} 或新格式 {errors, warnings}
+    if (result.verdict) {
+      expect(["sound", "concerns", "invalid"]).toContain(result.verdict as string);
+      console.error("[Integration] Parsed verdict:", result.verdict);
+    } else {
+      expect(result.errors).toBeDefined();
+      console.error("[Integration] Parsed errors:", (result.errors as any[])?.length, "warnings:", (result.warnings as any[])?.length);
+    }
   }, { timeout: 120_000 });
 });

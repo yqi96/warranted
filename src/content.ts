@@ -117,19 +117,6 @@ export const HINTS = {
     "Hint: An async review has been dispatched to verify the reasoning chain. " +
     "Results will be available on the next tool call.",
 
-  groundReviewDispatched:
-    "Hint: An async review has been dispatched to verify the ground's evidence. " +
-    "Results will be available on the next tool call.",
-
-  compileSuccess: (claimId: number) =>
-    `Hint: Claim #${claimId} compiled successfully. ` +
-    `If you modify any node in this argument, the system will auto-detect the change ` +
-    `and trigger a re-review.`,
-
-  compileFailed: (claimId: number) =>
-    `Hint: Compile failed for Claim #${claimId}. ` +
-    `Please address the issues above and call compile again.`,
-
   claimStale: (claimId: number) =>
     `Hint: Claim #${claimId} has pending changes that need review. ` +
     `Call compile to verify the argument.`,

@@ -367,7 +367,8 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("create_ground", async (opts: any) => {
       try {
-        if (reviewConfig) {
+        // 链式推理 Ground（ref_claim_id）跳过定义审查：content 是自动生成的占位文本
+        if (reviewConfig && !opts.ref_claim_id) {
           const review = await compileService.reviewNodeDefinition(reviewConfig, "ground", opts.content || "");
           if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
         }

@@ -18,6 +18,7 @@ export function openDatabase(dbPath: string = ":memory:"): Database {
   // 设置 WAL 模式（内存数据库不需要）
   if (dbPath !== ":memory:") {
     db.exec("PRAGMA journal_mode = WAL;");
+    db.exec("PRAGMA busy_timeout = 5000;");
   }
 
   // 启用外键约束

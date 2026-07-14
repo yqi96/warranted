@@ -15,6 +15,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { openDatabase } from "./db.ts";
 import { registerTools } from "./tools.ts";
+import type { Lifecycle } from "./tools.ts";
 import { initLogger } from "./logger.ts";
 import { loadReviewConfig } from "./review-config.ts";
 import { mkdirSync } from "fs";
@@ -82,8 +83,27 @@ async function main() {
     console.error("[Toulmin MCP] Async review disabled");
   }
 
+  // 追踪 in-flight 工具调用，确保关闭前全部完成
+  let _pendingOps = 0;
+  let _drainResolve: (() => void) | null = null;
+  const lifecycle: Lifecycle = {
+    beginOp() { _pendingOps++; },
+    endOp() {
+      _pendingOps--;
+      if (_pendingOps === 0 && _drainResolve) {
+        const r = _drainResolve;
+        _drainResolve = null;
+        r();
+      }
+    },
+    drain(): Promise<void> {
+      if (_pendingOps === 0) return Promise.resolve();
+      return new Promise<void>(resolve => { _drainResolve = resolve; });
+    },
+  };
+
   // 注册工具
-  registerTools(server, db, reviewConfig);
+  registerTools(server, db, reviewConfig, lifecycle);
   console.error("[Toulmin MCP] 12 tools registered");
 
   // 连接 stdio transport
@@ -92,17 +112,24 @@ async function main() {
   console.error("[Toulmin MCP] Server started on stdio");
 
   // 优雅关闭
-  const shutdown = () => {
+  let isShuttingDown = false;
+  const shutdown = async () => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
     console.error("[Toulmin MCP] Shutting down...");
-    server.close().then(() => {
+    await server.close();
+    await lifecycle.drain();
+    try {
       db.close();
       console.error("[Toulmin MCP] Database closed");
-      process.exit(0);
-    });
+    } catch (e) {
+      console.error("[Toulmin MCP] Warning: db.close() failed:", e);
+    }
+    process.exit(0);
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 }
 
 main().catch((err) => {

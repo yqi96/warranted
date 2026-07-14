@@ -840,6 +840,7 @@ export function deleteNode(
   nodeId: number,
   cascade: boolean = false
 ): string[] {
+  return db.transaction((): string[] => {
   const row = assertNodeExists(repo.getNodeById(db, nodeId), nodeId);
   const warnings: string[] = [];
 
@@ -941,4 +942,5 @@ export function deleteNode(
   }
 
   return warnings;
+  })();
 }

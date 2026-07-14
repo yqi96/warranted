@@ -25,6 +25,12 @@ import type { ReviewConfig } from "./review-config.ts";
 import { executeGroundReview, reviewGroundEvidencePreCreate } from "./review-sync.ts";
 import * as compileService from "./compile-service.ts";
 
+export interface Lifecycle {
+  beginOp(): void;
+  endOp(): void;
+  drain(): Promise<void>;
+}
+
 // =============================================================================
 // 辅助函数
 // =============================================================================
@@ -301,11 +307,12 @@ function restoreFromSnapshot(db: Database, snapshot: DeleteSnapshot): void {
 // 工具注册
 // =============================================================================
 
-export function registerTools(server: any, db: Database, reviewConfig: ReviewConfig | null = null): void {
+export function registerTools(server: any, db: Database, reviewConfig: ReviewConfig | null = null, lifecycle?: Lifecycle): void {
 
   /** 包装 handler，自动记录工具名、输入、结果摘要和耗时 */
   function withLog(toolName: string, handler: ToolHandler): ToolHandler {
     return async (input: any) => {
+      lifecycle?.beginOp();
       const start = Date.now();
       const inputSummary = summarizeInput(input ?? {});
       try {
@@ -319,6 +326,8 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         const ms = Date.now() - start;
         log(toolName, "ERR", ms, `${inputSummary} → ${String(e)}`);
         throw e;
+      } finally {
+        lifecycle?.endOp();
       }
     };
   }

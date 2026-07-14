@@ -57,20 +57,44 @@ export async function callAgent(
   return finalResult;
 }
 
+const FALLBACK_MODEL = "claude-opus-4-7";
+
+/**
+ * 从文本中提取 markdown 代码块内容。
+ * 按行扫描：找到首个开启 fence，再从末尾往前找最后一个关闭 fence，
+ * 避免 lazy regex 在内容含三反引号时提前终止。
+ */
+function extractFromFences(text: string): string | null {
+  const lines = text.split("\n");
+  const openIdx = lines.findIndex(l => /^[ \t]*```(?:json)?[ \t]*$/.test(l));
+  if (openIdx === -1) return null;
+  for (let i = lines.length - 1; i > openIdx; i--) {
+    if (/^[ \t]*```[ \t]*$/.test(lines[i])) {
+      return lines.slice(openIdx + 1, i).join("\n");
+    }
+  }
+  return null;
+}
+
+function toStr(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
+  return String(e);
+}
+
 /**
  * 解析 Agent 的 JSON 响应。
  * 期望格式：{ errors: [], warnings: [] }
- * 如果解析失败，将原始文本包装为 errors fallback。
+ * 如果解析失败，在返回值中标记 _parseFailed: true。
  */
 export function parseLLMResponse(
   raw: string,
   _fallback: string
 ): Record<string, unknown> {
-  // 尝试提取 JSON 块（Agent 可能用 ```json 包裹）
   let jsonText = raw.trim();
-  const jsonMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (jsonMatch) {
-    jsonText = jsonMatch[1].trim();
+  const extracted = extractFromFences(jsonText);
+  if (extracted !== null) {
+    jsonText = extracted.trim();
   }
 
   try {
@@ -78,8 +102,43 @@ export function parseLLMResponse(
     if (parsed && typeof parsed === "object") {
       return parsed;
     }
-    return { errors: [jsonText.slice(0, 500)], warnings: [] };
+    return { _parseFailed: true, errors: [jsonText.slice(0, 500)], warnings: [] };
   } catch {
-    return { errors: [raw.slice(0, 500)], warnings: [] };
+    return { _parseFailed: true, errors: [raw.slice(0, 500)], warnings: [] };
+  }
+}
+
+/**
+ * 调用 Agent 并解析结果。解析失败时自动用大模型重试一次。
+ */
+const NO_FENCES_SUFFIX = "\n\nCRITICAL: Output ONLY a raw JSON object. Do NOT wrap in markdown code fences (```)." as const;
+
+export async function callAndParse(
+  config: ReviewConfig,
+  prompt: string,
+  attachments: string[],
+  cwd: string
+): Promise<{ errors: string[]; warnings: string[] }> {
+  const raw = await callAgent(config, prompt + NO_FENCES_SUFFIX, attachments, cwd);
+  const parsed = parseLLMResponse(raw, "");
+
+  if (!parsed._parseFailed) {
+    return {
+      errors: ((parsed.errors as unknown[]) || []).map(toStr),
+      warnings: ((parsed.warnings as unknown[]) || []).map(toStr),
+    };
+  }
+
+  // 解析失败 → 用大模型重试
+  const retryConfig: ReviewConfig = { ...config, model: FALLBACK_MODEL, maxTurns: 3 };
+  try {
+    const retryRaw = await callAgent(retryConfig, prompt + NO_FENCES_SUFFIX, attachments, cwd);
+    const retryParsed = parseLLMResponse(retryRaw, "");
+    return {
+      errors: ((retryParsed.errors as unknown[]) || []).map(toStr),
+      warnings: ((retryParsed.warnings as unknown[]) || []).map(toStr),
+    };
+  } catch (e) {
+    return { errors: [`Reviewer error: fallback model also failed: ${e}`], warnings: [] };
   }
 }

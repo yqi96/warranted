@@ -13,7 +13,7 @@ import { dirname } from "path";
 import type { ReviewConfig } from "./review-config.ts";
 import type { NodeRow, ElementReviewResult } from "./types.ts";
 import * as repo from "./repo.ts";
-import { callAgent, parseLLMResponse } from "./review-llm.ts";
+import { callAndParse } from "./review-llm.ts";
 import { buildChainReviewPrompt } from "./compile-prompts.ts";
 import { log } from "./logger.ts";
 
@@ -84,17 +84,6 @@ export function loadArgumentContext(db: Database, claimId: number): ArgumentCont
 // 逻辑链审查
 // =============================================================================
 
-/** 从 LLM 原始响应中解析 errors/warnings */
-function parseReviewResponse(raw: string): { errors: string[]; warnings: string[] } {
-  const parsed = parseLLMResponse(raw, "");
-  const errors: string[] = ((parsed.errors as Array<any>) || []).map(e =>
-    typeof e === "string" ? e : e.message || String(e)
-  );
-  const warnings: string[] = ((parsed.warnings as Array<any>) || []).map(w =>
-    typeof w === "string" ? w : w.message || String(w)
-  );
-  return { errors, warnings };
-}
 
 async function reviewChain(
   config: ReviewConfig,
@@ -142,9 +131,8 @@ async function reviewChain(
   try {
     const t0 = Date.now();
     log("chain_reviewer", "OK", 0, `START chain_reviewer: claim=#${ctx.claimRow.id}`);
-    const raw = await callAgent(config, prompt, [], cwd);
+    const { errors, warnings } = await callAndParse(config, prompt, [], cwd);
     const elapsed = Date.now() - t0;
-    const { errors, warnings } = parseReviewResponse(raw);
     log("chain_reviewer", "OK", elapsed, `END chain_reviewer: claim=#${ctx.claimRow.id} → ${errors.length} error(s), ${warnings.length} warning(s)`);
     return {
       reviewer: "chain",

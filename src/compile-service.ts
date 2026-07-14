@@ -24,7 +24,7 @@ import { WARNINGS } from "./content.ts";
 import { log } from "./logger.ts";
 import { writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
-import { callAgent, parseLLMResponse } from "./review-llm.ts";
+import { callAndParse } from "./review-llm.ts";
 import {
   buildClaimReviewPrompt,
   buildWarrantReviewPrompt,
@@ -110,15 +110,7 @@ export async function reviewNodeDefinition(
   let result: { errors: string[]; warnings: string[] };
 
   try {
-    const raw = await callAgent(config, prompt, [], cwd);
-    const parsed = parseLLMResponse(raw, "");
-    const errors: string[] = ((parsed.errors as Array<any>) || []).map(e =>
-      typeof e === "string" ? e : e.message || String(e)
-    );
-    const warnings: string[] = ((parsed.warnings as Array<any>) || []).map(w =>
-      typeof w === "string" ? w : w.message || String(w)
-    );
-    result = { errors, warnings };
+    result = await callAndParse(config, prompt, [], cwd);
   } catch (error) {
     result = { errors: [`Reviewer error: ${error}`], warnings: [] };
   }

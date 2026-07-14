@@ -760,7 +760,7 @@ function dragEnded(event, d)   { if (!event.active) simulation.alphaTarget(0); d
 async function loadGraph() {
   const types = getSelectedTypes();
   const params = types.length < 5 ? `?types=${types.join(',')}` : '';
-  const res = await fetch(`/api/graph${params}`);
+  const res = await fetch(`viz/graph${params}`);
   graphData = await res.json();
   renderGraph();
   updateCounts();
@@ -806,7 +806,7 @@ async function searchNodes(keyword) {
     g.selectAll('.link').transition().duration(300).style('opacity',1);
     return;
   }
-  const res = await fetch(`/api/search?q=${encodeURIComponent(keyword)}`);
+  const res = await fetch(`viz/search?q=${encodeURIComponent(keyword)}`);
   const hits = await res.json();
   const matchIds = new Set(hits.map(n => String(n.id)));
   g.selectAll('.node-group').transition().duration(300).style('opacity', d => {
@@ -1034,7 +1034,7 @@ const dbCurrentEl = document.getElementById('db-current-path');
 
 async function loadCurrentDb() {
   try {
-    const res = await fetch('/api/current-db');
+    const res = await fetch('viz/current-db');
     const { dir } = await res.json();
     dbCurrentEl.textContent = dir;
   } catch { dbCurrentEl.textContent = '未知'; }
@@ -1051,8 +1051,13 @@ dbSwitchBtn.addEventListener('click', async () => {
   if (!dir) { showDbStatus('error', '请输入目录路径'); return; }
   dbSwitchBtn.disabled = true;
   try {
-    const res = await fetch('/api/switch-db', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir }) });
-    const result = await res.json();
+    const res = await fetch('viz/switch-db', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir }) });
+    const text = await res.text();
+    let result;
+    try { result = JSON.parse(text); } catch {
+      showDbStatus('error', '切换失败: 服务器返回非 JSON 响应 — ' + text.slice(0, 120));
+      return;
+    }
     if (result.success) {
       showDbStatus('success', '✓ 已切换');
       dbCurrentEl.textContent = dir;
@@ -1128,7 +1133,7 @@ initResizer('resizer-right','detail-panel','right');
     }
   }
 
-  const es = new EventSource('/api/events');
+  const es = new EventSource('viz/events');
   es.onopen    = () => setStatus('on');
   es.onerror   = () => setStatus('err');
   es.addEventListener('data_updated', () => loadGraph());

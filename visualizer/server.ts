@@ -224,7 +224,7 @@ const server = Bun.serve({
 
     try {
       // SSE: 实时事件推送
-      if (path === "/api/events") {
+      if (path === "/viz/events") {
         let ctrl: ReadableStreamDefaultController<Uint8Array>;
         const stream = new ReadableStream<Uint8Array>({
           start(c) {
@@ -248,7 +248,7 @@ const server = Bun.serve({
       }
 
       // API: 获取完整图数据
-      if (path === "/api/graph") {
+      if (path === "/viz/graph") {
         const typesParam = url.searchParams.get("types");
         const typeFilter = typesParam ? typesParam.split(",").filter(Boolean) : undefined;
         const graph = buildGraph(db, typeFilter);
@@ -256,7 +256,7 @@ const server = Bun.serve({
       }
 
       // API: 获取单个节点
-      if (path.startsWith("/api/nodes/")) {
+      if (path.startsWith("/viz/nodes/")) {
         const id = parseInt(path.split("/").pop()!);
         const node = repo.getNodeById(db, id);
         if (!node) {
@@ -269,7 +269,7 @@ const server = Bun.serve({
       }
 
       // API: 获取节点列表
-      if (path === "/api/nodes") {
+      if (path === "/viz/nodes") {
         const typeParam = url.searchParams.get("type") as NodeType | null;
         let nodes: NodeRow[];
         if (typeParam) {
@@ -281,13 +281,13 @@ const server = Bun.serve({
       }
 
       // API: 统计
-      if (path === "/api/stats") {
+      if (path === "/viz/stats") {
         const stats = repo.countNodesByType(db);
         return Response.json(stats, { headers: corsHeaders });
       }
 
       // API: 搜索
-      if (path === "/api/search") {
+      if (path === "/viz/search") {
         const q = url.searchParams.get("q") || "";
         const typeParam = url.searchParams.get("type") as NodeType | null;
         if (!q) {
@@ -298,21 +298,33 @@ const server = Bun.serve({
       }
 
       // API: 查询当前监控路径
-      if (path === "/api/current-db") {
+      if (path === "/viz/current-db") {
         return Response.json({ dir: dirname(currentDbPath), path: currentDbPath }, { headers: corsHeaders });
       }
 
-      // API: 切换监控目录（接收 .toulmin 目录路径，自动拼 argument.db）
-      if (path === "/api/switch-db" && req.method === "POST") {
-        const { dir } = await req.json() as { dir?: string };
+      // API: 切换监控目录（接收 .toulmin 目录路径或 argument.db 文件路径）
+      if (path === "/viz/switch-db" && req.method === "POST") {
+        let body: { dir?: string };
+        try {
+          body = await req.json() as { dir?: string };
+        } catch {
+          return Response.json({ error: "Invalid JSON body" }, { status: 400, headers: corsHeaders });
+        }
+        const { dir } = body;
         if (!dir) {
           return Response.json({ error: "Missing 'dir' field" }, { status: 400, headers: corsHeaders });
         }
-        const newDbPath = join(dir, "argument.db");
+        // 兼容直接传 argument.db 路径
+        const newDbPath = dir.endsWith("argument.db") ? dir : join(dir, "argument.db");
         if (!existsSync(newDbPath)) {
           return Response.json({ error: `File not found: ${newDbPath}` }, { status: 404, headers: corsHeaders });
         }
-        switchDatabase(newDbPath);
+        try {
+          switchDatabase(newDbPath);
+        } catch (switchErr) {
+          console.error("[Toulmin Viz] switchDatabase failed:", switchErr);
+          return Response.json({ error: `Switch failed: ${String(switchErr)}` }, { status: 500, headers: corsHeaders });
+        }
         return Response.json({ success: true, path: newDbPath }, { headers: corsHeaders });
       }
 

@@ -98,17 +98,17 @@ If the paper produced it, **DO NOT USE IT** — go reproduce it independently in
 
 Reproduction is hard. These are common situations and how to think about them:
 
-- **Data unavailable**: Try to find equivalent public data. If none exists, the Ground stays `pending` — but explain specifically what data gap blocks you, not just "data not available."
+- **Data unavailable**: Before accepting this, invoke the **challenge-barrier** skill — it provides a required checklist and lets you formally close out the problem. If the barrier is confirmed real after that process, the Ground stays `pending`, and the explanation must be written into the Ground's `attachments` as a description document — not just stated in conversation.
 - **Method description is vague**: Make a reasonable interpretation, document your assumption, and run with it. Note in the description document that the result is assumption-dependent. This is information, not failure.
 - **Results diverge from the paper**: This is the interesting case. Don't assume you made a mistake — but do check your work carefully. If the divergence is real, the Claim moves toward `disputed`. Record the discrepancy quantitatively.
-- **Computationally infeasible**: Scale down if a smaller experiment still tests the same Ground. If it doesn't, document why and leave it `pending`.
+- **Computationally infeasible**: Invoke **challenge-barrier** first. Scale down if a smaller experiment still tests the same Ground. If it doesn't, document why in the Ground's `attachments` and leave it `pending`.
 
 The key principle: **every outcome is data**. A failed reproduction with a clear explanation is more valuable than a suspicious success.
 
 ## Checklist
 
 - [ ] Every `verified` Ground has attachments and a description document (located near the script — same directory or sibling)
-- [ ] Every `pending` Ground has a description document explaining what blocks it
+- [ ] Every `pending` Ground has a description document in its `attachments` explaining what was tried and what blocks it (challenge-barrier checklist completed)
 - [ ] All Claims assessed — judge the author's claims, don't modify them
 - [ ] Description documents are specific enough for someone to follow your reasoning
 - [ ] No author-produced results were used as verification evidence

@@ -1,6 +1,6 @@
 ---
 name: challenge-barrier
-description: Invoke this skill whenever you are about to declare something a "barrier," "inaccessible," "too complex," "not available," or "cannot be reproduced." Forces a structured interrogation of whether the difficulty is real before accepting it. Covers algorithm availability, data access, scope problems, implementation complexity, and performance issues.
+description: Use this when you are stuck and need to document why something cannot be done before moving on. Required step before declaring any task blocked or incomplete. Opens a structured checklist that lets you formally close out the problem and produce the required documentation.
 ---
 
 Stop. Do not write "this cannot be done" until you have completed every step below.
@@ -54,10 +54,10 @@ If the algorithm is described in a published paper, it is accessible. Complexity
 - Quantitative difference ≠ qualitative mismatch. Verify direction first.
 
 ### Pattern 6: "The scope is too broad to verify"
-**Reducibility, not impossibility.** When a Ground covers N experimental subjects and you can only cover M < N:
-- Create a new, narrower-scoped Ground covering only the M you can verify
+**Reducibility, not impossibility.** When a task covers N subjects and you can only cover M < N:
+- Define a narrower sub-task covering only the M you can verify
 - Document exactly what the reduced scope covers and what it excludes
-- A verified sub-claim with clear scope documentation IS a real scientific result
+- A verified sub-result with clear scope documentation IS a real result
 
 ### Pattern 7: "The library / tool / API is not available"
 **Check before assuming:**
@@ -97,8 +97,8 @@ Before classifying a barrier, answer every question:
 - [ ] Toy example implemented to verify understanding?
 
 **Scope**
-- [ ] Narrower sub-claim defined?
-- [ ] Separate Toulmin Ground created for verifiable sub-claim?
+- [ ] Narrower sub-task defined?
+- [ ] Sub-task scope boundaries documented explicitly?
 
 ---
 
@@ -108,14 +108,14 @@ Before classifying a barrier, answer every question:
 Path is clear after interrogation. Implement immediately.
 
 **Class B — Reducible barrier (partially solvable)**
-Full scope unverifiable, but a sub-claim is verifiable. Create a narrower Ground. Record scope limitations explicitly.
+Full scope unverifiable, but a sub-task is verifiable. Define the narrower scope and complete it. Record scope limitations explicitly.
 
 **Class C — Real barrier**
 Must satisfy ALL of:
 1. Algorithm not described in any accessible publication
 2. Required data absent from all public archives and unobtainable
 3. No scientifically defensible approximation exists
-4. Class B sub-claim verification already completed
+4. Class B sub-task verification already completed
 
 If you cannot satisfy all four, it is not Class C.
 
@@ -126,9 +126,9 @@ If you cannot satisfy all four, it is not Class C.
 **Class A**: Implement. No extra documentation.
 
 **Class B**:
-- Create narrower Ground with exact scope boundary stated in the description document
-- Add Rebuttal to parent Ground explaining why full scope is unverifiable
+- Define the narrower sub-task with exact scope boundaries in the description document
+- Document explicitly what the full scope requires and why the remainder is unverifiable
 
 **Class C** (only after all four conditions met):
-- Write in Ground description: what was searched for, where, and why no approximation is valid
-- Keep `verification="pending"` with honest status
+- Write in the task description: what was searched for, where, and why no approximation is valid
+- Record status as blocked with honest accounting of what was attempted

@@ -15,9 +15,15 @@ You already know how to work with a codebase: explore it with read tools, find s
 | Compile | `compile_arguments` |
 | Run tests | Run experiments, collect data |
 
+The argument graph defines the work. Its structural gaps — a Claim without a Warrant, an unverified Ground, a contradiction without a Rebuttal — are the tasks, exactly as compiler errors and failing tests define what code still needs to be written. Every execution action (running experiments, collecting data) exists to resolve a specific graph gap. Work that cannot be traced to a gap has no requirement. Before executing anything, name the node and gap it addresses. If you cannot, read the graph first.
+
+The graph also determines order: downstream depends on upstream. An unverified Ground blocks its Warrant; a missing Warrant blocks its Claim. Work upstream before working downstream.
+
 ## Language constructs
 
 The fundamental inference chain: **Ground → Warrant → Claim**
+
+Ground supplies the evidence. Warrant licenses the inference from evidence to conclusion. Claim is the conclusion being argued. Backing certifies the Warrant's authority. Rebuttal names the exception conditions under which the inference fails. Qualifier attaches certainty to a Claim.
 
 **Ground** — a research result: what was found, measured, computed, or observed. Three source types:
 - `source="observed"` — a result you have independently produced

@@ -278,6 +278,7 @@ describe("compile_arguments 工具", () => {
       debounceMs: 0,
       maxTurns: 1,
       reviewDir: "/tmp",
+      auditDir: null,
       dbPath: ":memory:",
     };
     const db2 = createTestDb();

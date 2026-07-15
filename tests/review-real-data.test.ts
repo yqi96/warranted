@@ -11,7 +11,7 @@
 import { describe, test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
 import { existsSync } from "fs";
-import { join, dirname } from "path";
+import { join } from "path";
 import { loadReviewConfig } from "../src/review-config.ts";
 import { callAgent, parseLLMResponse } from "../src/review-llm.ts";
 import { buildArgumentReviewPrompt, buildGroundEvidencePrompt } from "../src/review-prompts.ts";
@@ -32,12 +32,10 @@ const PROJECT_DIR = process.env.PROJECT_DIR || (() => {
 const DB_PATH = join(PROJECT_DIR, ".toulmin", "argument.db");
 const CONFIG_PATH = "/home/qiyao/workspace/team-work/toulmin-mcp/.toulmin/review.json";
 
-if (!existsSync(DB_PATH)) {
-  throw new Error(`Database not found: ${DB_PATH}`);
+const dbExists = existsSync(DB_PATH);
+if (!dbExists) {
+  console.error(`[Integration] Skipping: database not found at ${DB_PATH}`);
 }
-
-console.error(`[Integration] Project: ${PROJECT_DIR}`);
-console.error(`[Integration] DB: ${DB_PATH}`);
 
 // =============================================================================
 // 工具函数
@@ -67,7 +65,9 @@ function getAllVerifiedGroundsWithAttachments(db: Database): any[] {
 // 动态生成测试
 // =============================================================================
 
-describe("真实数据审查测试", () => {
+describe.skipIf(!dbExists)("真实数据审查测试", () => {
+  if (!dbExists) return;
+
   const config = loadReviewConfig(CONFIG_PATH, DB_PATH);
   const db = new Database(DB_PATH, { readonly: true });
 

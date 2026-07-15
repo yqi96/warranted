@@ -7,6 +7,7 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { ReviewConfig } from "./review-config.ts";
+import { writeAuditRecord } from "./review-audit.ts";
 
 /**
  * 调用 Agent 执行审查。
@@ -17,13 +18,15 @@ export async function callAgent(
   config: ReviewConfig,
   prompt: string,
   attachmentPaths: string[],
-  cwd?: string
+  cwd?: string,
+  requestId?: string
 ): Promise<string> {
   // 构建完整 prompt：审查指令 + 附件路径列表
   const fullPrompt = attachmentPaths.length > 0
     ? `${prompt}\n\n## Attachment files to read\nPlease read and analyze the following files before responding:\n${attachmentPaths.map(p => `- ${p}`).join("\n")}`
     : prompt;
 
+  const t0 = Date.now();
   const result = await query({
     prompt: fullPrompt,
     options: {
@@ -52,6 +55,19 @@ export async function callAgent(
 
   if (!finalResult) {
     throw new Error("Agent returned no result");
+  }
+
+  // 写入审计日志（失败时静默忽略）
+  if (config.auditDir) {
+    const rid = requestId ?? crypto.randomUUID();
+    writeAuditRecord(config.auditDir, {
+      timestamp: new Date().toISOString(),
+      requestId: rid,
+      model: config.model,
+      maxTurns: config.maxTurns ?? 10,
+      input: { prompt: fullPrompt, attachmentPaths, cwd },
+      output: { raw: finalResult, durationMs: Date.now() - t0 },
+    });
   }
 
   return finalResult;
@@ -119,7 +135,8 @@ export async function callAndParse(
   attachments: string[],
   cwd: string
 ): Promise<{ errors: string[]; warnings: string[] }> {
-  const raw = await callAgent(config, prompt + NO_FENCES_SUFFIX, attachments, cwd);
+  const requestId = crypto.randomUUID();
+  const raw = await callAgent(config, prompt + NO_FENCES_SUFFIX, attachments, cwd, requestId);
   const parsed = parseLLMResponse(raw, "");
 
   if (!parsed._parseFailed) {
@@ -129,10 +146,10 @@ export async function callAndParse(
     };
   }
 
-  // 解析失败 → 用大模型重试
+  // 解析失败 → 用大模型重试（同一 requestId，便于关联）
   const retryConfig: ReviewConfig = { ...config, model: FALLBACK_MODEL, maxTurns: 3 };
   try {
-    const retryRaw = await callAgent(retryConfig, prompt + NO_FENCES_SUFFIX, attachments, cwd);
+    const retryRaw = await callAgent(retryConfig, prompt + NO_FENCES_SUFFIX, attachments, cwd, requestId);
     const retryParsed = parseLLMResponse(retryRaw, "");
     return {
       errors: ((retryParsed.errors as unknown[]) || []).map(toStr),

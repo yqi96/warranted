@@ -10,7 +10,8 @@
  *   "baseUrl": "https://...",         // 可选，转发站地址
  *   "model": "claude-sonnet-4-...",   // 可选，默认 claude-sonnet-4-20250514
  *   "debounceMs": 30000,              // 可选，去重窗口（毫秒），默认 30000
- *   "maxTurns": 10                    // 可选，agent 最大轮数，默认 10
+ *   "maxTurns": 10,                   // 可选，agent 最大轮数，默认 10
+ *   "auditDir": "/path/to/audit"      // 可选，审计日志目录；null = 禁用；不设置 = dirname(dbPath)/audit
  * }
  */
 
@@ -26,6 +27,8 @@ export interface ReviewConfig {
   debounceMs: number;
   maxTurns: number;
   reviewDir: string;
+  /** 审计日志目录。null = 禁用审计。默认 dirname(dbPath)/audit */
+  auditDir: string | null;
   dbPath: string;
 }
 
@@ -35,6 +38,8 @@ interface ReviewConfigFile {
   model?: string;
   debounceMs?: number;
   maxTurns?: number;
+  /** 审计日志目录。null = 禁用审计。不设置时默认 dirname(dbPath)/audit */
+  auditDir?: string | null;
 }
 
 /**
@@ -83,9 +88,19 @@ export function loadReviewConfig(
   const baseUrl = fileConfig.baseUrl ?? undefined;
   const reviewDir = dirname(dbPath) + "/reviews";
 
+  // auditDir: null = 禁用；string = 自定义；未设置 = 默认路径
+  const auditDir = "auditDir" in fileConfig
+    ? (fileConfig.auditDir ?? null)
+    : dirname(dbPath) + "/audit";
+
   // 确保 review 目录存在
   if (!existsSync(reviewDir)) {
     mkdirSync(reviewDir, { recursive: true });
+  }
+
+  // 确保 audit 目录存在（仅在启用时）
+  if (auditDir && !existsSync(auditDir)) {
+    mkdirSync(auditDir, { recursive: true });
   }
 
   console.error(`[Toulmin Review] Config loaded: ${configPath}`);
@@ -99,6 +114,7 @@ export function loadReviewConfig(
     debounceMs: isNaN(debounceMs) ? 30000 : debounceMs,
     maxTurns: isNaN(maxTurns) ? 10 : maxTurns,
     reviewDir,
+    auditDir,
     dbPath,
   };
 }

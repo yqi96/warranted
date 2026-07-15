@@ -118,4 +118,35 @@ describe("loadReviewConfig", () => {
     const config = loadReviewConfig(configPath, `${dir}/test.db`);
     expect(config!.maxTurns).toBe(10);
   });
+
+  test("未设置 auditDir 时默认为 dirname(dbPath)/audit", () => {
+    const dir = setupDir();
+    const configPath = `${dir}/review.json`;
+    writeFileSync(configPath, JSON.stringify({ apiKey: "sk-test" }));
+
+    const config = loadReviewConfig(configPath, `${dir}/test.db`);
+    expect(config).not.toBeNull();
+    expect(config!.auditDir).toBe(`${dir}/audit`);
+  });
+
+  test("auditDir: null 时禁用审计", () => {
+    const dir = setupDir();
+    const configPath = `${dir}/review.json`;
+    writeFileSync(configPath, JSON.stringify({ apiKey: "sk-test", auditDir: null }));
+
+    const config = loadReviewConfig(configPath, `${dir}/test.db`);
+    expect(config).not.toBeNull();
+    expect(config!.auditDir).toBeNull();
+  });
+
+  test("自定义 auditDir 生效", () => {
+    const dir = setupDir();
+    const configPath = `${dir}/review.json`;
+    const customAuditDir = `${dir}/my-audit`;
+    writeFileSync(configPath, JSON.stringify({ apiKey: "sk-test", auditDir: customAuditDir }));
+
+    const config = loadReviewConfig(configPath, `${dir}/test.db`);
+    expect(config).not.toBeNull();
+    expect(config!.auditDir).toBe(customAuditDir);
+  });
 });

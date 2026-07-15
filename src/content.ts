@@ -42,7 +42,7 @@ export const ELEMENTS = {
       "Each form decomposes into one Ground per independent measurement.",
       "Test: how many independent measurements does verifying this require? Each one is a separate Ground.",
     ].join(" "),
-    source: "Evidence source: 'observed' (independently produced), 'hypothesis' (to be verified), or 'literature' (from published work).",
+    source: "Evidence source: 'observed' (independently produced), 'hypothesis' (to be verified), or 'literature' (from published work). If source='hypothesis', write in the same declarative form as observed Grounds — source='hypothesis' already encodes uncertainty; do not add hedging language to content.",
     verification: "Has this evidence been independently verified?",
     attachments: "File paths supporting this ground. Grounds with ref_claim_id (chain reasoning) do not need attachments. Other grounds MUST have a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this ground — explaining: what the ground states, how the evidence was produced, and where the files come from. Files alone without explanation are not enough — the document is the ground's provenance record.",
     refClaimId: "Use an existing Claim as a Ground for chain reasoning (Claim A's conclusion becomes Claim B's evidence). Mutually exclusive with content/source/verification/attachments — the Ground's content is auto-derived from the referenced Claim.",
@@ -78,6 +78,7 @@ export const ELEMENTS = {
     description:
       "Record a rebuttal — restrictions that may legitimately apply to the claim. " +
       "Names conditions under which the claim fails. " +
+      "Contradictions are information, not problems to eliminate — use this when evidence contradicts rather than deleting or rewriting the Claim. " +
       "Example: 'Unless he has betrayed Britain and become a spy.'",
     content: [
       "The exception or restriction under which the argument fails.",

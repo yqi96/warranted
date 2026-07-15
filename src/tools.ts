@@ -526,7 +526,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         node_id: z.number().describe("Node ID to update"),
         content: z.string().optional().describe("New content"),
         attachments: z.array(z.string()).optional().describe("New attachment file paths"),
-        status: z.enum(["proposed", "supported", "validated", "disputed", "refuted"]).optional().describe("Claim status: tracks argumentation progress"),
+        status: z.enum(["proposed", "supported", "validated", "disputed", "refuted"]).optional().describe("Claim status. 'proposed' = start state; 'supported' = compile passed + evidence assessed; 'disputed' = contradicting evidence. Requires compile to pass before advancing to 'supported'."),
         source: z.enum(["literature", "observed", "hypothesis"]).optional().describe("Ground source"),
         verification: z.enum(["verified", "pending"]).optional().describe("Ground verification status"),
         ground_ids: z.object({
@@ -617,7 +617,10 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     {
       title: "Compile Arguments",
       description:
-        "Review argument chains in parallel and return a verdict for each Claim. " +
+        "Validates the logical coherence of the argument. " +
+        "The primary chain is Ground (evidence) → Warrant (inference principle) → Claim (conclusion); " +
+        "Backing (warrant authority) and Rebuttal (exception conditions) are also reviewed. " +
+        "Reviews all affected Claims in parallel and returns a verdict per Claim. " +
         "When to call: after completing all nodes under a Claim (Warrant + Ground(s) in place), " +
         "after any structural change to an existing argument, or whenever a Claim shows stale status. " +
         "A Claim must pass compile before its status can advance to 'supported' or 'validated'. " +

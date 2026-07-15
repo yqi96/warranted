@@ -465,12 +465,21 @@ function buildForest(nodes, edges) {
     const gid = String(e.source), wid = String(e.target);
     if (groundsByWarrant.has(wid)) groundsByWarrant.get(wid).push(gid);
   });
+  // Chain grounds that are actually connected to a warrant (have a based_on edge).
+  // An orphaned chain ground (ref_claim_id set but not in any warrant's ground_ids) must
+  // NOT exclude its referenced claim from being a root — otherwise the entire sub-tree
+  // becomes unreachable and appears as isolated nodes.
+  const activeChainGrounds = new Set(
+    edges.filter(e => e.type === 'based_on').map(e => String(e.source))
+  );
   edges.filter(e => e.type === 'derives_from').forEach(e => {
     // ref_claim (source) derives_from chain_ground (target)
     // → ref_claim is a sub-tree child of the chain ground in tree
     const refCid = String(e.source), gid = String(e.target);
     refClaimByGround.set(gid, refCid);
-    referencedClaims.add(refCid); // ref_claim is not a root
+    if (activeChainGrounds.has(gid)) {
+      referencedClaims.add(refCid); // ref_claim is not a root (only when chain ground is wired)
+    }
   });
   edges.filter(e => e.type === 'reinforces').forEach(e => {
     const wid = String(e.source), bid = String(e.target);

@@ -263,10 +263,20 @@ describe("invalidateCompiledClaims", () => {
     expect(repo.getCompileState(db, claim.id)).toBeNull();
   });
 
-  test("修改非 compiled Claim 的节点后无警告", () => {
-    const { ground1 } = seedBasicArgument(db);
+  test("修改非 compiled Claim 的节点后无警告，但仍标记 stale=true", () => {
+    const { claim, ground1 } = seedBasicArgument(db);
     const warnings = invalidateCompiledClaims(db, ground1.id);
     expect(warnings.length).toBe(0);
+    const updatedClaim = repo.getNodeById(db, claim.id)!;
+    expect(JSON.parse(updatedClaim.data).stale).toBe(true);
+  });
+
+  test("孤立节点不设置无关 Claim 的 stale 状态", () => {
+    const claim = makeClaim(db);
+    const orphanGround = makeGround(db, { content: "Orphan ground" });
+    invalidateCompiledClaims(db, orphanGround.id);
+    const claimRow = repo.getNodeById(db, claim.id)!;
+    expect(JSON.parse(claimRow.data).stale).toBeUndefined();
   });
 
   test("修改不相关节点不影响任何 Claim", () => {

@@ -6,6 +6,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal } from "./helpers.ts";
 import * as service from "../src/service.ts";
+import * as repo from "../src/repo.ts";
 import {
   NotFoundError,
   ValidationError,
@@ -625,6 +626,23 @@ describe("getStats", () => {
     const stats = service.getStats(db);
     expect(stats.grounds.by_verification.verified).toBe(1);
     expect(stats.grounds.by_verification.pending).toBe(1);
+  });
+
+  test("无 stale Claim 时 stale_count 为 undefined", () => {
+    makeClaim(db, "C1");
+    makeClaim(db, "C2");
+    const stats = service.getStats(db);
+    expect(stats.claims.stale_count).toBeUndefined();
+  });
+
+  test("有 stale Claim 时 stale_count 正确", () => {
+    const c1 = makeClaim(db, "C1");
+    const c2 = makeClaim(db, "C2");
+    makeClaim(db, "C3");
+    repo.setClaimStale(db, c1.id, true);
+    repo.setClaimStale(db, c2.id, true);
+    const stats = service.getStats(db);
+    expect(stats.claims.stale_count).toBe(2);
   });
 });
 

@@ -6,8 +6,10 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal } from "./helpers.ts";
+import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim, seedBasicArgument } from "./helpers.ts";
 import { registerTools } from "../src/tools.ts";
+import type { ReviewConfig } from "../src/review-config.ts";
+import * as repo from "../src/repo.ts";
 
 let db: Database;
 let tools: Record<string, { schema: any; handler: Function }>;
@@ -253,5 +255,120 @@ describe("delete_node 工具", () => {
     const result = await tools.delete_node.handler({ node_id: claim.id, cascade: false });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("cascade");
+  });
+});
+
+// =============================================================================
+// compile_arguments 工具
+// =============================================================================
+
+describe("compile_arguments 工具", () => {
+  test("未配置 reviewConfig 时返回错误", async () => {
+    const result = await tools.compile_arguments.handler({});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Review not configured");
+  });
+
+  test("有 reviewConfig 但无 Claim 时返回提示", async () => {
+    const fakeConfig: ReviewConfig = {
+      enabled: true,
+      provider: "anthropic",
+      model: "claude-haiku-4-5-20251001",
+      apiKey: "sk-fake",
+      debounceMs: 0,
+      maxTurns: 1,
+      reviewDir: "/tmp",
+      dbPath: ":memory:",
+    };
+    const db2 = createTestDb();
+    const server2 = createMockServer();
+    registerTools(server2, db2, fakeConfig);
+    const result = await server2._tools.compile_arguments.handler({});
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("No claims to compile");
+    cleanupDb(db2);
+  });
+});
+
+// =============================================================================
+// get_argument 工具 — stale 标识
+// =============================================================================
+
+describe("get_argument 工具 — stale 标识", () => {
+  test("stale Claim 的输出包含 STALE 标识", async () => {
+    const claim = makeClaim(db, "核心主张");
+    repo.setClaimStale(db, claim.id, true);
+
+    const result = await tools.get_argument.handler({ node_id: claim.id });
+    expect(result.content[0].text).toContain("⚠ STALE");
+    expect(result.content[0].text).toContain("compile_arguments");
+  });
+
+  test("非 stale Claim 的输出不含 STALE 标识", async () => {
+    const claim = makeClaim(db, "核心主张");
+    const result = await tools.get_argument.handler({ node_id: claim.id });
+    expect(result.content[0].text).not.toContain("⚠ STALE");
+  });
+});
+
+// =============================================================================
+// get_stats 工具 — stale_count
+// =============================================================================
+
+describe("get_stats 工具 — stale_count", () => {
+  test("无 stale Claim 时统计不含 stale 后缀", async () => {
+    makeClaim(db, "C1");
+    const result = await tools.get_stats.handler({});
+    expect(result.content[0].text).toContain("Claims: 1");
+    expect(result.content[0].text).not.toContain("stale");
+  });
+
+  test("有 stale Claim 时统计含 stale 后缀", async () => {
+    const claim = makeClaim(db, "C1");
+    repo.setClaimStale(db, claim.id, true);
+
+    const result = await tools.get_stats.handler({});
+    expect(result.content[0].text).toContain("Claims: 1 (1 stale)");
+  });
+});
+
+// =============================================================================
+// mutation 工具 — compile hint
+// =============================================================================
+
+describe("mutation 工具 — compile hint", () => {
+  test("create_warrant 对 compiled Claim 返回 compile 提示", async () => {
+    const claim = makeCompiledClaim(db, "已 compiled 的主张");
+    const ground = makeGround(db);
+    const result = await tools.create_warrant.handler({
+      claim_id: claim.id,
+      content: "新推理规则",
+      ground_ids: [ground.id],
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("compile_arguments");
+  });
+
+  test("create_warrant 对非 compiled Claim 无 compile 提示", async () => {
+    const claim = makeClaim(db, "非 compiled 主张");
+    const ground = makeGround(db);
+    const result = await tools.create_warrant.handler({
+      claim_id: claim.id,
+      content: "推理规则",
+      ground_ids: [ground.id],
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).not.toContain("compile_arguments");
+  });
+
+  test("delete_node 删除 compiled Claim 的 Ground 时返回 compile 提示", async () => {
+    const claim = makeCompiledClaim(db, "已 compiled 的主张");
+    const g1 = makeGround(db, { content: "G1" });
+    const g2 = makeGround(db, { content: "G2" });
+    makeWarrant(db, claim.id, [g1.id, g2.id]);
+
+    const result = await tools.delete_node.handler({ node_id: g1.id, cascade: false });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("compile_arguments");
   });
 });

@@ -857,9 +857,20 @@ function highlightTreeNeighbors(hierarchyNode) {
   (hierarchyNode.children||[]).forEach(c => connected.add(c.data.id));
   if (hierarchyNode.parent) (hierarchyNode.parent.children||[]).forEach(c => connected.add(c.data.id));
 
+  // A claim may be referenced by multiple chain grounds across the tree.
+  // Only one of them is the immediate parent; the rest are orphaned chain grounds
+  // (visitedClaims prevented them from having the claim as a child).
+  // Scan all rendered nodes and highlight every ground whose ref_claim_id points here.
+  if (hierarchyNode.data.type === 'claim') {
+    g.selectAll('.node-group').each(function(d) {
+      if (d.data.type === 'ground' && String(d.data.data?.ref_claim_id) === id)
+        connected.add(d.data.id);
+    });
+  }
+
   g.selectAll('.node-group').transition().duration(300).style('opacity', d => connected.has(d.data.id) ? 1 : 0.12);
   g.selectAll('.link').transition().duration(300).style('opacity', d =>
-    (d.source.data.id===id || d.target.data.id===id) ? 1 : 0.05);
+    (connected.has(d.source.data.id) || connected.has(d.target.data.id)) ? 1 : 0.05);
 }
 
 function highlightNeighbors(id) {

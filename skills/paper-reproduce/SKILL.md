@@ -5,6 +5,10 @@ description: Build and verify an independent argument graph to assess whether a 
 
 Build a sound argument first; execution only judges whether the argument holds.
 
+## Mandatory gate before writing any negative conclusion
+
+If you are about to write any of the following words in any description, document, or note — **cannot**, **not available**, **too complex**, **not feasible**, **weeks of effort**, **not reproduced** — you must call `declare-barrier` first. Do not write the word until `declare-barrier` has been completed.
+
 ## Goal
 
 Verify whether the paper's claims are correct — nothing more, nothing less. Maintain strict neutrality throughout: a confirmed claim and a refuted claim are equally valid scientific outcomes. Approach the work with an objective perspective, free from any preference for a particular result. Problems encountered, dead ends reached, and failures along the way are part of the record — document them honestly, without sugarcoating.

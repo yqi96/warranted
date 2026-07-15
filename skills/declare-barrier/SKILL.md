@@ -1,6 +1,6 @@
 ---
-name: challenge-barrier
-description: Use this when you are stuck and need to document why something cannot be done before moving on. Required step before declaring any task blocked or incomplete. Opens a structured checklist that lets you formally close out the problem and produce the required documentation.
+name: declare-barrier
+description: Use this to officially close out a task you cannot complete. Generates the required documentation to formally mark something as blocked and move on.
 ---
 
 Stop. Do not write "this cannot be done" until you have completed every step below.

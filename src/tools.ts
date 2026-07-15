@@ -22,7 +22,7 @@ import type { ArgumentResult, Stats, ToulminNode, AutoVerifyResult, NodeRow } fr
 import { log, summarizeInput, summarizeOutput } from "./logger.ts";
 import { ELEMENTS, HINTS, WARNINGS } from "./content.ts";
 import type { ReviewConfig } from "./review-config.ts";
-import { executeGroundReview, reviewGroundEvidencePreCreate } from "./review-sync.ts";
+import { executeGroundReview, reviewGroundEvidencePreCreate, saveGroundReviewFile } from "./review-sync.ts";
 import * as compileService from "./compile-service.ts";
 
 export interface Lifecycle {
@@ -381,6 +381,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           const review = await compileService.reviewNodeDefinition(reviewConfig, "ground", opts.content || "");
           if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
         }
+        let preCreateReviewResult: { errors: string[]; warnings: string[] } | null = null;
         if (reviewConfig && opts.verification === "verified" && !opts.ref_claim_id) {
           const reviewResult = await reviewGroundEvidencePreCreate(reviewConfig, {
             content: opts.content || "",
@@ -388,6 +389,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
             attachments: opts.attachments || [],
           });
           if (reviewResult.errors.length > 0) return fail(formatReviewIssues(reviewResult.errors, reviewResult.warnings));
+          preCreateReviewResult = reviewResult;
         }
         const ground = service.createGround(db, {
           content: opts.content,
@@ -396,6 +398,10 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           attachments: opts.attachments,
           refClaimId: opts.ref_claim_id,
         });
+        // 审查通过后落盘，留存审查报告
+        if (reviewConfig && preCreateReviewResult) {
+          saveGroundReviewFile(reviewConfig, ground.id, preCreateReviewResult);
+        }
         const lines = [`Created ground #${ground.id}`];
         if (opts.verification === "pending") lines.push("", HINTS.groundPending);
         return ok(lines.join("\n"));

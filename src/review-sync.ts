@@ -217,7 +217,7 @@ export async function executeGroundReview(
 // =============================================================================
 
 /** 将 Ground 证据审查结果保存为独立 JSON 文件到 reviews/ 目录 */
-function saveGroundReviewFile(
+export function saveGroundReviewFile(
   config: ReviewConfig,
   groundId: number,
   result: GroundReviewResult

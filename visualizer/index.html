@@ -760,10 +760,13 @@ function dragEnded(event, d)   { if (!event.active) simulation.alphaTarget(0); d
 async function loadGraph() {
   const types = getSelectedTypes();
   const params = types.length < 5 ? `?types=${types.join(',')}` : '';
-  const res = await fetch(`viz/graph${params}`);
-  graphData = await res.json();
-  renderGraph();
-  updateCounts();
+  try {
+    const res = await fetch(`viz/graph${params}`);
+    if (!res.ok) return;
+    graphData = await res.json();
+    renderGraph();
+    updateCounts();
+  } catch { /* server not ready or network error, skip */ }
 }
 
 function getSelectedTypes() {
@@ -1134,7 +1137,7 @@ initResizer('resizer-right','detail-panel','right');
   }
 
   const es = new EventSource('viz/events');
-  es.onopen    = () => setStatus('on');
+  es.onopen    = () => { setStatus('on'); loadGraph(); };
   es.onerror   = () => setStatus('err');
   es.addEventListener('data_updated', () => loadGraph());
 })();

@@ -179,8 +179,8 @@ let currentWatcher: ReturnType<typeof fsWatch> | null = null;
 function startWatcher(watchDir: string) {
   try {
     currentWatcher = fsWatch(watchDir, (_event, filename) => {
-      if (!filename) return;
-      if (!filename.endsWith(".db") && !filename.endsWith(".db-wal") && !filename.endsWith(".db-shm")) return;
+      // macOS fs.watch sometimes gives null filename — still treat as a change
+      if (filename && !filename.endsWith(".db") && !filename.endsWith(".db-wal") && !filename.endsWith(".db-shm")) return;
       if (watchDebounce) clearTimeout(watchDebounce);
       watchDebounce = setTimeout(() => broadcastSSE("data_updated"), 300);
     });
@@ -206,6 +206,7 @@ startWatcher(dirname(initialDbPath));
 
 const server = Bun.serve({
   port: 3456,
+  idleTimeout: 255,
 
   async fetch(req) {
     const url = new URL(req.url);
@@ -226,17 +227,26 @@ const server = Bun.serve({
       // SSE: 实时事件推送
       if (path === "/viz/events") {
         let ctrl: ReadableStreamDefaultController<Uint8Array>;
+        let heartbeat: ReturnType<typeof setInterval>;
         const stream = new ReadableStream<Uint8Array>({
           start(c) {
             ctrl = c;
             sseClients.add(ctrl);
             ctrl.enqueue(sseEncoder.encode(`event: connected\ndata: {}\n\n`));
+            heartbeat = setInterval(() => {
+              try { ctrl.enqueue(sseEncoder.encode(":\n\n")); }
+              catch { clearInterval(heartbeat); sseClients.delete(ctrl); }
+            }, 5000);
           },
           cancel() {
+            clearInterval(heartbeat);
             sseClients.delete(ctrl);
           },
         });
-        req.signal?.addEventListener("abort", () => sseClients.delete(ctrl));
+        req.signal?.addEventListener("abort", () => {
+          clearInterval(heartbeat);
+          sseClients.delete(ctrl);
+        });
         return new Response(stream, {
           headers: {
             ...corsHeaders,

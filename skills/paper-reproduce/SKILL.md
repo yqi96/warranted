@@ -3,103 +3,46 @@ name: paper-reproduce
 description: Build and verify an independent argument graph to assess whether a paper's claims hold. Use for reproducing published experimental results, validating paper claims, or building argument graphs from academic literature.
 ---
 
-
 ## Goal
 
-Verify whether the paper's claims are correct — nothing more, nothing less. Maintain strict neutrality throughout: a confirmed claim and a refuted claim are equally valid scientific outcomes. Approach the work with an objective perspective, free from any preference for a particular result. Problems encountered, dead ends reached, and failures along the way are part of the record — document them honestly, without sugarcoating.
+Verify whether the paper's claims are correct. Maintain strict neutrality throughout: supported and disputed are equally valid scientific outcomes.
 
-## Two phases, one priority
+**Done means**: every Claim has a clear conclusion — supported, disputed, or proposed. `proposed` is the conclusion of last resort when a verdict genuinely cannot be reached; it requires `declare-barrier` skill to have been invoked and is not an exit ramp.
 
-**Phase 1 (Extract)** is the scientific thinking chain. It maps the paper's logical structure: what is claimed, what evidence the paper appeals to, and whether the inference from evidence to conclusion is sound. This is the primary scientific work — do not rush it to get to coding.
+## How to use the Toulmin graph
 
-**Phase 2 (Verify)** is execution: independently reproduce the results that Phase 1 identified as Grounds, then update the graph with what you actually found.
+### Extract the argument structure
 
-A poorly-structured Phase 1 makes Phase 2 meaningless — you will produce numbers with no clear argumentative target.
+Read the paper and extract its argument structure. Every node starts as a hypothesis.
 
-## Phase 1: Extract the argument graph
+- `create_claim` — the paper's conclusion; initializes as `proposed`, updated to `supported` or `disputed` via `update_node` based on verification results
+- `create_ground(source="hypothesis", verification="pending")` — the paper's stated experimental result, written as a declarative finding; initializes as a hypothesis, updated via `update_node` as verification proceeds
+- `create_warrant` — the inference principle connecting Ground to Claim
+- `create_backing` (if any) — what supports the Warrant's authority
+- `create_rebuttal` (if any) — exceptions the paper acknowledges
 
-Read the paper and extract its argument structure. Nothing is accepted yet — every node starts as a hypothesis.
+> **Chained reasoning**: when a sub-Claim serves as evidence for another Claim, use `create_ground(ref_claim_id=sub-Claim.id)`.
 
-1. **Claim**: What conclusion is the paper making? → `create_claim`
-2. **Ground**: What result does the paper appeal to as evidence? → `create_ground(source="hypothesis", verification="pending")`
-3. **Warrant**: What inference principle connects Ground to Claim? → `create_warrant`
-4. **Backing** (if any): What supports the Warrant's authority? → `create_backing`
-5. **Rebuttal** (if any): What exceptions does the paper acknowledge? → `create_rebuttal`
-6. **Compile**: `compile_arguments` — verify the logical chain is sound before proceeding to Phase 2. Fix any flagged issues.
+Once extracted, run `compile_arguments` to verify the reasoning structure is logically coherent. Re-run it any time you modify the argument structure.
 
-> **Chained reasoning**: When a sub-Claim serves as evidence for another Claim, use `create_ground(ref_claim_id=sub-Claim.id)`.
+### Drive action from Claims
 
-7. **Plan verification**: Step back and look at the graph as a whole. Determine dependency order (if Claim B depends on sub-Claim A, verify A first). For each Ground, check whether you understand what kind of evidence would confirm or refute it — if not, go back and clarify. Articulate what result would support the Claim and what would refute it, before running anything. This is not a one-shot gate — revisit these questions after each Ground you verify. New results may change how you approach the rest.
+For each Claim, ask: what is preventing it from being marked supported or disputed? Act independently to remove that blocker, update the graph, and re-examine. Repeat until every Claim has a clear conclusion.
 
-### What to write in a Phase 1 Ground
+## Constraints
 
-A Phase 1 Ground restates the paper's claimed result as the specific thing you will independently compute or observe. **Writing the paper's result here is not circular** — it is defining the hypothesis you are testing. The verification in Phase 2 is what makes it independent evidence.
+**Independence**
 
-**The content must describe a computation output as a finding, not the data that was used or the method that was applied.**
+Do not use the paper's produced artifacts — supplementary data, pre-computed outputs, GitHub artifacts — as verification evidence. That is circular reasoning.
 
-Write Phase 1 Grounds in the same declarative form as observed Grounds. `source="hypothesis"` already encodes that this is pending — do not add hedging language ("is expected to", "should", "假设", "预期") to the content. The content reads as a result in both cases; the `source` field is what distinguishes them.
+Author-published tools (code, scripts, model weights) may be reused as long as they match the paper's described methodology.
 
-| Wrong (input/method description) | Wrong (hedging in content) | Right (declarative result) |
-|---|---|---|
-| "The authors used 500 proxy records screened by FDR." | "CPS is expected to yield a variance ratio near 1.0." | "CPS applied to the proxy network yields a GMST reconstruction whose bandpass-filtered variance ratio against model simulations falls near 1.0." |
-| "Logistic regression was applied to the patient cohort." | "The model is expected to achieve AUC > 0.85." | "The model achieves AUC > 0.85 on the held-out test set." |
+The test: *did this paper produce this artifact, or did the paper use it as external input?* If the paper produced it, do not use it — reproduce it independently.
 
-If you cannot state a Ground as a declarative result, you have not yet identified what the paper is actually claiming as evidence.
+**declare-barrier**
 
-## Phase 2: Node-by-node verification
+Any time during execution you encounter: cannot / not available / too complex / not feasible / not reproduced — you must invoke the **declare-barrier** skill before proceeding. A Claim may not be left as `proposed` without declare-barrier having been called.
 
-Use `get_argument` to review the graph. For each `pending` Ground, produce the result independently:
+**Description document**
 
-```
-hypothesis + pending
-    ↓  Obtain data → write script → run → save outputs + description document
-    ↓  Result is reproducible
-    observed + verified + attachments
-```
-
-- Reproducible → `update_node(source="observed", verification="verified", attachments=[...])`
-- Cannot verify → keep `hypothesis + pending`. Document what blocked you and why. Honest accounting of a dead end is a valid scientific outcome.
-
-### The description document
-
-Every Ground — whether verified or stuck — gets a description document. Its purpose is reproducibility of *your own work*: someone else (or future you) should be able to read it and understand what you did, what happened, and why you reached your judgment. Write it for that audience. There is no fixed template — include what matters: data sources, scripts, results, obstacles, reasoning. Omit what doesn't. The description document has no fixed location — place it in the script's directory, a sibling directory, or wherever fits your workspace. What matters is that a reader can find it by looking near the code.
-
-**Assessing Claims after verifying their Grounds:**
-
-| Evidence state | Action |
-|---|---|
-| All Grounds verified + Warrant sound | `update_node(status="supported")` |
-| Some Grounds unverifiable | keep `proposed`; document why |
-| Independent results contradict the paper | `update_node(status="disputed")` — contradiction is information |
-
-### Strict constraint: author's results are forbidden in Phase 2
-
-You **MUST NOT** use the paper's published result files — supplementary data, pre-computed outputs, GitHub artifacts — as verification evidence. That is circular reasoning.
-
-Author-published **tools** (code, scripts, model weights) may be reused, as long as they match the paper's description.
-
-**BEFORE USING ANY ARTIFACT ENCOUNTERED DURING REPRODUCTION, STOP AND APPLY THIS TEST:**
-
-> "Did this paper *produce* this artifact, or did the paper *use* it as external input?"
-
-If the paper produced it, **DO NOT USE IT** — go reproduce it independently instead. If the paper consumed it as external input (pre-existing datasets, instrumental records, third-party model archives), it may be reused.
-
-**THIS JUDGMENT IS MADE AT THE MOMENT OF FIRST ENCOUNTER AND IS ABSOLUTE. THERE ARE NO EXCEPTIONS.**
-
-## Phase 3: Global review
-
-1. `compile_arguments` — verify and fix all outstanding argument chain issues before reporting results.
-2. `get_stats` — check overall progress
-3. `get_argument(claim_id)` — inspect each Claim's full argument chain
-4. Check for orphan nodes: Claims without Warrants, Warrants without Grounds
-5. Confirm all Claims are assessed — judge, don't modify
-6. Read through your description documents — do they tell a coherent story? If a document is vague or hand-wavy, the verification behind it probably was too.
-7. At any point during execution — not just at the end — if you encounter any of the following: **cannot**, **not available**, **too complex**, **not feasible**, **weeks of effort**, **not reproduced**, you must invoke **declare-barrier** before proceeding. Do not write the word, skip the Ground, or move on until `declare-barrier` has been completed.
-
-## Checklist
-
-- [ ] Every `verified` Ground has attachments and a description document (located near the script — same directory or sibling)
-- [ ] Every `pending` Ground has a description document in its `attachments` explaining what was tried and what blocks it (`declare-barrier` completed — no exceptions)
-- [ ] All Claims assessed — judge the author's claims, don't modify them
-- [ ] Description documents are specific enough for someone to follow your reasoning
-- [ ] No author-produced results were used as verification evidence
+Every Ground gets a description document, placed near the reproduction code. It should explain what was done, what was found, and why you reached your judgment — well enough for someone else (or future you) to follow the reasoning.

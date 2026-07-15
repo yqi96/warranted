@@ -31,6 +31,16 @@ For each Claim, ask: what is preventing it from being marked supported or disput
 
 ## Constraints
 
+**Fidelity to the paper**
+
+The argument graph represents the paper's argument, not a new one. Claims and Grounds are extracted from the paper and the overall reasoning structure is fixed.
+
+- **Claim**: extracted verbatim from the paper. Do not modify the conclusion, scope, or qualifier to match your findings — that would change what you are verifying.
+- **Ground**: extracted from the paper as a hypothesis. After reproduction, minor numerical corrections are permitted (e.g., 42.3 → 42.1 due to random seed or implementation variance). The logical assertion — what the Ground claims to show — must remain unchanged.
+- **Reasoning structure**: the Claim → Ground → Warrant chain reflects the paper's logic. Do not restructure it to make verification easier.
+
+If your reproduction yields a result that contradicts the paper, record it as a Rebuttal and update the Claim status to `disputed`. Do not rewrite the Claim or Ground to absorb the contradiction.
+
 **Independence**
 
 Do not use the paper's produced artifacts — supplementary data, pre-computed outputs, GitHub artifacts — as verification evidence. That is circular reasoning.

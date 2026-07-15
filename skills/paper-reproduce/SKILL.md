@@ -3,11 +3,6 @@ name: paper-reproduce
 description: Build and verify an independent argument graph to assess whether a paper's claims hold. Use for reproducing published experimental results, validating paper claims, or building argument graphs from academic literature.
 ---
 
-Build a sound argument first; execution only judges whether the argument holds.
-
-## Mandatory gate before writing any negative conclusion
-
-If you are about to write any of the following words in any description, document, or note — **cannot**, **not available**, **too complex**, **not feasible**, **weeks of effort**, **not reproduced** — you must call `declare-barrier` first. Do not write the word until `declare-barrier` has been completed.
 
 ## Goal
 
@@ -99,22 +94,12 @@ If the paper produced it, **DO NOT USE IT** — go reproduce it independently in
 4. Check for orphan nodes: Claims without Warrants, Warrants without Grounds
 5. Confirm all Claims are assessed — judge, don't modify
 6. Read through your description documents — do they tell a coherent story? If a document is vague or hand-wavy, the verification behind it probably was too.
-
-## When things don't work out
-
-Reproduction is hard. These are common situations and how to think about them:
-
-- **Data unavailable**: Before accepting this, invoke the **challenge-barrier** skill — it provides a required checklist and lets you formally close out the problem. If the barrier is confirmed real after that process, the Ground stays `pending`, and the explanation must be written into the Ground's `attachments` as a description document — not just stated in conversation.
-- **Method description is vague**: Make a reasonable interpretation, document your assumption, and run with it. Note in the description document that the result is assumption-dependent. This is information, not failure.
-- **Results diverge from the paper**: This is the interesting case. Don't assume you made a mistake — but do check your work carefully. If the divergence is real, the Claim moves toward `disputed`. Record the discrepancy quantitatively.
-- **Computationally infeasible**: Invoke **challenge-barrier** first. Scale down if a smaller experiment still tests the same Ground. If it doesn't, document why in the Ground's `attachments` and leave it `pending`.
-
-The key principle: **every outcome is data**. A failed reproduction with a clear explanation is more valuable than a suspicious success.
+7. At any point during execution — not just at the end — if you encounter any of the following: **cannot**, **not available**, **too complex**, **not feasible**, **weeks of effort**, **not reproduced**, you must invoke **declare-barrier** before proceeding. Do not write the word, skip the Ground, or move on until `declare-barrier` has been completed.
 
 ## Checklist
 
 - [ ] Every `verified` Ground has attachments and a description document (located near the script — same directory or sibling)
-- [ ] Every `pending` Ground has a description document in its `attachments` explaining what was tried and what blocks it (challenge-barrier checklist completed)
+- [ ] Every `pending` Ground has a description document in its `attachments` explaining what was tried and what blocks it (`declare-barrier` completed — no exceptions)
 - [ ] All Claims assessed — judge the author's claims, don't modify them
 - [ ] Description documents are specific enough for someone to follow your reasoning
 - [ ] No author-produced results were used as verification evidence

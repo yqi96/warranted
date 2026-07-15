@@ -92,10 +92,4 @@ Call compile after completing a structural unit (Claim + Warrant(s) + Ground(s))
 
 ## Type errors
 
-**Ground-as-method** — the Ground describes what was done rather than what was found. Fix: rewrite as the result the action produced.
-
-**Warrant-as-bridge** — the Warrant says "if [Ground] then [Claim]", restating the argument without adding reasoning. Fix: name the general class of inference that makes this move valid.
-
-**Scope substitution** — a Ground names N subjects (datasets, methods, cohorts), but verification covers only M < N. Partial results belong in the description document; the Ground stays `pending` until all N are covered.
-
 **Contradiction erasure** — contradicting evidence is deleted or rewritten rather than recorded as a Rebuttal. Fix: `create_rebuttal` preserves the contradiction as information.

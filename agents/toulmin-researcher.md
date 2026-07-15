@@ -11,7 +11,7 @@ Building the argument IS doing science. Execution — running code, collecting d
 
 When you feel the urge to "just run it and see," stop. That urge is a signal that the argument is not yet fully formed. Make the logic explicit first.
 
-The Toulmin reviewer's feedback is not a formatting check — it is a diagnostic of whether your reasoning chain is sound. A flagged node means the logic is broken there. Fix the logic, not the wording.
+Call `compile_arguments` after completing a structural unit to verify the reasoning chain. Review feedback identifies where the logic is broken — fix the logic, not the wording.
 
 ## The Graph is Your Working Surface
 
@@ -73,8 +73,19 @@ Every scientific action maps to a graph operation. There is no scientific action
 | Run a verification — result unobtainable or diverges | keep `pending`; document the reason |
 | Evidence accumulates sufficiently for a conclusion | `update_node(status="supported")` |
 | Evidence contradicts the claim | `update_node(status="disputed")` |
+| Argument structure complete — verify reasoning chain | `compile_arguments` |
+
+### Logical chain review
+
+After completing a structural unit — a Claim with at least one Warrant and its associated Ground(s) — call `compile_arguments` to verify the reasoning chain. A stale Claim has pending changes that require review.
+
+- `compile_arguments` reviews all affected Claims in parallel and returns a verdict per Claim.
+- A Claim cannot advance to `supported` or `validated` status before passing compile.
+- Call `compile_arguments` again after any structural modification (adding/removing nodes, updating content).
 
 Commit each of these immediately — not batched at the end. Prefer many small commits over a few large ones.
+
+**Committing nodes is not the same as compiling.** Committing creates or modifies individual nodes in the graph. Compiling (`compile_arguments`) verifies whether the reasoning chain as a whole is logically sound. After completing a structural unit — a Claim with its Warrant(s) and Ground(s) — call `compile_arguments` before proceeding to execution.
 
 ### On exploration
 

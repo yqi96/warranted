@@ -513,7 +513,7 @@ function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
     };
   });
 
-  return { claim: { ...claim, qualifier }, warrants, rebuttals } as ClaimArgument;
+  return { claim: { ...claim, qualifier, stale: claimData.stale }, warrants, rebuttals } as ClaimArgument;
 }
 
 function getWarrantArgument(db: Database, warrantRow: NodeRow): WarrantArgument {
@@ -624,13 +624,15 @@ export function searchNodesService(
 export function getStats(db: Database): Stats {
   const counts = repo.countNodesByType(db);
 
-  // Claims by status
+  // Claims by status and stale count
   const claimRows = repo.listNodesByType(db, "claim");
   const byStatus: Record<string, number> = {};
+  let staleCount = 0;
   for (const row of claimRows) {
     const data = JSON.parse(row.data);
     const status = data.status || "proposed";
     byStatus[status] = (byStatus[status] || 0) + 1;
+    if (data.stale === true) staleCount++;
   }
 
   // Grounds by source and verification
@@ -655,7 +657,7 @@ export function getStats(db: Database): Stats {
   }
 
   return {
-    claims: { total: counts.claim, by_status: byStatus },
+    claims: { total: counts.claim, by_status: byStatus, stale_count: staleCount > 0 ? staleCount : undefined },
     grounds: { total: counts.ground, by_source: bySource, by_verification: byVerification },
     warrants: { total: counts.warrant },
     backings: { total: counts.backing },

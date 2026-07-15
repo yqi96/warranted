@@ -210,6 +210,7 @@ export interface ClaimArgument {
     content: string;
     status: ClaimStatus;
     qualifier: string | null;
+    stale?: boolean;
   };
   warrants: ArgumentWarrant[];
   rebuttals: ArgumentRebuttal[];
@@ -247,7 +248,7 @@ export type ArgumentResult = ClaimArgument | WarrantArgument | NodeArgument;
 // =============================================================================
 
 export interface Stats {
-  claims: { total: number; by_status: Record<string, number> };
+  claims: { total: number; by_status: Record<string, number>; stale_count?: number };
   grounds: { total: number; by_source: Record<string, number>; by_verification: Record<string, number> };
   warrants: { total: number };
   backings: { total: number };

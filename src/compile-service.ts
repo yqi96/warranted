@@ -362,6 +362,9 @@ export function invalidateCompiledClaims(db: Database, nodeId: number): string[]
       repo.deleteCompileState(db, claimId);
       warnings.push(WARNINGS.compileInvalidated(claimId, nodeId));
     }
+    if (!data.stale) {
+      repo.setClaimStale(db, claimId, true);
+    }
   }
 
   return warnings;

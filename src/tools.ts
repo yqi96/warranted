@@ -18,7 +18,7 @@ import {
   MutuallyExclusiveModeError,
   StatusTransitionError,
 } from "./errors.ts";
-import type { ArgumentResult, Stats, ToulminNode, AutoVerifyResult, NodeRow } from "./types.ts";
+import type { ArgumentResult, Stats, ToulminNode, AutoVerifyResult } from "./types.ts";
 import { log, summarizeInput, summarizeOutput } from "./logger.ts";
 import { ELEMENTS, HINTS, WARNINGS } from "./content.ts";
 import type { ReviewConfig } from "./review-config.ts";
@@ -84,6 +84,9 @@ function formatArgument(result: ArgumentResult): string {
     // ClaimArgument
     const lines: string[] = [];
     lines.push(`## Claim #${result.claim.id}`);
+    if (result.claim.stale) {
+      lines.push("⚠ STALE — logical chain review pending. Call compile_arguments.");
+    }
     lines.push(`Content: ${result.claim.content}`);
     lines.push(`Status: ${result.claim.status}`);
     if (result.claim.qualifier) {
@@ -158,7 +161,8 @@ function formatArgument(result: ArgumentResult): string {
 function formatStats(stats: Stats): string {
   const lines: string[] = [];
   lines.push("## Argument Statistics", "");
-  lines.push(`Claims: ${stats.claims.total}`);
+  const stalePart = stats.claims.stale_count ? ` (${stats.claims.stale_count} stale)` : "";
+  lines.push(`Claims: ${stats.claims.total}${stalePart}`);
   for (const [status, count] of Object.entries(stats.claims.by_status)) {
     lines.push(`  - ${status}: ${count}`);
   }
@@ -203,6 +207,12 @@ function formatReviewIssues(errors: string[], warnings: string[]): string {
   return parts.join("\n");
 }
 
+/** invalidateCompiledClaims 警告 + compile 提示 */
+function appendInvalidateHint(text: string, warnings: string[]): string {
+  if (warnings.length === 0) return text;
+  return text + "\n" + warnings.join("\n") + "\nHint: Call compile_arguments to verify the argument chain.";
+}
+
 type ToolResult = { content: { type: string; text: string }[]; isError?: boolean };
 type ToolHandler = (input: any) => Promise<ToolResult>;
 
@@ -214,93 +224,6 @@ function ok(text: string): ToolResult {
 /** 构造失败返回（isError: true，不抛异常） */
 function fail(text: string): ToolResult {
   return { content: [{ type: "text", text }], isError: true };
-}
-
-// =============================================================================
-// 删除快照与回滚
-// =============================================================================
-
-interface DeleteSnapshot {
-  deletedNodes: NodeRow[];   // 被删除的节点（需重新插入）
-  modifiedNodes: NodeRow[];   // 被修改的节点（需恢复旧数据）
-}
-
-/** 删除前快照：收集所有将被删除或修改的节点 */
-function snapshotForDeletion(db: Database, nodeId: number): DeleteSnapshot {
-  const deletedNodes: NodeRow[] = [];
-  const modifiedNodes: NodeRow[] = [];
-  const row = repo.getNodeById(db, nodeId);
-  if (!row) return { deletedNodes, modifiedNodes };
-
-  switch (row.type) {
-    case "ground": {
-      deletedNodes.push(row);
-      deletedNodes.push(...repo.findRebuttalsByTarget(db, nodeId));
-      // 引用此 ground 的 warrant 会被修改（ground_ids 移除）
-      for (const w of repo.listNodesByType(db, "warrant")) {
-        const wData = JSON.parse(w.data);
-        if ((wData.ground_ids || []).includes(nodeId)) {
-          modifiedNodes.push({ ...w });
-        }
-      }
-      break;
-    }
-    case "warrant": {
-      deletedNodes.push(row);
-      deletedNodes.push(...repo.findBackingsByWarrant(db, nodeId));
-      deletedNodes.push(...repo.findRebuttalsByTarget(db, nodeId, "warrant"));
-      break;
-    }
-    case "backing":
-    case "rebuttal": {
-      deletedNodes.push(row);
-      break;
-    }
-    case "claim": {
-      deletedNodes.push(row);
-      const warrants = repo.findWarrantsByClaim(db, nodeId);
-      for (const w of warrants) {
-        deletedNodes.push(w);
-        deletedNodes.push(...repo.findBackingsByWarrant(db, w.id));
-        deletedNodes.push(...repo.findRebuttalsByTarget(db, w.id, "warrant"));
-      }
-      deletedNodes.push(...repo.findRebuttalsByTarget(db, nodeId, "claim"));
-      const refGrounds = repo.findGroundsByRefClaim(db, nodeId);
-      for (const g of refGrounds) {
-        deletedNodes.push(g);
-        deletedNodes.push(...repo.findRebuttalsByTarget(db, g.id));
-        // 引用此 ground 的 warrant 会被修改
-        for (const w of repo.listNodesByType(db, "warrant")) {
-          const wData = JSON.parse(w.data);
-          if ((wData.ground_ids || []).includes(g.id)) {
-            modifiedNodes.push({ ...w });
-          }
-        }
-      }
-      break;
-    }
-  }
-  return { deletedNodes, modifiedNodes };
-}
-
-/** 从快照恢复：重新插入被删除的节点，恢复被修改的节点 */
-function restoreFromSnapshot(db: Database, snapshot: DeleteSnapshot): void {
-  // 1. 恢复被删除的节点（按 ID 升序插入，保证引用关系）
-  const sorted = [...snapshot.deletedNodes].sort((a, b) => a.id - b.id);
-  for (const node of sorted) {
-    try {
-      repo.restoreNode(db, node);
-    } catch {
-      // 节点可能已存在（部分删除失败时）
-    }
-  }
-  // 2. 恢复被修改的节点
-  for (const node of snapshot.modifiedNodes) {
-    repo.updateNodeFields(db, node.id, {
-      content: node.content,
-      data: JSON.parse(node.data),
-    });
-  }
 }
 
 // =============================================================================
@@ -431,24 +354,11 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           const review = await compileService.reviewNodeDefinition(reviewConfig, "warrant", content);
           if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
         }
-        // 试执行
         const warrant = service.createWarrant(db, { content, claimId: claim_id, groundIds: ground_ids });
-        // 链式审查（阻断式：失败则回滚）
-        if (reviewConfig) {
-          try {
-            const affectedIds = compileService.findAffectedClaimIds(db, warrant.id);
-            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-            const { errors, warnings } = collectChainReviewIssues(verifyResults);
-            if (errors.length > 0) {
-              service.deleteNode(db, warrant.id, false);
-              return fail(formatReviewIssues(errors, warnings));
-            }
-            let text = `Created warrant #${warrant.id}`;
-            if (warnings.length > 0) text += "\n" + formatReviewIssues([], warnings);
-            return ok(text);
-          } catch { /* 审查本身出错不阻断 */ }
-        }
-        return ok(`Created warrant #${warrant.id}`);
+        return ok(appendInvalidateHint(
+          `Created warrant #${warrant.id}`,
+          compileService.invalidateCompiledClaims(db, warrant.id)
+        ));
       } catch (e) {
         return fail(formatError(e));
       }
@@ -472,22 +382,10 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("create_backing", async ({ warrant_id, content, attachments }: { warrant_id: number; content: string; attachments?: string[] }) => {
       try {
         const backing = service.createBacking(db, { content, warrantId: warrant_id, attachments });
-        // 链式审查（阻断式：失败则回滚）
-        if (reviewConfig) {
-          try {
-            const affectedIds = compileService.findAffectedClaimIds(db, backing.id);
-            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-            const { errors, warnings } = collectChainReviewIssues(verifyResults);
-            if (errors.length > 0) {
-              service.deleteNode(db, backing.id, false);
-              return fail(formatReviewIssues(errors, warnings));
-            }
-            let text = `Created backing #${backing.id}`;
-            if (warnings.length > 0) text += "\n" + formatReviewIssues([], warnings);
-            return ok(text);
-          } catch { /* 审查本身出错不阻断 */ }
-        }
-        return ok(`Created backing #${backing.id}`);
+        return ok(appendInvalidateHint(
+          `Created backing #${backing.id}`,
+          compileService.invalidateCompiledClaims(db, backing.id)
+        ));
       } catch (e) {
         return fail(formatError(e));
       }
@@ -512,22 +410,10 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("create_rebuttal", async ({ target_id, target_type, content, attachments }: { target_id: number; target_type: "claim" | "warrant"; content: string; attachments?: string[] }) => {
       try {
         const rebuttal = service.createRebuttal(db, { content, targetId: target_id, targetType: target_type, attachments });
-        // 链式审查（阻断式：失败则回滚）
-        if (reviewConfig) {
-          try {
-            const affectedIds = compileService.findAffectedClaimIds(db, rebuttal.id);
-            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-            const { errors, warnings } = collectChainReviewIssues(verifyResults);
-            if (errors.length > 0) {
-              service.deleteNode(db, rebuttal.id, false);
-              return fail(formatReviewIssues(errors, warnings));
-            }
-            let text = `Created rebuttal #${rebuttal.id}`;
-            if (warnings.length > 0) text += "\n" + formatReviewIssues([], warnings);
-            return ok(text);
-          } catch { /* 审查本身出错不阻断 */ }
-        }
-        return ok(`Created rebuttal #${rebuttal.id}`);
+        return ok(appendInvalidateHint(
+          `Created rebuttal #${rebuttal.id}`,
+          compileService.invalidateCompiledClaims(db, rebuttal.id)
+        ));
       } catch (e) {
         return fail(formatError(e));
       }
@@ -663,12 +549,6 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           }
         }
 
-        // 保存旧状态用于回滚
-        const oldRow = repo.getNodeById(db, opts.node_id);
-        const oldContent = oldRow?.content;
-        const oldData = oldRow?.data;
-
-        // 试执行
         const { node, warnings: serviceWarnings } = service.updateNode(db, opts.node_id, {
           content: opts.content,
           attachments: opts.attachments,
@@ -690,32 +570,10 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           } catch { /* 审查本身出错不阻断 */ }
         }
 
-        // 链式审查（阻断式：失败则回滚整个更新）
-        if (reviewConfig) {
-          try {
-            const affectedIds = compileService.findAffectedClaimIds(db, opts.node_id);
-            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-            const { errors, warnings } = collectChainReviewIssues(verifyResults);
-            if (errors.length > 0) {
-              // 回滚到旧状态
-              if (oldRow) {
-                repo.updateNodeFields(db, opts.node_id, {
-                  content: oldContent!,
-                  data: JSON.parse(oldData!),
-                });
-              }
-              return fail(formatReviewIssues(errors, warnings));
-            }
-            let text = `Updated ${formatNodeBrief(node)}`;
-            if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
-            if (warnings.length > 0) text += "\n" + formatReviewIssues([], warnings);
-            return ok(text);
-          } catch { /* 审查本身出错不阻断 */ }
-        }
-
+        const invalidateWarnings = compileService.invalidateCompiledClaims(db, opts.node_id);
         let text = `Updated ${formatNodeBrief(node)}`;
         if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
-        return ok(text);
+        return ok(appendInvalidateHint(text, invalidateWarnings));
       } catch (e) {
         return fail(formatError(e));
       }
@@ -737,34 +595,58 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("delete_node", async ({ node_id, cascade }: { node_id: number; cascade?: boolean }) => {
       try {
-        // 1. 计算受影响的 claim IDs（删除前）
-        const affectedIds = compileService.findAffectedClaimIds(db, node_id);
-        // 2. 快照：保存所有将被删除/修改的节点
-        const snapshot = snapshotForDeletion(db, node_id);
-        // 3. 执行删除
+        const invalidateWarnings = compileService.invalidateCompiledClaims(db, node_id);
         const serviceWarnings = service.deleteNode(db, node_id, cascade);
-        // 4. 链式审查（阻断式：失败则回滚）
-        if (reviewConfig && affectedIds.length > 0) {
-          try {
-            const verifyResults = await compileService.autoVerifyAfterMutation(db, reviewConfig, affectedIds);
-            const { errors, warnings } = collectChainReviewIssues(verifyResults);
-            if (errors.length > 0) {
-              // 回滚：恢复所有被删除/修改的节点
-              restoreFromSnapshot(db, snapshot);
-              return fail(formatReviewIssues(errors, warnings));
-            }
-            let text = `Deleted node #${node_id}`;
-            if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
-            if (warnings.length > 0) text += "\n" + formatReviewIssues([], warnings);
-            return ok(text);
-          } catch { /* 审查本身出错不阻断 */ }
-        }
         let text = `Deleted node #${node_id}`;
         if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
-        return ok(text);
+        return ok(appendInvalidateHint(text, invalidateWarnings));
       } catch (e) {
         return fail(formatError(e));
       }
+    })
+  );
+
+  // ===========================================================================
+  // 12. compile_arguments
+  // ===========================================================================
+  server.registerTool(
+    "compile_arguments",
+    {
+      title: "Compile Arguments",
+      description:
+        "Review argument chains in parallel and return a verdict for each Claim. " +
+        "When to call: after completing all nodes under a Claim (Warrant + Ground(s) in place), " +
+        "after any structural change to an existing argument, or whenever a Claim shows stale status. " +
+        "A Claim must pass compile before its status can advance to 'supported' or 'validated'. " +
+        "Omit claim_ids to compile all Claims at once.",
+      inputSchema: {
+        claim_ids: z.array(z.number()).optional().describe("Specific Claim IDs to compile. Omit to compile all Claims."),
+      },
+    },
+    withLog("compile_arguments", async ({ claim_ids }: { claim_ids?: number[] }) => {
+      if (!reviewConfig) return fail("Review not configured. Set ANTHROPIC_API_KEY to enable compile.");
+      const ids = claim_ids ?? repo.listNodesByType(db, "claim").map(r => r.id);
+      if (ids.length === 0) return ok("No claims to compile.");
+      const results = await compileService.autoVerifyAfterMutation(db, reviewConfig, ids);
+      const { errors, warnings } = collectChainReviewIssues(results);
+
+      const lines: string[] = [];
+      for (const r of results) {
+        if (r.action === "auto-reviewed" && r.compileResult) {
+          lines.push(`Claim #${r.claimId}: ${r.compileResult.verdict} — ${r.compileResult.summary}`);
+        } else if (r.action === "no-change") {
+          lines.push(`Claim #${r.claimId}: no-change (argument hash unchanged)`);
+        } else if (r.action === "marked-stale") {
+          lines.push(`Claim #${r.claimId}: incomplete structure — ${r.message ?? "add Warrant and Ground(s) first"}`);
+        } else {
+          lines.push(`Claim #${r.claimId}: ${r.action}`);
+        }
+      }
+
+      let text = lines.join("\n");
+      if (errors.length > 0) text += "\n\n" + formatReviewIssues(errors, warnings);
+      else if (warnings.length > 0) text += "\n\n" + formatReviewIssues([], warnings);
+      return ok(text);
     })
   );
 

@@ -26,10 +26,11 @@ Read the paper and extract its argument structure. Nothing is accepted yet — e
 3. **Warrant**: What inference principle connects Ground to Claim? → `create_warrant`
 4. **Backing** (if any): What supports the Warrant's authority? → `create_backing`
 5. **Rebuttal** (if any): What exceptions does the paper acknowledge? → `create_rebuttal`
+6. **Compile**: `compile_arguments` — verify the logical chain is sound before proceeding to Phase 2. Fix any flagged issues.
 
 > **Chained reasoning**: When a sub-Claim serves as evidence for another Claim, use `create_ground(ref_claim_id=sub-Claim.id)`.
 
-6. **Plan verification**: Step back and look at the graph as a whole. Determine dependency order (if Claim B depends on sub-Claim A, verify A first). For each Ground, check whether you understand what kind of evidence would confirm or refute it — if not, go back and clarify. Articulate what result would support the Claim and what would refute it, before running anything. This is not a one-shot gate — revisit these questions after each Ground you verify. New results may change how you approach the rest.
+7. **Plan verification**: Step back and look at the graph as a whole. Determine dependency order (if Claim B depends on sub-Claim A, verify A first). For each Ground, check whether you understand what kind of evidence would confirm or refute it — if not, go back and clarify. Articulate what result would support the Claim and what would refute it, before running anything. This is not a one-shot gate — revisit these questions after each Ground you verify. New results may change how you approach the rest.
 
 ### What to write in a Phase 1 Ground
 
@@ -88,11 +89,12 @@ If the paper produced it, **DO NOT USE IT** — go reproduce it independently in
 
 ## Phase 3: Global review
 
-1. `get_stats` — check overall progress
-2. `get_argument(claim_id)` — inspect each Claim's full argument chain
-3. Check for orphan nodes: Claims without Warrants, Warrants without Grounds
-4. Confirm all Claims are assessed — judge, don't modify
-5. Read through your description documents — do they tell a coherent story? If a document is vague or hand-wavy, the verification behind it probably was too.
+1. `compile_arguments` — verify and fix all outstanding argument chain issues before reporting results.
+2. `get_stats` — check overall progress
+3. `get_argument(claim_id)` — inspect each Claim's full argument chain
+4. Check for orphan nodes: Claims without Warrants, Warrants without Grounds
+5. Confirm all Claims are assessed — judge, don't modify
+6. Read through your description documents — do they tell a coherent story? If a document is vague or hand-wavy, the verification behind it probably was too.
 
 ## When things don't work out
 

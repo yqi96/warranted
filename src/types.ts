@@ -289,10 +289,11 @@ export interface CompileState {
 }
 
 export interface ElementReviewResult {
-  reviewer: "claim" | "warrant" | "ground" | "chain";
+  reviewer: "claim" | "warrant" | "ground" | "chain" | "structure";
   nodeId?: number;
   errors: string[];
   warnings: string[];
+  infos?: string[];
   skipped?: boolean;
 }
 

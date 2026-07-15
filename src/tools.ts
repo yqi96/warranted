@@ -184,26 +184,29 @@ function formatStats(stats: Stats): string {
   return lines.join("\n");
 }
 
-/** 收集链式审查的所有 errors 和 warnings */
-function collectChainReviewIssues(results: AutoVerifyResult[]): { errors: string[]; warnings: string[] } {
+/** 收集链式审查的所有 errors、warnings 和 infos */
+function collectChainReviewIssues(results: AutoVerifyResult[]): { errors: string[]; warnings: string[]; infos: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const infos: string[] = [];
   for (const r of results) {
     if (r.action === "auto-reviewed" && r.compileResult) {
       for (const er of r.compileResult.elementReviews) {
         errors.push(...er.errors);
         warnings.push(...er.warnings);
+        if (er.infos) infos.push(...er.infos);
       }
     }
   }
-  return { errors, warnings };
+  return { errors, warnings, infos };
 }
 
-/** 格式化 errors/warnings 为文本行 */
-function formatReviewIssues(errors: string[], warnings: string[]): string {
+/** 格式化 errors/warnings/infos 为文本行 */
+function formatReviewIssues(errors: string[], warnings: string[], infos?: string[]): string {
   const parts: string[] = [];
   for (const e of errors) parts.push(`Error: ${e}`);
   for (const w of warnings) parts.push(`Warning: ${w}`);
+  if (infos) for (const i of infos) parts.push(`Info: ${i}`);
   return parts.join("\n");
 }
 
@@ -628,7 +631,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
       const ids = claim_ids ?? repo.listNodesByType(db, "claim").map(r => r.id);
       if (ids.length === 0) return ok("No claims to compile.");
       const results = await compileService.autoVerifyAfterMutation(db, reviewConfig, ids);
-      const { errors, warnings } = collectChainReviewIssues(results);
+      const { errors, warnings, infos } = collectChainReviewIssues(results);
 
       const lines: string[] = [];
       for (const r of results) {
@@ -644,8 +647,9 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
       }
 
       let text = lines.join("\n");
-      if (errors.length > 0) text += "\n\n" + formatReviewIssues(errors, warnings);
-      else if (warnings.length > 0) text += "\n\n" + formatReviewIssues([], warnings);
+      if (errors.length > 0) text += "\n\n" + formatReviewIssues(errors, warnings, infos);
+      else if (warnings.length > 0) text += "\n\n" + formatReviewIssues([], warnings, infos);
+      else if (infos.length > 0) text += "\n\n" + formatReviewIssues([], [], infos);
       return ok(text);
     })
   );

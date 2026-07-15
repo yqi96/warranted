@@ -17,7 +17,7 @@ import type {
   AutoVerifyResult,
 } from "./types.ts";
 import * as repo from "./repo.ts";
-import { runChainReview } from "./compile-reviewers.ts";
+import { runChainReview, loadArgumentContext } from "./compile-reviewers.ts";
 import { computeArgumentHash } from "./merkle-hash.ts";
 import { findWarrantsUsingGround } from "./service.ts";
 import { WARNINGS } from "./content.ts";
@@ -169,6 +169,216 @@ export function structuralPreCheck(db: Database, claimId: number): string[] {
 }
 
 // =============================================================================
+// 结构质量检查（确定性，无 LLM）
+// =============================================================================
+
+const HIGH_REBUTTAL_THRESHOLD = 4; // tunable: adjust based on observed distribution
+
+/**
+ * 对 Claim 的 argument 执行确定性结构质量检查（18条规则）。
+ * Category A: 引用完整性 (ERROR)
+ * Category B: 个体质量 (WARNING, B6去重)
+ * Category C: 聚合质量 (WARNING/ERROR/INFO, C3包含C1+C2, C4状态感知)
+ * Category D: 跨节点一致性 (INFO/WARNING, 1-hop chain)
+ */
+export function structuralQualityCheck(db: Database, claimId: number): ElementReviewResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const infos: string[] = [];
+
+  const ctx = loadArgumentContext(db, claimId);
+  if (!ctx) return { reviewer: "structure", errors, warnings, infos };
+
+  const claimData = ctx.claimData as { status?: string; [k: string]: unknown };
+
+  // Build a set of ground IDs used in warrants (for C6 check)
+  const usedGroundIds = new Set<number>();
+  for (const wd of ctx.warrantDatas) {
+    for (const gid of (wd.ground_ids || []) as number[]) {
+      usedGroundIds.add(gid);
+    }
+  }
+
+  // --- Category A: Referential Integrity (ref_claim_id) ---
+  for (const gr of ctx.groundRows) {
+    const gData = JSON.parse(gr.data) as { ref_claim_id?: number | null; [k: string]: unknown };
+    const refId = gData.ref_claim_id;
+    if (refId != null) {
+      const refRow = repo.getNodeById(db, refId);
+      if (!refRow) {
+        errors.push(`Ground #${gr.id}: ref_claim_id=${refId} points to non-existent node`);
+      } else if (refRow.type !== "claim") {
+        errors.push(`Ground #${gr.id}: ref_claim_id=${refId} points to a ${refRow.type}, not a Claim`);
+      }
+    }
+  }
+
+  // --- Category B: Individual Quality (per ground and warrant) ---
+  // B6 dedup: when ground is BOTH hypothesis AND pending → emit B6 only, not B1+B2
+  for (const gr of ctx.groundRows) {
+    const gData = JSON.parse(gr.data) as {
+      source?: string;
+      verification?: string;
+      ref_claim_id?: number | null;
+      [k: string]: unknown;
+    };
+    const isPending = gData.verification === "pending";
+    const isHypothesis = gData.source === "hypothesis";
+    const hasRefClaim = gData.ref_claim_id != null;
+
+    if (isHypothesis && isPending && !hasRefClaim) {
+      // B6: compound weakness (replaces B1+B2 to reduce noise)
+      warnings.push(`Ground #${gr.id} is both hypothesis and unverified (compound weakness: future unverified result)`);
+    } else {
+      if (isPending) {
+        // B1
+        warnings.push(`Ground #${gr.id} has verification=pending`);
+      }
+      if (isHypothesis && !hasRefClaim) {
+        // B2
+        warnings.push(`Ground #${gr.id} has source=hypothesis without chain reasoning (ref_claim_id is null)`);
+      }
+    }
+  }
+
+  // B3, B4, B5 — also accumulate warrant rebuttal counts for C5
+  const warrantRebuttalCounts = new Map<number, number>();
+  for (const w of ctx.warrantRows) {
+    const backings = repo.findBackingsByWarrant(db, w.id);
+    if (backings.length === 0) {
+      warnings.push(`Warrant #${w.id} has no Backing nodes`);
+    }
+    const warrantRebuttals = repo.findRebuttalsByTarget(db, w.id, "warrant");
+    warrantRebuttalCounts.set(w.id, warrantRebuttals.length);
+    if (warrantRebuttals.length > 0) {
+      warnings.push(`Warrant #${w.id} has ${warrantRebuttals.length} active rebuttal(s)`);
+    }
+  }
+
+  const claimRebuttals = repo.findRebuttalsByTarget(db, claimId, "claim");
+  if (claimRebuttals.length > 0) {
+    // B4
+    warnings.push(`Claim #${claimId} has ${claimRebuttals.length} active rebuttal(s)`);
+  }
+
+  // --- Category C: Aggregate Quality ---
+
+  // Helper: check if all grounds in a warrant are verified
+  function allGroundsVerified(warrantIdx: number): boolean {
+    const wd = ctx!.warrantDatas[warrantIdx];
+    const gIds = (wd.ground_ids || []) as number[];
+    if (gIds.length === 0) return false;
+    return gIds.every(gid => {
+      const gr = ctx!.groundRows.find(g => g.id === gid);
+      if (!gr) return false;
+      const gData = JSON.parse(gr.data) as { verification?: string };
+      return gData.verification === "verified";
+    });
+  }
+
+  let totalRebuttals = claimRebuttals.length;
+
+  for (let i = 0; i < ctx.warrantRows.length; i++) {
+    const w = ctx.warrantRows[i];
+    const wd = ctx.warrantDatas[i];
+    const gIds = (wd.ground_ids || []) as number[];
+
+    totalRebuttals += warrantRebuttalCounts.get(w.id) ?? 0;
+
+    if (gIds.length === 0) continue;
+
+    const groundsForWarrant = gIds.map(gid => {
+      const gr = ctx.groundRows.find(g => g.id === gid);
+      if (!gr) return null;
+      return JSON.parse(gr.data) as { source?: string; verification?: string; ref_claim_id?: number | null };
+    }).filter(Boolean) as Array<{ source?: string; verification?: string; ref_claim_id?: number | null }>;
+
+    const allPending = groundsForWarrant.every(g => g.verification === "pending");
+    const allHypothesisNoRef = groundsForWarrant.every(g => g.source === "hypothesis" && g.ref_claim_id == null);
+    const allHypothesisPendingNoRef = groundsForWarrant.every(
+      g => g.source === "hypothesis" && g.verification === "pending" && g.ref_claim_id == null
+    );
+
+    if (allHypothesisPendingNoRef) {
+      // C3: subsumes C1 and C2
+      warnings.push(`Warrant #${w.id} is fully speculative: all grounds are hypothesis + pending (no verified evidence)`);
+    } else {
+      if (allPending) {
+        // C1
+        warnings.push(`Warrant #${w.id}: all grounds have verification=pending`);
+      }
+      if (allHypothesisNoRef) {
+        // C2
+        warnings.push(`Warrant #${w.id}: all grounds are hypothesis without chain reasoning`);
+      }
+    }
+  }
+
+  // C4: claim_no_verified_warrant (status-aware)
+  const hasVerifiedWarrant = ctx.warrantRows.some((_, i) => allGroundsVerified(i));
+  if (!hasVerifiedWarrant) {
+    const claimStatus = claimData.status as string | undefined;
+    if (claimStatus === "supported" || claimStatus === "validated") {
+      errors.push(
+        `Claim #${claimId} is marked "${claimStatus}" but no warrant has all grounds verified — ` +
+        `status contradicts evidence (grounds may have been reverted to pending after status was set)`
+      );
+    } else {
+      warnings.push(`Claim #${claimId} has no warrant where all grounds are verified`);
+    }
+  }
+
+  // C5: high rebuttal load
+  if (totalRebuttals >= HIGH_REBUTTAL_THRESHOLD) {
+    infos.push(`Claim #${claimId} has ${totalRebuttals} total rebuttal(s) across claim and warrants (threshold: ${HIGH_REBUTTAL_THRESHOLD})`);
+  }
+
+  // C6: associated orphan grounds (ref_claim_id=claimId but not in any warrant)
+  const associatedGrounds = repo.findGroundsByRefClaim(db, claimId);
+  for (const ag of associatedGrounds) {
+    if (!usedGroundIds.has(ag.id)) {
+      warnings.push(`Ground #${ag.id} references Claim #${claimId} (ref_claim_id) but is not attached to any warrant for this claim`);
+    }
+  }
+
+  // --- Category D: Cross-Node Consistency (1-hop chain reasoning only) ---
+  for (const gr of ctx.groundRows) {
+    const gData = JSON.parse(gr.data) as { ref_claim_id?: number | null };
+    const refId = gData.ref_claim_id;
+    if (refId == null) continue;
+
+    const refRow = repo.getNodeById(db, refId);
+    if (!refRow || refRow.type !== "claim") continue; // A1/A2 already catches this
+
+    const refData = JSON.parse(refRow.data) as {
+      stale?: boolean;
+      status?: string;
+      compiled?: boolean;
+    };
+    const refState = repo.getCompileState(db, refId);
+
+    if (refData.stale === true) {
+      // D1
+      infos.push(`Ground #${gr.id} references Claim #${refId} which is stale`);
+    }
+    if (refData.status === "disputed") {
+      // D2
+      infos.push(`Ground #${gr.id} references Claim #${refId} with status=disputed`);
+    }
+    if (refData.status === "refuted") {
+      // D3
+      warnings.push(`Ground #${gr.id} references Claim #${refId} with status=refuted — evidence foundation has been invalidated`);
+    }
+    if (!refState && !refData.compiled) {
+      // D4
+      infos.push(`Ground #${gr.id} references Claim #${refId} which has never been compiled`);
+    }
+  }
+
+  return { reviewer: "structure", errors, warnings, infos };
+}
+
+// =============================================================================
 // 逻辑链审查（论证图哈希变化时触发）
 // =============================================================================
 
@@ -185,32 +395,56 @@ export async function compileArgument(
   const t0 = Date.now();
   log("review_dispatch", "OK", 0, `START chain review claim=#${claimId}`);
 
+  // Compute hash first so it's available at all early-abort sites
+  const argHash = computeArgumentHash(db, claimId);
+
   // 1. 结构预检
   const structuralErrors = structuralPreCheck(db, claimId);
   if (structuralErrors.length > 0) {
     log("review_dispatch", "ERR", 0, `claim=#${claimId} → structural pre-check failed: ${structuralErrors.join("; ")}`);
+    const preCheckResult: ElementReviewResult = {
+      reviewer: "structure",
+      errors: structuralErrors,
+      warnings: [],
+      infos: [],
+    };
+    repo.saveCompileState(db, claimId, "failed", `Structural pre-check failed: ${structuralErrors.join("; ")}`, argHash);
     return {
       claimId,
       verdict: "failed" as CompileVerdict,
       summary: `Structural pre-check failed: ${structuralErrors.join("; ")}`,
-      elementReviews: [{
-        reviewer: "chain" as const,
-        errors: structuralErrors,
-        warnings: [],
-      }],
+      elementReviews: [preCheckResult],
+      compiledAt,
+    };
+  }
+
+  // 1.5 结构质量检查（确定性，无 LLM）
+  const qualityResult = structuralQualityCheck(db, claimId);
+  if (qualityResult.errors.length > 0) {
+    log("review_dispatch", "ERR", 0, `claim=#${claimId} → structural quality check failed`);
+    const errSummary = `Structural quality check failed: ${qualityResult.errors.join("; ")}`;
+    repo.saveCompileState(db, claimId, "failed", errSummary, argHash);
+    return {
+      claimId,
+      verdict: "failed" as CompileVerdict,
+      summary: errSummary,
+      elementReviews: [qualityResult],
       compiledAt,
     };
   }
 
   // 2. 运行逻辑链审查
-  const { elementReviews } = await runChainReview(config, db, claimId);
+  const { elementReviews: chainReviews } = await runChainReview(config, db, claimId);
 
-  // 3. 汇总结果
-  const hasError = elementReviews.some(r => r.errors.length > 0);
+  // qualityResult is always elementReviews[0]
+  const allReviews: ElementReviewResult[] = [qualityResult, ...chainReviews];
+
+  // 3. 汇总结果（infos never contribute to verdict）
+  const hasError = allReviews.some(r => r.errors.length > 0);
   const verdict: CompileVerdict = hasError ? "failed" : "passed";
 
-  const totalErrors = elementReviews.reduce((sum, r) => sum + r.errors.length, 0);
-  const totalWarnings = elementReviews.reduce((sum, r) => sum + r.warnings.length, 0);
+  const totalErrors = allReviews.reduce((sum, r) => sum + r.errors.length, 0);
+  const totalWarnings = allReviews.reduce((sum, r) => sum + r.warnings.length, 0);
   const summaryParts: string[] = [];
   if (hasError) {
     summaryParts.push(`Compile failed with ${totalErrors} error(s).`);
@@ -222,7 +456,6 @@ export async function compileArgument(
   const summary = summaryParts.join(" ");
 
   // 4. 存储 compile_state（含 argument_hash）
-  const argHash = computeArgumentHash(db, claimId);
   repo.saveCompileState(db, claimId, verdict, summary, argHash);
 
   // 5. 更新 compiled/stale 标志
@@ -246,7 +479,7 @@ export async function compileArgument(
   log("review_dispatch", "OK", elapsed, `END claim=#${claimId} → verdict=${verdict}, "${summary.slice(0, 80)}"`);
 
   // 6. 保存审查结果到 reviews/ 目录
-  for (const review of elementReviews) {
+  for (const review of allReviews) {
     try {
       saveChainReviewFile(config, claimId, review, compiledAt);
     } catch {
@@ -258,7 +491,7 @@ export async function compileArgument(
     claimId,
     verdict,
     summary,
-    elementReviews,
+    elementReviews: allReviews,
     compiledAt,
   };
 }

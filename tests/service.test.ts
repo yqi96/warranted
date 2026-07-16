@@ -4,7 +4,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal } from "./helpers.ts";
+import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim } from "./helpers.ts";
 import * as service from "../src/service.ts";
 import * as repo from "../src/repo.ts";
 import {
@@ -280,7 +280,7 @@ describe("updateNode", () => {
   });
 
   test("更新 Claim status", () => {
-    const claim = makeClaim(db);
+    const claim = makeCompiledClaim(db);
     // 构建 Warrant + verified Ground 以满足 A1
     const g = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
     makeWarrant(db, claim.id, [g.id]);
@@ -675,6 +675,41 @@ describe("searchNodesService", () => {
 // =============================================================================
 
 describe("审查规则: Claim 状态转换", () => {
+  test("A0: stale Claim 不能标记 supported", () => {
+    const claim = makeClaim(db);
+    const ground = makeGround(db, { content: "G", verification: "verified" });
+    makeWarrant(db, claim.id, [ground.id]);
+    // 设置 stale=true
+    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
+    data.stale = true;
+    repo.updateNodeFields(db, claim.id, { data });
+    expect(() =>
+      service.updateNode(db, claim.id, { status: "supported" })
+    ).toThrow(StatusTransitionError);
+  });
+
+  test("A0: 从未 compile 的 Claim 不能标记 supported", () => {
+    const claim = makeClaim(db);
+    const ground = makeGround(db, { content: "G", verification: "verified" });
+    makeWarrant(db, claim.id, [ground.id]);
+    // compiled 未设置（默认 false/undefined）
+    expect(() =>
+      service.updateNode(db, claim.id, { status: "supported" })
+    ).toThrow(StatusTransitionError);
+  });
+
+  test("A0: stale Claim 不能标记 validated", () => {
+    const claim = makeClaim(db);
+    const ground = makeGround(db, { content: "G", verification: "verified" });
+    makeWarrant(db, claim.id, [ground.id]);
+    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
+    data.stale = true;
+    repo.updateNodeFields(db, claim.id, { data });
+    expect(() =>
+      service.updateNode(db, claim.id, { status: "validated" })
+    ).toThrow(StatusTransitionError);
+  });
+
   test("A1: 无 Warrant 时不能标记 supported", () => {
     const claim = makeClaim(db);
     expect(() =>
@@ -699,8 +734,8 @@ describe("审查规则: Claim 状态转换", () => {
     ).toThrow(StatusTransitionError);
   });
 
-  test("A1: 有 Warrant + verified Ground 时可以标记 supported", () => {
-    const claim = makeClaim(db);
+  test("A1: 有 Warrant + verified Ground + compiled 时可以标记 supported", () => {
+    const claim = makeCompiledClaim(db);
     const ground = makeGround(db, { content: "G", verification: "verified" });
     makeWarrant(db, claim.id, [ground.id]);
     const { node } = service.updateNode(db, claim.id, { status: "supported" });
@@ -723,8 +758,8 @@ describe("审查规则: Claim 状态转换", () => {
     ).toThrow(StatusTransitionError);
   });
 
-  test("A1: 有 Warrant + verified Ground 时可以标记 validated", () => {
-    const claim = makeClaim(db);
+  test("A1: 有 Warrant + verified Ground + compiled 时可以标记 validated", () => {
+    const claim = makeCompiledClaim(db);
     const ground = makeGround(db, { content: "G", verification: "verified", attachments: ["/data.csv"] });
     makeWarrant(db, claim.id, [ground.id]);
     const { node } = service.updateNode(db, claim.id, { status: "validated" });

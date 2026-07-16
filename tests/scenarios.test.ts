@@ -7,6 +7,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { createTestDb, cleanupDb } from "./helpers.ts";
+import * as repo from "../src/repo.ts";
 import * as service from "../src/service.ts";
 import type { ClaimArgument, WarrantArgument, NodeArgument } from "../src/types.ts";
 
@@ -161,7 +162,9 @@ describe("场景 2：假设验证", () => {
     const arg = service.getArgument(db, claim.id) as ClaimArgument;
     expect(arg.warrants[0].grounds.length).toBe(3);
 
-    // 判定
+    // 判定（先标记 compiled，模拟已通过 compile）
+    repo.saveCompileState(db, claim.id, "passed", "ok", "hash");
+    const cd = JSON.parse(repo.getNodeById(db, claim.id)!.data); cd.compiled = true; repo.updateNodeFields(db, claim.id, { data: cd });
     service.updateNode(db, claim.id, { status: "supported" });
 
     const stats = service.getStats(db);
@@ -235,7 +238,8 @@ describe("场景 3：文献综述", () => {
       qualifier: "长序列建模任务（≤16K token）",
     });
 
-    // 判定
+    // 判定（先标记 compiled）
+    repo.saveCompileState(db, claim.id, "passed", "ok", "hash"); { const d = JSON.parse(repo.getNodeById(db, claim.id)!.data); d.compiled = true; repo.updateNodeFields(db, claim.id, { data: d }); }
     service.updateNode(db, claim.id, { status: "supported" });
 
     // 搜索验证
@@ -269,6 +273,8 @@ describe("场景 4：链式推理", () => {
       claimId: claimA.id,
       groundIds: [gA.id],
     });
+    // 标记 compiled，模拟已通过 compile
+    repo.saveCompileState(db, claimA.id, "passed", "ok", "hash"); { const d = JSON.parse(repo.getNodeById(db, claimA.id)!.data); d.compiled = true; repo.updateNodeFields(db, claimA.id, { data: d }); }
     service.updateNode(db, claimA.id, { status: "validated" });
 
     // 新 Claim

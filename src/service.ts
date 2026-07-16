@@ -705,6 +705,17 @@ export function updateNode(
 
     // A1: →supported 或 →validated 需至少一个 Warrant 且其 Grounds 全部 verified
     if (params.status === "supported" || params.status === "validated") {
+      // A0: 必须已通过 compile（stale 或从未 compile 均不允许）
+      if (data.stale === true) {
+        throw new StatusTransitionError(
+          `Cannot mark Claim #${nodeId} as "${params.status}": argument is stale. Run compile_arguments first.`
+        );
+      }
+      if (!data.compiled) {
+        throw new StatusTransitionError(
+          `Cannot mark Claim #${nodeId} as "${params.status}": argument has not been compiled. Run compile_arguments first.`
+        );
+      }
       const warrants = repo.findWarrantsByClaim(db, nodeId);
       if (warrants.length === 0) {
         throw new StatusTransitionError(

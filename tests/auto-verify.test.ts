@@ -164,19 +164,32 @@ describe("autoVerifyAfterMutation", () => {
   });
 
   // ===========================================================================
-  // Case 1 扩展：failed review 也用哈希比较
+  // Case 1 扩展：argumentHash 只代表"上次通过时的哈希"
   // ===========================================================================
 
-  test("failed review + 哈希未变 → no-change", async () => {
+  test("failed review (无 argumentHash) + 结构完整 + 无 config → marked-stale", async () => {
     const { claim } = seedBasicArgument(db);
-    const argHash = computeArgumentHash(db, claim.id);
 
-    // 存储 failed compile_state（有 argumentHash）
-    repo.saveCompileState(db, claim.id, "failed", "Issues found", argHash);
-    // 不设置 compiled=true（因为审查失败了）
+    // 失败的 compile_state 不保存 argumentHash（生产代码行为）
+    repo.saveCompileState(db, claim.id, "failed", "Structural error");
 
     const results = await autoVerifyAfterMutation(db, null, [claim.id]);
 
+    // 无 argumentHash → 不进 Case 1 → 走 Case 2 → 结构完整 + 无 config → marked-stale
+    expect(results[0].action).toBe("marked-stale");
+    expect(results[0].message).toContain("Review not configured");
+  });
+
+  test("failed review (旧数据带 argumentHash) + 哈希未变 → no-change", async () => {
+    const { claim } = seedBasicArgument(db);
+    const argHash = computeArgumentHash(db, claim.id);
+
+    // 模拟旧数据：带 hash 的 failed 状态（新代码不会产生此状态）
+    repo.saveCompileState(db, claim.id, "failed", "Issues found", argHash);
+
+    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+
+    // prevState.argumentHash 非空 → Case 1 → hash 未变 → no-change
     expect(results[0].action).toBe("no-change");
   });
 

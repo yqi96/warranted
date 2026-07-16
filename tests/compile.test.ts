@@ -17,7 +17,7 @@ import {
 } from "./helpers.ts";
 import { structuralPreCheck, findAffectedClaimIds, invalidateCompiledClaims } from "../src/compile-service.ts";
 import { loadArgumentContext } from "../src/compile-reviewers.ts";
-import { computeNodeHash } from "../src/merkle-hash.ts";
+import { computeNodeHash, computeArgumentHash } from "../src/merkle-hash.ts";
 import * as repo from "../src/repo.ts";
 import type { Database } from "bun:sqlite";
 
@@ -269,6 +269,53 @@ describe("invalidateCompiledClaims", () => {
     expect(warnings.length).toBe(0);
     const updatedClaim = repo.getNodeById(db, claim.id)!;
     expect(JSON.parse(updatedClaim.data).stale).toBe(true);
+  });
+
+  test("【回归】API 失败后(compiled=false)移除 ground 应清除残留 compile_state", () => {
+    const { claim, ground1 } = seedBasicArgument(db);
+
+    // 模拟 API 失败场景：compile_state 存在但 compiled=false（无 argumentHash）
+    repo.saveCompileState(db, claim.id, "failed", "Reviewer error: API timeout");
+    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
+    data.compiled = false;
+    data.stale = true;
+    repo.updateNodeFields(db, claim.id, { data });
+
+    // 移除 ground（触发 invalidateCompiledClaims）
+    invalidateCompiledClaims(db, ground1.id);
+
+    // compile_state 应被清除，否则下次 compile_arguments 可能误判
+    expect(repo.getCompileState(db, claim.id)).toBeNull();
+    expect(JSON.parse(repo.getNodeById(db, claim.id)!.data).stale).toBe(true);
+  });
+
+  test("【回归】已通过 compile 后移除 refclaim ground，compile_state 正确清除", () => {
+    // 构造带 refclaim ground 的参数
+    const subClaim = makeClaim(db, "Sub claim");
+    const subGround = makeGround(db, { content: "Sub ground evidence" });
+    makeWarrant(db, subClaim.id, [subGround.id], "Sub warrant");
+
+    const parentClaim = makeClaim(db, "Parent claim");
+    // refclaim ground：ground 的 ref_claim_id 指向 subClaim
+    const refGround = makeGround(db, { content: "Chain reasoning", refClaimId: subClaim.id });
+    makeWarrant(db, parentClaim.id, [refGround.id], "Parent warrant");
+
+    // 标记 parentClaim 为已 compiled
+    const argHash = computeArgumentHash(db, parentClaim.id);
+    const d = JSON.parse(repo.getNodeById(db, parentClaim.id)!.data);
+    d.compiled = true;
+    d.compiled_at = "2025-01-01T00:00:00";
+    repo.updateNodeFields(db, parentClaim.id, { data: d });
+    repo.saveCompileState(db, parentClaim.id, "passed", "ok", argHash);
+
+    // 移除 refclaim ground
+    invalidateCompiledClaims(db, refGround.id);
+
+    // compile_state 应被清除，compiled 标志应清除
+    expect(repo.getCompileState(db, parentClaim.id)).toBeNull();
+    const updatedData = JSON.parse(repo.getNodeById(db, parentClaim.id)!.data);
+    expect(updatedData.compiled).toBe(false);
+    expect(updatedData.stale).toBe(true);
   });
 
   test("孤立节点不设置无关 Claim 的 stale 状态", () => {

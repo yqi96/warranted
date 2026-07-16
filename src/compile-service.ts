@@ -408,7 +408,7 @@ export async function compileArgument(
       warnings: [],
       infos: [],
     };
-    repo.saveCompileState(db, claimId, "failed", `Structural pre-check failed: ${structuralErrors.join("; ")}`, argHash);
+    repo.saveCompileState(db, claimId, "failed", `Structural pre-check failed: ${structuralErrors.join("; ")}`);
     return {
       claimId,
       verdict: "failed" as CompileVerdict,
@@ -423,7 +423,7 @@ export async function compileArgument(
   if (qualityResult.errors.length > 0) {
     log("review_dispatch", "ERR", 0, `claim=#${claimId} → structural quality check failed`);
     const errSummary = `Structural quality check failed: ${qualityResult.errors.join("; ")}`;
-    repo.saveCompileState(db, claimId, "failed", errSummary, argHash);
+    repo.saveCompileState(db, claimId, "failed", errSummary);
     return {
       claimId,
       verdict: "failed" as CompileVerdict,
@@ -455,8 +455,8 @@ export async function compileArgument(
   }
   const summary = summaryParts.join(" ");
 
-  // 4. 存储 compile_state（含 argument_hash）
-  repo.saveCompileState(db, claimId, verdict, summary, argHash);
+  // 4. 存储 compile_state（argument_hash 仅在 passed 时保存，确保 hash 代表"已验证通过的结构"）
+  repo.saveCompileState(db, claimId, verdict, summary, verdict === "passed" ? argHash : undefined);
 
   // 5. 更新 compiled/stale 标志
   const claimRow = repo.getNodeById(db, claimId);
@@ -592,9 +592,11 @@ export function invalidateCompiledClaims(db: Database, nodeId: number): string[]
     const data = JSON.parse(row.data);
     if (data.compiled) {
       repo.clearCompiledFlag(db, claimId);
-      repo.deleteCompileState(db, claimId);
       warnings.push(WARNINGS.compileInvalidated(claimId, nodeId));
     }
+    // Always clear compile_state on structural change — even after a failed compile,
+    // the cached argumentHash is now stale and must not block future hash comparisons.
+    repo.deleteCompileState(db, claimId);
     if (!data.stale) {
       repo.setClaimStale(db, claimId, true);
     }
@@ -604,15 +606,16 @@ export function invalidateCompiledClaims(db: Database, nodeId: number): string[]
 }
 
 // =============================================================================
-// 自动验证
+// Compile 调度
 // =============================================================================
 
 /**
- * 变更后自动验证。
+ * Compile 调度器。由 compile_arguments 工具显式调用，不是 mutation 自动触发。
+ * 名称 autoVerifyAfterMutation 是历史遗留，实际语义是"按需决定是否重新 compile"。
  *
- * - 有 compile_state + argumentHash 未变 → no-change
- * - 有 compile_state + argumentHash 变了 → 自动触发逻辑链审查
- * - 无 compile_state + 结构完整 → 自动触发首次逻辑链审查
+ * - 有 compile_state + argumentHash 未变 → no-change（argumentHash 只在 passed 时保存）
+ * - 有 compile_state + argumentHash 变了 → 触发逻辑链审查
+ * - 无 compile_state + 结构完整 → 触发首次逻辑链审查
  * - 无 compile_state + 结构不完整 → 标记 stale
  * - 无 reviewConfig → 标记 stale
  */
@@ -634,6 +637,8 @@ export async function autoVerifyAfterMutation(
     const newArgHash = computeArgumentHash(db, claimId);
 
     // Case 1: 有 compile_state 且有 argumentHash
+    // argumentHash 只在 compile passed 时保存，所以此处 prevState.argumentHash 非空
+    // 意味着上次 compile 通过。hash 未变 → 无需重新审查。
     if (prevState && prevState.argumentHash) {
       if (prevState.argumentHash === newArgHash) {
         log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged → no-change`);

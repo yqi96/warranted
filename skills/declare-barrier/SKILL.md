@@ -26,7 +26,7 @@ If the algorithm is described in a published paper, it is accessible. Complexity
 **Often false.** Check in order:
 1. The paper's "Data availability" section
 2. The paper's supplementary materials
-3. Standard public archives: Zenodo, Figshare, PANGAEA, NOAA, CMIP5/6, GitHub
+3. Public data archives — general: Zenodo, Figshare, GitHub; field-specific examples: PANGAEA (oceanography), NOAA (atmospheric), CMIP5/6 (climate model output)
 4. Your local `data/` directory — the data may already be there
 5. A representative subset — full dataset unavailability does not prevent partial verification
 
@@ -47,11 +47,13 @@ If the algorithm is described in a published paper, it is accessible. Complexity
 4. Implement the simplest possible version first and check if results are in the right ballpark.
 
 ### Pattern 5: "I implemented it but got wrong results — so it cannot be verified"
-**Wrong conclusion.** Wrong results mean wrong implementation, not unverifiable science. Ask:
+**In almost all cases, this is the wrong conclusion.** Wrong results typically mean wrong implementation. Ask:
 - Did you implement the correct algorithm or a superficially similar one? (Re-read the Methods section.)
 - Are results qualitatively correct even if quantitatively different?
 - Is the quantitative difference explained by a known methodological difference (e.g., different proxy set, different fingerprint source)?
 - Quantitative difference ≠ qualitative mismatch. Verify direction first.
+
+The narrow exception: if you can identify a *specific, documented* reason results cannot match — unreported calibration data, non-deterministic process with no fixed seed, hardware-dependent floating-point behavior — document it with evidence. This does not make the barrier automatic; it makes it arguable under Class C.
 
 ### Pattern 6: "The scope is too broad to verify"
 **Reducibility, not impossibility.** When a task covers N subjects and you can only cover M < N:
@@ -76,7 +78,7 @@ If the algorithm is described in a published paper, it is accessible. Complexity
 
 ## The interrogation checklist
 
-Before classifying a barrier, answer every question:
+After working through the relevant patterns above, confirm each item before classifying the barrier:
 
 **Algorithm**
 - [ ] Methods section read word-for-word?
@@ -107,15 +109,22 @@ Before classifying a barrier, answer every question:
 **Class A — False barrier (solvable now)**
 Path is clear after interrogation. Implement immediately.
 
-**Class B — Reducible barrier (partially solvable)**
-Full scope unverifiable, but a sub-task is verifiable. Define the narrower scope and complete it. Record scope limitations explicitly.
+**Class B — Scope reduction (not a terminal state)**
+A verifiable sub-task exists. Declaring Class B is not the deliverable — executing the sub-task is.
+
+Steps:
+1. Define the narrower scope explicitly
+2. Execute the sub-task
+3. Document: what was completed, what was excluded, and why the remainder is blocked
+
+Skipping step 2 is invalid. Class B without sub-task execution is treated as Class C.
 
 **Class C — Real barrier**
 Must satisfy ALL of:
 1. Algorithm not described in any accessible publication
 2. Required data absent from all public archives and unobtainable
 3. No scientifically defensible approximation exists
-4. Class B sub-task verification already completed
+4. Either a Class B sub-task has been completed and documented, or scope reduction was assessed and documented as infeasible.
 
 If you cannot satisfy all four, it is not Class C.
 
@@ -126,8 +135,9 @@ If you cannot satisfy all four, it is not Class C.
 **Class A**: Implement. No extra documentation.
 
 **Class B**:
-- Define the narrower sub-task with exact scope boundaries in the description document
-- Document explicitly what the full scope requires and why the remainder is unverifiable
+- Execute the verifiable sub-task — this is required, not optional
+- Document the scope boundaries: what was covered, what was excluded, and why the remainder is blocked
+- Record the sub-task results as you would for any completed work
 
 **Class C** (only after all four conditions met):
 - Write in the task description: what was searched for, where, and why no approximation is valid

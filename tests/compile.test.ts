@@ -239,12 +239,8 @@ describe("invalidateCompiledClaims", () => {
   test("修改 compiled Claim 的节点后清除 compiled 状态", () => {
     const { claim, ground1 } = seedBasicArgument(db);
 
-    // 手动设置 compiled = true
-    const claimRow = repo.getNodeById(db, claim.id)!;
-    const data = JSON.parse(claimRow.data);
-    data.compiled = true;
-    data.compiled_at = "2025-01-01T00:00:00";
-    repo.updateNodeFields(db, claim.id, { data });
+    // 手动设置 compile_status = "passed"
+    repo.setCompileStatus(db, claim.id, "passed");
 
     // 保存 compile_state
     repo.saveCompileState(db, claim.id, "passed", "OK");
@@ -254,39 +250,36 @@ describe("invalidateCompiledClaims", () => {
     expect(warnings.length).toBe(1);
     expect(warnings[0]).toContain("compiled status has been cleared");
 
-    // 验证 compiled 标志已清除
+    // 验证 compile_status 已变为 stale
     const updatedClaim = repo.getNodeById(db, claim.id)!;
     const updatedData = JSON.parse(updatedClaim.data);
-    expect(updatedData.compiled).toBe(false);
+    expect(updatedData.compile_status).toBe("stale");
 
     // 验证 compile_state 已删除
     expect(repo.getCompileState(db, claim.id)).toBeNull();
   });
 
-  test("修改非 compiled Claim 的节点后无警告，但仍标记 stale=true", () => {
+  test("修改非 compiled Claim 的节点后无警告，但仍标记 compile_status=stale", () => {
     const { claim, ground1 } = seedBasicArgument(db);
     const warnings = invalidateCompiledClaims(db, ground1.id);
     expect(warnings.length).toBe(0);
     const updatedClaim = repo.getNodeById(db, claim.id)!;
-    expect(JSON.parse(updatedClaim.data).stale).toBe(true);
+    expect(JSON.parse(updatedClaim.data).compile_status).toBe("stale");
   });
 
-  test("【回归】API 失败后(compiled=false)移除 ground 应清除残留 compile_state", () => {
+  test("【回归】API 失败后(compile_status=stale)移除 ground 应清除残留 compile_state", () => {
     const { claim, ground1 } = seedBasicArgument(db);
 
-    // 模拟 API 失败场景：compile_state 存在但 compiled=false（无 argumentHash）
+    // 模拟 API 失败场景：compile_state 存在但 compile_status=stale（无 argumentHash）
     repo.saveCompileState(db, claim.id, "failed", "Reviewer error: API timeout");
-    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    data.compiled = false;
-    data.stale = true;
-    repo.updateNodeFields(db, claim.id, { data });
+    repo.setCompileStatus(db, claim.id, "stale");
 
     // 移除 ground（触发 invalidateCompiledClaims）
     invalidateCompiledClaims(db, ground1.id);
 
     // compile_state 应被清除，否则下次 compile_arguments 可能误判
     expect(repo.getCompileState(db, claim.id)).toBeNull();
-    expect(JSON.parse(repo.getNodeById(db, claim.id)!.data).stale).toBe(true);
+    expect(JSON.parse(repo.getNodeById(db, claim.id)!.data).compile_status).toBe("stale");
   });
 
   test("【回归】已通过 compile 后移除 refclaim ground，compile_state 正确清除", () => {
@@ -302,46 +295,39 @@ describe("invalidateCompiledClaims", () => {
 
     // 标记 parentClaim 为已 compiled
     const argHash = computeArgumentHash(db, parentClaim.id);
-    const d = JSON.parse(repo.getNodeById(db, parentClaim.id)!.data);
-    d.compiled = true;
-    d.compiled_at = "2025-01-01T00:00:00";
-    repo.updateNodeFields(db, parentClaim.id, { data: d });
+    repo.setCompileStatus(db, parentClaim.id, "passed");
     repo.saveCompileState(db, parentClaim.id, "passed", "ok", argHash);
 
     // 移除 refclaim ground
     invalidateCompiledClaims(db, refGround.id);
 
-    // compile_state 应被清除，compiled 标志应清除
+    // compile_state 应被清除，compile_status 应变为 stale
     expect(repo.getCompileState(db, parentClaim.id)).toBeNull();
     const updatedData = JSON.parse(repo.getNodeById(db, parentClaim.id)!.data);
-    expect(updatedData.compiled).toBe(false);
-    expect(updatedData.stale).toBe(true);
+    expect(updatedData.compile_status).toBe("stale");
   });
 
-  test("孤立节点不设置无关 Claim 的 stale 状态", () => {
+  test("孤立节点不设置无关 Claim 的 compile_status", () => {
     const claim = makeClaim(db);
     const orphanGround = makeGround(db, { content: "Orphan ground" });
     invalidateCompiledClaims(db, orphanGround.id);
     const claimRow = repo.getNodeById(db, claim.id)!;
-    expect(JSON.parse(claimRow.data).stale).toBeUndefined();
+    expect(JSON.parse(claimRow.data).compile_status).toBeUndefined();
   });
 
   test("修改不相关节点不影响任何 Claim", () => {
     const { claim } = seedBasicArgument(db);
 
-    // 设置 compiled
-    const claimRow = repo.getNodeById(db, claim.id)!;
-    const data = JSON.parse(claimRow.data);
-    data.compiled = true;
-    repo.updateNodeFields(db, claim.id, { data });
+    // 设置 compile_status = "passed"
+    repo.setCompileStatus(db, claim.id, "passed");
 
     // 创建一个独立的 ground（不属于任何 warrant）
     const orphanGround = makeGround(db, { content: "Orphan ground" });
     const warnings = invalidateCompiledClaims(db, orphanGround.id);
     expect(warnings.length).toBe(0);
 
-    // Claim 仍然 compiled
+    // Claim 仍然 compile_status = "passed"
     const updatedClaim = repo.getNodeById(db, claim.id)!;
-    expect(JSON.parse(updatedClaim.data).compiled).toBe(true);
+    expect(JSON.parse(updatedClaim.data).compile_status).toBe("passed");
   });
 });

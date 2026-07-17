@@ -513,7 +513,7 @@ function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
     };
   });
 
-  return { claim: { ...claim, qualifier, stale: claimData.stale }, warrants, rebuttals } as ClaimArgument;
+  return { claim: { ...claim, qualifier, compile_status: claimData.compile_status ?? null }, warrants, rebuttals } as ClaimArgument;
 }
 
 function getWarrantArgument(db: Database, warrantRow: NodeRow): WarrantArgument {
@@ -632,7 +632,7 @@ export function getStats(db: Database): Stats {
     const data = JSON.parse(row.data);
     const status = data.status || "proposed";
     byStatus[status] = (byStatus[status] || 0) + 1;
-    if (data.stale === true) staleCount++;
+    if (data.compile_status === "stale") staleCount++;
   }
 
   // Grounds by source and verification
@@ -698,24 +698,22 @@ export function updateNode(
     if (row.type !== "claim") {
       throw new ValidationError("Only Claim nodes have status");
     }
-    const validStatuses = ["proposed", "supported", "validated", "disputed", "refuted"];
+    const validStatuses = ["proposed", "supported", "disputed", "refuted"];
     if (!validStatuses.includes(params.status)) {
       throw new ValidationError(`Invalid status: ${params.status}`);
     }
 
-    // A1: →supported 或 →validated 需至少一个 Warrant 且其 Grounds 全部 verified
-    if (params.status === "supported" || params.status === "validated") {
-      // A0: 必须已通过 compile（stale 或从未 compile 均不允许）
-      if (data.stale === true) {
+    // A0: →supported/disputed/refuted 必须已通过 compile
+    if (params.status === "supported" || params.status === "disputed" || params.status === "refuted") {
+      if (data.compile_status !== "passed") {
         throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "${params.status}": argument is stale. Run compile_arguments first.`
+          `Cannot mark Claim #${nodeId} as "${params.status}": argument has not been compiled or is stale. Run compile_arguments first.`
         );
       }
-      if (!data.compiled) {
-        throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "${params.status}": argument has not been compiled. Run compile_arguments first.`
-        );
-      }
+    }
+
+    // A1: →supported 需至少一个 Warrant 且其 Grounds 全部 verified
+    if (params.status === "supported") {
       const warrants = repo.findWarrantsByClaim(db, nodeId);
       if (warrants.length === 0) {
         throw new StatusTransitionError(
@@ -737,7 +735,7 @@ export function updateNode(
       }
       if (!hasValidWarrant) {
         throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "${params.status}": no Warrant has all Grounds verified. Verify the Grounds first.`
+          `Cannot mark Claim #${nodeId} as "supported": no Warrant has all Grounds verified. Verify the Grounds first.`
         );
       }
     }

@@ -256,10 +256,9 @@ export function makeCompiledClaim(
 ): ClaimNode {
   const claim = makeClaim(db, content);
   const now = new Date().toISOString().slice(0, 19);
-  // Set compiled=true in data
+  // Set compile_status = "passed" in data
   const data = JSON.parse((db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string }).data);
-  data.compiled = true;
-  data.compiled_at = now;
+  data.compile_status = "passed";
   db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(data), claim.id);
   // Save compile_state
   db.prepare(

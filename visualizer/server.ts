@@ -7,7 +7,7 @@
  *   bun visualizer/server.ts [--db-path ./toulmin.db]
  */
 
-import { openDatabase, initializeSchema } from "../src/db.ts";
+import { openDatabase } from "../src/db.ts";
 import { mkdirSync, existsSync, watch as fsWatch } from "fs";
 import { dirname, join } from "path";
 import type { Database } from "bun:sqlite";
@@ -67,15 +67,34 @@ function buildGraph(db: Database, typeFilter?: string[]): { nodes: GraphNode[]; 
 
   const filteredIds = new Set(filteredRows.map(r => r.id));
 
+  // 批量获取编译状态
+  interface CompileStateRow {
+    claim_id: number;
+    verdict: string;
+    summary: string;
+    created_at: string;
+  }
+  const compileStateRows = db.prepare("SELECT claim_id, verdict, summary, created_at FROM compile_state").all() as CompileStateRow[];
+  const compileStateMap = new Map(compileStateRows.map(s => [s.claim_id, s]));
+
   // 构建节点
-  const nodes: GraphNode[] = filteredRows.map(r => ({
-    id: r.id,
-    type: r.type,
-    content: r.content,
-    data: repo.parseNodeData(r),
-    created_at: r.created_at,
-    updated_at: r.updated_at,
-  }));
+  const nodes: GraphNode[] = filteredRows.map(r => {
+    const data = repo.parseNodeData(r) as Record<string, unknown>;
+    if (r.type === "claim") {
+      const cs = compileStateMap.get(r.id);
+      data.compile_verdict = cs?.verdict ?? null;
+      data.compile_summary = cs?.summary ?? null;
+      data.compile_created_at = cs?.created_at ?? null;
+    }
+    return {
+      id: r.id,
+      type: r.type,
+      content: r.content,
+      data,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    };
+  });
 
   // 构建边
   const edges: GraphEdge[] = [];

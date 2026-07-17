@@ -80,6 +80,7 @@ describe("场景 1：论文复现", () => {
       targetId: claim.id,
       targetType: "claim",
     });
+    repo.setCompileStatus(db, claim.id, "passed");
     service.updateNode(db, claim.id, { status: "disputed" });
 
     service.updateNode(db, claim.id, {
@@ -164,7 +165,7 @@ describe("场景 2：假设验证", () => {
 
     // 判定（先标记 compiled，模拟已通过 compile）
     repo.saveCompileState(db, claim.id, "passed", "ok", "hash");
-    const cd = JSON.parse(repo.getNodeById(db, claim.id)!.data); cd.compiled = true; repo.updateNodeFields(db, claim.id, { data: cd });
+    repo.setCompileStatus(db, claim.id, "passed");
     service.updateNode(db, claim.id, { status: "supported" });
 
     const stats = service.getStats(db);
@@ -239,7 +240,8 @@ describe("场景 3：文献综述", () => {
     });
 
     // 判定（先标记 compiled）
-    repo.saveCompileState(db, claim.id, "passed", "ok", "hash"); { const d = JSON.parse(repo.getNodeById(db, claim.id)!.data); d.compiled = true; repo.updateNodeFields(db, claim.id, { data: d }); }
+    repo.saveCompileState(db, claim.id, "passed", "ok", "hash");
+    repo.setCompileStatus(db, claim.id, "passed");
     service.updateNode(db, claim.id, { status: "supported" });
 
     // 搜索验证
@@ -274,8 +276,9 @@ describe("场景 4：链式推理", () => {
       groundIds: [gA.id],
     });
     // 标记 compiled，模拟已通过 compile
-    repo.saveCompileState(db, claimA.id, "passed", "ok", "hash"); { const d = JSON.parse(repo.getNodeById(db, claimA.id)!.data); d.compiled = true; repo.updateNodeFields(db, claimA.id, { data: d }); }
-    service.updateNode(db, claimA.id, { status: "validated" });
+    repo.saveCompileState(db, claimA.id, "passed", "ok", "hash");
+    repo.setCompileStatus(db, claimA.id, "passed");
+    service.updateNode(db, claimA.id, { status: "supported" });
 
     // 新 Claim
     const claimB = service.createClaim(db, "per-scale 机制对小型模型的加速效果显著优于大型模型");

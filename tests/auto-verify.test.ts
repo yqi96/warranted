@@ -41,10 +41,7 @@ describe("autoVerifyAfterMutation", () => {
     const argHash = computeArgumentHash(db, claim.id);
 
     // 将 claim 标记为 compiled 并存储正确的 argument_hash
-    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    data.compiled = true;
-    data.compiled_at = "2025-01-01";
-    repo.updateNodeFields(db, claim.id, { data });
+    repo.setCompileStatus(db, claim.id, "passed");
     repo.saveCompileState(db, claim.id, "passed", "ok", argHash);
 
     const results = await autoVerifyAfterMutation(db, null, [claim.id]);
@@ -55,16 +52,16 @@ describe("autoVerifyAfterMutation", () => {
 
   test("未 compiled 的 Claim → marked-stale", async () => {
     const claim = makeClaim(db, "Uncompiled claim");
-    // Don't set compiled, don't save compile_state
+    // Don't set compile_status, don't save compile_state
 
     const results = await autoVerifyAfterMutation(db, null, [claim.id]);
 
     expect(results.length).toBe(1);
     expect(results[0].action).toBe("marked-stale");
 
-    // Verify stale flag is set
+    // Verify compile_status is set to stale
     const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(data.stale).toBe(true);
+    expect(data.compile_status).toBe("stale");
   });
 
   test("已 compiled 但哈希变化且无 config → marked-stale", async () => {
@@ -72,10 +69,7 @@ describe("autoVerifyAfterMutation", () => {
     const argHash = computeArgumentHash(db, claim.id);
 
     // Mark as compiled with old hash
-    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    data.compiled = true;
-    data.compiled_at = "2025-01-01";
-    repo.updateNodeFields(db, claim.id, { data });
+    repo.setCompileStatus(db, claim.id, "passed");
     repo.saveCompileState(db, claim.id, "passed", "ok", argHash);
 
     // Modify content → hash will change
@@ -87,10 +81,9 @@ describe("autoVerifyAfterMutation", () => {
     expect(results[0].action).toBe("marked-stale");
     expect(results[0].message).toContain("Review not configured");
 
-    // Verify compiled flag is cleared
+    // Verify compile_status is now stale
     const updatedData = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(updatedData.compiled).toBe(false);
-    expect(updatedData.stale).toBe(true);
+    expect(updatedData.compile_status).toBe("stale");
   });
 
   test("不存在的 Claim → skipped", async () => {
@@ -113,16 +106,14 @@ describe("autoVerifyAfterMutation", () => {
 
   test("stale 已设置时不重复设置", async () => {
     const claim = makeClaim(db, "Already stale");
-    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    data.stale = true;
-    repo.updateNodeFields(db, claim.id, { data });
+    repo.setCompileStatus(db, claim.id, "stale");
 
     const results = await autoVerifyAfterMutation(db, null, [claim.id]);
 
     expect(results[0].action).toBe("marked-stale");
-    // stale should still be true
+    // compile_status should still be stale
     const updatedData = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(updatedData.stale).toBe(true);
+    expect(updatedData.compile_status).toBe("stale");
   });
 
   // ===========================================================================
@@ -131,7 +122,7 @@ describe("autoVerifyAfterMutation", () => {
 
   test("未审查 + 结构完整 + 无 config → marked-stale", async () => {
     const { claim } = seedBasicArgument(db);
-    // 不设置 compile_state，不设置 compiled
+    // 不设置 compile_state，不设置 compile_status
 
     const results = await autoVerifyAfterMutation(db, null, [claim.id]);
 
@@ -139,7 +130,7 @@ describe("autoVerifyAfterMutation", () => {
     expect(results[0].message).toContain("Review not configured");
 
     const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(data.stale).toBe(true);
+    expect(data.compile_status).toBe("stale");
   });
 
   test("未审查 + 结构不完整（无 warrant）→ marked-stale", async () => {
@@ -150,7 +141,7 @@ describe("autoVerifyAfterMutation", () => {
     expect(results[0].action).toBe("marked-stale");
 
     const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(data.stale).toBe(true);
+    expect(data.compile_status).toBe("stale");
   });
 
   test("未审查 + 结构不完整（warrant 无 ground）→ marked-stale", async () => {
@@ -208,9 +199,9 @@ describe("autoVerifyAfterMutation", () => {
     expect(results[0].action).toBe("marked-stale");
     expect(results[0].message).toContain("Review not configured");
 
-    // verdict=failed 时不调用 clearCompiledFlag（因为没有 compiled 可清）
+    // verdict=failed 时 compile_status 设置为 stale
     const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(data.stale).toBe(true);
+    expect(data.compile_status).toBe("stale");
   });
 
   test("passed review + 哈希变化 + 无 config → 清除 compiled + marked-stale", async () => {
@@ -218,10 +209,7 @@ describe("autoVerifyAfterMutation", () => {
     const argHash = computeArgumentHash(db, claim.id);
 
     // 存储 passed compile_state
-    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    data.compiled = true;
-    data.compiled_at = "2025-01-01";
-    repo.updateNodeFields(db, claim.id, { data });
+    repo.setCompileStatus(db, claim.id, "passed");
     repo.saveCompileState(db, claim.id, "passed", "ok", argHash);
 
     // 修改 content → 哈希变化
@@ -231,10 +219,9 @@ describe("autoVerifyAfterMutation", () => {
 
     expect(results[0].action).toBe("marked-stale");
 
-    // passed review 时应清除 compiled
+    // passed review 时应将 compile_status 设置为 stale
     const updatedData = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(updatedData.compiled).toBe(false);
-    expect(updatedData.stale).toBe(true);
+    expect(updatedData.compile_status).toBe("stale");
   });
 });
 

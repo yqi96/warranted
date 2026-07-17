@@ -8,7 +8,7 @@
  * 只哈希 content 不哈希 data 的原因：
  * - data 中的状态字段（status、verification 等）不影响逻辑链
  * - 结构字段（ground_ids、ref_claim_id 等）由 computeArgumentHash 从 DB 实时读取遍历
- * - compiled/compiled_at/stale 在 data 中，不入哈希则无需剥离，避免自我触发
+ * - compile_status 在 data 中，不入哈希则无需剥离，避免自我触发
  */
 
 import type { Database } from "bun:sqlite";

@@ -280,20 +280,6 @@ describe("Category C — Aggregate Quality", () => {
     expect(result.errors.some(e => e.includes(`"supported"`) && e.includes("no warrant has all grounds verified"))).toBe(true);
   });
 
-  test("C4 ERROR: status=validated and all warrants have pending grounds", () => {
-    const claim = makeClaim(db, "Claim", "proposed");
-    setClaimStatus(db, claim.id, "validated");
-
-    const g1 = makeGround(db, { verification: "pending" });
-    makeWarrant(db, claim.id, [g1.id]);
-
-    const g2 = makeGround(db, { verification: "pending" });
-    makeWarrant(db, claim.id, [g2.id]);
-
-    const result = structuralQualityCheck(db, claim.id);
-    expect(result.errors.some(e => e.includes(`"validated"`))).toBe(true);
-  });
-
   test("C4 PASS: supported claim with at least one fully-verified warrant", () => {
     const claim = makeClaim(db, "Claim", "proposed");
     setClaimStatus(db, claim.id, "supported");
@@ -373,7 +359,7 @@ describe("Category D — Cross-Node Consistency", () => {
   test("D1: chain target is stale → info", () => {
     const parentClaim = makeClaim(db, "Parent");
     const subClaim = makeClaim(db, "Sub");
-    setClaimData(db, subClaim.id, { stale: true });
+    setClaimData(db, subClaim.id, { compile_status: "stale" });
 
     const ground = makeGround(db, { refClaimId: subClaim.id });
     makeWarrant(db, parentClaim.id, [ground.id]);
@@ -409,7 +395,7 @@ describe("Category D — Cross-Node Consistency", () => {
   test("D4: chain target has never been compiled → info", () => {
     const parentClaim = makeClaim(db, "Parent");
     const subClaim = makeClaim(db, "Sub", "proposed");
-    // No compile_state and compiled=false (default)
+    // No compile_state and compile_status != "passed" (default)
 
     const ground = makeGround(db, { refClaimId: subClaim.id });
     makeWarrant(db, parentClaim.id, [ground.id]);
@@ -421,8 +407,8 @@ describe("Category D — Cross-Node Consistency", () => {
   test("D4: compiled chain target → no D4 info", () => {
     const parentClaim = makeClaim(db, "Parent");
     const subClaim = makeClaim(db, "Sub", "supported");
-    // Mark as compiled
-    setClaimData(db, subClaim.id, { compiled: true });
+    // Mark as compile_status = "passed"
+    setClaimData(db, subClaim.id, { compile_status: "passed" });
     repo.saveCompileState(db, subClaim.id, "passed", "OK");
 
     const ground = makeGround(db, { refClaimId: subClaim.id });

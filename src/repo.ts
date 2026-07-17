@@ -246,24 +246,14 @@ export function deleteCompileState(db: Database, claimId: number): void {
   stmt.run(claimId);
 }
 
-/** 清除 ClaimData 中的 compiled/compiled_at 标志 */
-export function clearCompiledFlag(db: Database, claimId: number): void {
-  const row = getNodeById(db, claimId);
-  if (!row || row.type !== "claim") return;
+/** 设置 ClaimData 的 compile_status 字段 */
+export function setCompileStatus(db: Database, claimId: number, status: "passed" | "stale" | null): void {
+  const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claimId) as { data: string } | null;
+  if (!row) return;
   const data = JSON.parse(row.data);
-  if (!data.compiled) return;
-  data.compiled = false;
-  delete data.compiled_at;
-  updateNodeFields(db, claimId, { data });
-}
-
-/** 设置 ClaimData 的 stale 标志 */
-export function setClaimStale(db: Database, claimId: number, stale: boolean): void {
-  const row = getNodeById(db, claimId);
-  if (!row || row.type !== "claim") return;
-  const data = JSON.parse(row.data);
-  data.stale = stale;
-  updateNodeFields(db, claimId, { data });
+  data.compile_status = status;
+  db.prepare("UPDATE nodes SET data = ?, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(data), new Date().toISOString().slice(0, 19), claimId);
 }
 
 // =============================================================================

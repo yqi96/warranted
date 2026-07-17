@@ -155,8 +155,8 @@ describe("list_claims 工具", () => {
 
   test("按 status 过滤", async () => {
     makeClaim(db, "C1", "proposed");
-    makeClaim(db, "C2", "validated");
-    const result = await tools.list_claims.handler({ status: "validated" });
+    makeClaim(db, "C2", "supported");
+    const result = await tools.list_claims.handler({ status: "supported" });
     expect(result.content[0].text).toContain("C2");
     expect(result.content[0].text).not.toContain("C1");
   });
@@ -298,7 +298,7 @@ describe("compile_arguments 工具", () => {
 describe("get_argument 工具 — stale 标识", () => {
   test("stale Claim 的输出包含 STALE 标识", async () => {
     const claim = makeClaim(db, "核心主张");
-    repo.setClaimStale(db, claim.id, true);
+    repo.setCompileStatus(db, claim.id, "stale");
 
     const result = await tools.get_argument.handler({ node_id: claim.id });
     expect(result.content[0].text).toContain("⚠ STALE");
@@ -326,7 +326,7 @@ describe("get_stats 工具 — stale_count", () => {
 
   test("有 stale Claim 时统计含 stale 后缀", async () => {
     const claim = makeClaim(db, "C1");
-    repo.setClaimStale(db, claim.id, true);
+    repo.setCompileStatus(db, claim.id, "stale");
 
     const result = await tools.get_stats.handler({});
     expect(result.content[0].text).toContain("Claims: 1 (1 stale)");

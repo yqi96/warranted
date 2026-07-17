@@ -98,7 +98,6 @@
     .status-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
     .status-proposed { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
     .status-supported { background: #064e3b; color: #6ee7b7; }
-    .status-validated { background: #1e3a5f; color: #93c5fd; }
     .status-disputed { background: #78350f; color: #fcd34d; }
     .status-refuted { background: #7f1d1d; color: #fca5a5; }
     .veri-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
@@ -123,6 +122,8 @@
     .node-label { fill: #cbd5e1; font-size: 11px; pointer-events: none; }
     .node-type-label { fill: rgba(255,255,255,0.75); font-size: 9px; pointer-events: none; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; }
     .node-icon { fill: rgba(255,255,255,0.9); font-size: 11px; pointer-events: none; font-weight: 700; }
+    .compile-badge-passed { background: #064e3b; color: #4ade80; border: 1px solid #166534; }
+    .compile-badge-stale  { background: #451a03; color: #fcd34d; border: 1px solid #78350f; }
   </style>
 </head>
 <body>
@@ -188,6 +189,9 @@
       <div style="width:28px;height:2px;background:#a855f7;border-top:2px dashed #a855f7;flex-shrink:0;margin-top:4px"></div>
       <span>链式引用连接</span>
     </div>
+    <div class="legend-row" style="margin-top:8px"><span style="font-size:10px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:1px">Compile 状态</span></div>
+    <div class="legend-row"><div style="width:10px;height:10px;border-radius:50%;background:#22c55e;flex-shrink:0"></div><span>已编译 ✓</span></div>
+    <div class="legend-row"><div style="width:10px;height:10px;border-radius:50%;background:#f59e0b;flex-shrink:0"></div><span>过时 !</span></div>
   </div>
 
   <div class="filter-group">
@@ -256,6 +260,13 @@ let selectedNodeId = null;
 let nodeMap = new Map();
 let currentLayout = 'tree';
 
+function getClaimCompileState(data) {
+  if (!data) return null;
+  if (data.compile_status === "passed") return "passed";
+  if (data.compile_status === "stale") return "stale";
+  return null;
+}
+
 // ══════════════════════════════════════════════════════════
 // Tooltip 管理
 // ══════════════════════════════════════════════════════════
@@ -277,6 +288,13 @@ function showTooltip(event, nodeData) {
     chip.className = 'tt-chip status-' + data.data.status;
     chip.textContent = data.data.status;
     ttMeta.appendChild(chip);
+    const cstate = getClaimCompileState(data.data);
+    if (cstate) {
+      const cchip = document.createElement('span');
+      cchip.className = 'tt-chip compile-badge-' + cstate;
+      cchip.textContent = cstate === "passed" ? "compiled" : cstate;
+      ttMeta.appendChild(cchip);
+    }
   }
   if (data.type === 'ground') {
     const veri = data.data?.verification;
@@ -382,7 +400,7 @@ function drawNodeShape(el, d) {
   if (data.type === 'claim') {
     const status = data.data?.status;
     let stroke = dark, sw = 2, dash = 'none';
-    if (status === 'supported' || status === 'validated') { stroke = '#34d399'; sw = 3; }
+    if (status === 'supported') { stroke = '#34d399'; sw = 3; }
     else if (status === 'disputed') { stroke = '#fbbf24'; sw = 2.5; dash = '5,2'; }
     else if (status === 'refuted')  { stroke = '#f87171'; sw = 2.5; dash = '5,2'; }
     el.append('rect').attr('class', 'node-shape')
@@ -398,6 +416,20 @@ function drawNodeShape(el, d) {
       el.append('text').attr('x', size * 1.4).attr('y', -size * 0.6 + 4)
         .attr('text-anchor', 'middle').attr('fill', '#064e3b')
         .attr('font-size', '7px').attr('font-weight', '800').text('✓');
+    }
+    // Compile state badge — top-left corner (mirrors status badge at top-right)
+    const compileState = getClaimCompileState(data.data);
+    if (compileState) {
+      const badgeFill = compileState === "passed" ? "#22c55e" : "#f59e0b";
+      const badgeStroke = compileState === "passed" ? "#064e3b" : "#78350f";
+      const badgeIcon = compileState === "passed" ? "✓" : "!";
+      el.append("circle")
+        .attr("cx", -size * 1.4).attr("cy", -size * 0.6).attr("r", 5)
+        .attr("fill", badgeFill).attr("stroke", badgeStroke).attr("stroke-width", 1);
+      el.append("text")
+        .attr("x", -size * 1.4).attr("y", -size * 0.6 + 4)
+        .attr("text-anchor", "middle").attr("fill", "#fff")
+        .attr("font-size", "7px").attr("font-weight", "800").text(badgeIcon);
     }
     el.append('text').attr('class', 'node-type-label').attr('text-anchor', 'middle').attr('dy', 4)
       .text('C#' + data.id);
@@ -789,7 +821,7 @@ function updateCounts() {
   const grounds = nodes.filter(n => n.type === 'ground');
   const claims  = nodes.filter(n => n.type === 'claim');
   const verifiedGrounds  = grounds.filter(n => n.data?.verification === 'verified').length;
-  const supportedClaims  = claims.filter(n => ['supported','validated'].includes(n.data?.status)).length;
+  const supportedClaims  = claims.filter(n => n.data?.status === 'supported').length;
 
   const s = graphData.stats;
   for (const t of ['claim','ground','warrant','backing','rebuttal']) {
@@ -909,6 +941,19 @@ function showDetail(data) {
   if (data.type === 'claim') {
     const status = data.data?.status || 'proposed';
     html += `<div class="detail-section"><h4>状态</h4><div class="detail-field"><span class="status-badge status-${status}">${status}</span></div></div>`;
+    const cstate = getClaimCompileState(data.data);
+    const cstateLabel = cstate === "passed" ? "compiled" : cstate || "—";
+    const cstateCls = cstate ? `compile-badge-${cstate}` : "";
+    html += `<div class="detail-section"><h4>Compile 状态</h4>
+  <div class="detail-field">
+    <div class="label">状态</div>
+    <div class="value">${cstate ? `<span class="status-badge ${cstateCls}">${cstateLabel}</span>` : '<span style="color:#475569">—</span>'}</div>
+  </div>
+  <div class="detail-field"><div class="label">Verdict</div><div class="value">${escapeHtml(data.data?.compile_verdict || '—')}</div></div>
+  <div class="detail-field"><div class="label">Summary</div><div class="value" style="font-size:12px;color:#94a3b8">${escapeHtml(data.data?.compile_summary || '—')}</div></div>
+  <div class="detail-field"><div class="label">Last compiled</div><div class="value">${escapeHtml(data.data?.compile_created_at || '—')}</div></div>
+  <div class="detail-field"><div class="label">Stale</div><div class="value">${data.data?.compile_status === "stale" ? '<span style="color:#f59e0b">是</span>' : '<span style="color:#64748b">否</span>'}</div></div>
+</div>`;
     if (data.data?.qualifier) {
       html += `<div class="detail-section"><h4>Qualifier</h4><div class="detail-field"><div class="value">${escapeHtml(data.data.qualifier)}</div></div></div>`;
     }

@@ -318,7 +318,7 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
   const hasVerifiedWarrant = ctx.warrantRows.some((_, i) => allGroundsVerified(i));
   if (!hasVerifiedWarrant) {
     const claimStatus = claimData.status as string | undefined;
-    if (claimStatus === "supported" || claimStatus === "validated") {
+    if (claimStatus === "supported") {
       errors.push(
         `Claim #${claimId} is marked "${claimStatus}" but no warrant has all grounds verified — ` +
         `status contradicts evidence (grounds may have been reverted to pending after status was set)`
@@ -351,13 +351,12 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
     if (!refRow || refRow.type !== "claim") continue; // A1/A2 already catches this
 
     const refData = JSON.parse(refRow.data) as {
-      stale?: boolean;
+      compile_status?: "passed" | "stale" | null;
       status?: string;
-      compiled?: boolean;
     };
     const refState = repo.getCompileState(db, refId);
 
-    if (refData.stale === true) {
+    if (refData.compile_status === "stale") {
       // D1
       infos.push(`Ground #${gr.id} references Claim #${refId} which is stale`);
     }
@@ -369,7 +368,7 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
       // D3
       warnings.push(`Ground #${gr.id} references Claim #${refId} with status=refuted — evidence foundation has been invalidated`);
     }
-    if (!refState && !refData.compiled) {
+    if (!refState && refData.compile_status !== "passed") {
       // D4
       infos.push(`Ground #${gr.id} references Claim #${refId} which has never been compiled`);
     }
@@ -458,22 +457,8 @@ export async function compileArgument(
   // 4. 存储 compile_state（argument_hash 仅在 passed 时保存，确保 hash 代表"已验证通过的结构"）
   repo.saveCompileState(db, claimId, verdict, summary, verdict === "passed" ? argHash : undefined);
 
-  // 5. 更新 compiled/stale 标志
-  const claimRow = repo.getNodeById(db, claimId);
-  if (claimRow) {
-    const data = JSON.parse(claimRow.data);
-    if (verdict === "passed") {
-      data.compiled = true;
-      data.compiled_at = compiledAt;
-      data.stale = false;
-    } else {
-      if (data.compiled) {
-        data.compiled = false;
-      }
-      data.stale = true;
-    }
-    repo.updateNodeFields(db, claimId, { data });
-  }
+  // 5. 更新 compile_status 标志
+  repo.setCompileStatus(db, claimId, verdict === "passed" ? "passed" : "stale");
 
   const elapsed = Date.now() - t0;
   log("review_dispatch", "OK", elapsed, `END claim=#${claimId} → verdict=${verdict}, "${summary.slice(0, 80)}"`);
@@ -590,16 +575,13 @@ export function invalidateCompiledClaims(db: Database, nodeId: number): string[]
     const row = repo.getNodeById(db, claimId);
     if (!row || row.type !== "claim") continue;
     const data = JSON.parse(row.data);
-    if (data.compiled) {
-      repo.clearCompiledFlag(db, claimId);
+    if (data.compile_status === "passed") {
       warnings.push(WARNINGS.compileInvalidated(claimId, nodeId));
     }
     // Always clear compile_state on structural change — even after a failed compile,
     // the cached argumentHash is now stale and must not block future hash comparisons.
     repo.deleteCompileState(db, claimId);
-    if (!data.stale) {
-      repo.setClaimStale(db, claimId, true);
-    }
+    repo.setCompileStatus(db, claimId, "stale");
   }
 
   return warnings;
@@ -647,10 +629,7 @@ export async function autoVerifyAfterMutation(
       // 哈希变化 → 需要重新审查
       if (!config) {
         log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash changed, no config → marked-stale`);
-        repo.setClaimStale(db, claimId, true);
-        if (prevState.verdict === "passed") {
-          repo.clearCompiledFlag(db, claimId);
-        }
+        repo.setCompileStatus(db, claimId, "stale");
         return { claimId, action: "marked-stale", message: "Review not configured" };
       }
       log("auto_review", "OK", 0, `claim=#${claimId}: hash changed → auto-review`);
@@ -667,15 +646,15 @@ export async function autoVerifyAfterMutation(
         return { claimId, action: "auto-reviewed", compileResult };
       }
       log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: structure complete, no config → marked-stale`);
-      repo.setClaimStale(db, claimId, true);
+      repo.setCompileStatus(db, claimId, "stale");
       return { claimId, action: "marked-stale", message: "Review not configured" };
     }
 
     // 结构不完整 → 标记 stale
     log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: structure incomplete → marked-stale`);
     const claimData = JSON.parse(claimRow.data);
-    if (!claimData.stale) {
-      repo.setClaimStale(db, claimId, true);
+    if (claimData.compile_status !== "stale") {
+      repo.setCompileStatus(db, claimId, "stale");
     }
     return { claimId, action: "marked-stale" };
   });

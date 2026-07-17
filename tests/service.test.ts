@@ -284,8 +284,8 @@ describe("updateNode", () => {
     // 构建 Warrant + verified Ground 以满足 A1
     const g = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
     makeWarrant(db, claim.id, [g.id]);
-    const { node } = service.updateNode(db, claim.id, { status: "validated" });
-    expect((node as any).status).toBe("validated");
+    const { node } = service.updateNode(db, claim.id, { status: "supported" });
+    expect((node as any).status).toBe("supported");
   });
 
   test("更新 Ground attachments", () => {
@@ -561,14 +561,14 @@ describe("listClaims", () => {
 
   test("按 status 过滤", () => {
     const c1 = makeClaim(db, "C1", "proposed");
-    const c2 = makeClaim(db, "C2", "validated");
+    const c2 = makeClaim(db, "C2", "supported");
     const c3 = makeClaim(db, "C3", "proposed");
 
     const proposed = service.listClaims(db, "proposed");
     expect(proposed.length).toBe(2);
 
-    const validated = service.listClaims(db, "validated");
-    expect(validated.length).toBe(1);
+    const supported = service.listClaims(db, "supported");
+    expect(supported.length).toBe(1);
   });
 });
 
@@ -602,11 +602,11 @@ describe("getStats", () => {
   test("正确统计 by_status", () => {
     makeClaim(db, "C1", "proposed");
     makeClaim(db, "C2", "proposed");
-    makeClaim(db, "C3", "validated");
+    makeClaim(db, "C3", "supported");
 
     const stats = service.getStats(db);
     expect(stats.claims.by_status.proposed).toBe(2);
-    expect(stats.claims.by_status.validated).toBe(1);
+    expect(stats.claims.by_status.supported).toBe(1);
   });
 
   test("正确统计 grounds by_source", () => {
@@ -639,8 +639,8 @@ describe("getStats", () => {
     const c1 = makeClaim(db, "C1");
     const c2 = makeClaim(db, "C2");
     makeClaim(db, "C3");
-    repo.setClaimStale(db, c1.id, true);
-    repo.setClaimStale(db, c2.id, true);
+    repo.setCompileStatus(db, c1.id, "stale");
+    repo.setCompileStatus(db, c2.id, "stale");
     const stats = service.getStats(db);
     expect(stats.claims.stale_count).toBe(2);
   });
@@ -679,10 +679,8 @@ describe("审查规则: Claim 状态转换", () => {
     const claim = makeClaim(db);
     const ground = makeGround(db, { content: "G", verification: "verified" });
     makeWarrant(db, claim.id, [ground.id]);
-    // 设置 stale=true
-    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    data.stale = true;
-    repo.updateNodeFields(db, claim.id, { data });
+    // 设置 compile_status = "stale"
+    repo.setCompileStatus(db, claim.id, "stale");
     expect(() =>
       service.updateNode(db, claim.id, { status: "supported" })
     ).toThrow(StatusTransitionError);
@@ -692,21 +690,43 @@ describe("审查规则: Claim 状态转换", () => {
     const claim = makeClaim(db);
     const ground = makeGround(db, { content: "G", verification: "verified" });
     makeWarrant(db, claim.id, [ground.id]);
-    // compiled 未设置（默认 false/undefined）
+    // compile_status 未设置（默认 null/undefined）
     expect(() =>
       service.updateNode(db, claim.id, { status: "supported" })
     ).toThrow(StatusTransitionError);
   });
 
-  test("A0: stale Claim 不能标记 validated", () => {
+  test("A0: stale Claim 不能标记 disputed (有 Rebuttal)", () => {
     const claim = makeClaim(db);
-    const ground = makeGround(db, { content: "G", verification: "verified" });
-    makeWarrant(db, claim.id, [ground.id]);
-    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    data.stale = true;
-    repo.updateNodeFields(db, claim.id, { data });
+    repo.setCompileStatus(db, claim.id, "stale");
+    makeRebuttal(db, claim.id);
     expect(() =>
-      service.updateNode(db, claim.id, { status: "validated" })
+      service.updateNode(db, claim.id, { status: "disputed" })
+    ).toThrow(StatusTransitionError);
+  });
+
+  test("A0: 从未 compile 的 Claim 不能标记 disputed (有 Rebuttal)", () => {
+    const claim = makeClaim(db);
+    makeRebuttal(db, claim.id);
+    expect(() =>
+      service.updateNode(db, claim.id, { status: "disputed" })
+    ).toThrow(StatusTransitionError);
+  });
+
+  test("A0: stale Claim 不能标记 refuted (有 Rebuttal)", () => {
+    const claim = makeClaim(db);
+    repo.setCompileStatus(db, claim.id, "stale");
+    makeRebuttal(db, claim.id);
+    expect(() =>
+      service.updateNode(db, claim.id, { status: "refuted" })
+    ).toThrow(StatusTransitionError);
+  });
+
+  test("A0: 从未 compile 的 Claim 不能标记 refuted (有 Rebuttal)", () => {
+    const claim = makeClaim(db);
+    makeRebuttal(db, claim.id);
+    expect(() =>
+      service.updateNode(db, claim.id, { status: "refuted" })
     ).toThrow(StatusTransitionError);
   });
 
@@ -742,30 +762,6 @@ describe("审查规则: Claim 状态转换", () => {
     expect((node as any).status).toBe("supported");
   });
 
-  test("A1: 无 Warrant 时不能标记 validated", () => {
-    const claim = makeClaim(db);
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "validated" })
-    ).toThrow(StatusTransitionError);
-  });
-
-  test("A1: Ground 未 verified 时不能标记 validated", () => {
-    const claim = makeClaim(db);
-    const ground = makeGround(db, { content: "G", verification: "pending" });
-    makeWarrant(db, claim.id, [ground.id]);
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "validated" })
-    ).toThrow(StatusTransitionError);
-  });
-
-  test("A1: 有 Warrant + verified Ground + compiled 时可以标记 validated", () => {
-    const claim = makeCompiledClaim(db);
-    const ground = makeGround(db, { content: "G", verification: "verified", attachments: ["/data.csv"] });
-    makeWarrant(db, claim.id, [ground.id]);
-    const { node } = service.updateNode(db, claim.id, { status: "validated" });
-    expect((node as any).status).toBe("validated");
-  });
-
   test("A3: 无 Rebuttal 时不能标记 disputed", () => {
     const claim = makeClaim(db);
     expect(() =>
@@ -775,6 +771,7 @@ describe("审查规则: Claim 状态转换", () => {
 
   test("A3: 有 Rebuttal 时可以标记 disputed", () => {
     const claim = makeClaim(db);
+    repo.setCompileStatus(db, claim.id, "passed");
     makeRebuttal(db, claim.id);
     const { node } = service.updateNode(db, claim.id, { status: "disputed" });
     expect((node as any).status).toBe("disputed");
@@ -782,6 +779,7 @@ describe("审查规则: Claim 状态转换", () => {
 
   test("A4: 无 Rebuttal 时不能标记 refuted", () => {
     const claim = makeClaim(db);
+    repo.setCompileStatus(db, claim.id, "passed");
     expect(() =>
       service.updateNode(db, claim.id, { status: "refuted" })
     ).toThrow(StatusTransitionError);
@@ -789,6 +787,7 @@ describe("审查规则: Claim 状态转换", () => {
 
   test("A4: 有 Rebuttal 时可以标记 refuted", () => {
     const claim = makeClaim(db);
+    repo.setCompileStatus(db, claim.id, "passed");
     makeRebuttal(db, claim.id);
     const { node } = service.updateNode(db, claim.id, { status: "refuted" });
     expect((node as any).status).toBe("refuted");

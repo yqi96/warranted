@@ -38,7 +38,6 @@ export type VerificationStatus =
 export const ClaimStatus = {
   Proposed: "proposed",
   Supported: "supported",
-  Validated: "validated",
   Disputed: "disputed",
   Refuted: "refuted",
 } as const;
@@ -117,9 +116,7 @@ export type ToulminNode =
 export interface ClaimData {
   status: ClaimStatus;
   qualifier?: string | null;
-  compiled?: boolean;
-  compiled_at?: string;
-  stale?: boolean;
+  compile_status?: "passed" | "stale" | null;
 }
 
 export interface GroundData {
@@ -210,7 +207,7 @@ export interface ClaimArgument {
     content: string;
     status: ClaimStatus;
     qualifier: string | null;
-    stale?: boolean;
+    compile_status?: "passed" | "stale" | null;
   };
   warrants: ArgumentWarrant[];
   rebuttals: ArgumentRebuttal[];

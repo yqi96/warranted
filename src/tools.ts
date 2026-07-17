@@ -84,7 +84,7 @@ function formatArgument(result: ArgumentResult): string {
     // ClaimArgument
     const lines: string[] = [];
     lines.push(`## Claim #${result.claim.id}`);
-    if (result.claim.stale) {
+    if (result.claim.compile_status === "stale") {
       lines.push("⚠ STALE — logical chain review pending. Call compile_arguments.");
     }
     lines.push(`Content: ${result.claim.content}`);
@@ -432,7 +432,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
       title: "List Claims",
       description: "List all claims, optionally filtered by status.",
       inputSchema: {
-        status: z.string().optional().describe("Filter by status (comma-separated: proposed,supported,validated)"),
+        status: z.string().optional().describe("Filter by status (comma-separated: proposed,supported,disputed,refuted)"),
       },
     },
     withLog("list_claims", async ({ status }: { status?: string }) => {
@@ -526,7 +526,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         node_id: z.number().describe("Node ID to update"),
         content: z.string().optional().describe("New content"),
         attachments: z.array(z.string()).optional().describe("New attachment file paths"),
-        status: z.enum(["proposed", "supported", "validated", "disputed", "refuted"]).optional().describe("Claim status. 'proposed' = start state; 'supported' = compile passed + evidence assessed; 'disputed' = contradicting evidence. Requires compile to pass before advancing to 'supported'."),
+        status: z.enum(["proposed", "supported", "disputed", "refuted"]).optional().describe("Claim status. 'proposed' = start state; 'supported' = compile passed + evidence assessed; 'disputed' = contradicting evidence. Requires compile to pass before advancing to 'supported'."),
         source: z.enum(["literature", "observed", "hypothesis"]).optional().describe("Ground source"),
         verification: z.enum(["verified", "pending"]).optional().describe("Ground verification status"),
         ground_ids: z.object({
@@ -623,7 +623,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         "Reviews all affected Claims in parallel and returns a verdict per Claim. " +
         "When to call: after completing all nodes under a Claim (Warrant + Ground(s) in place), " +
         "after any structural change to an existing argument, or whenever a Claim shows stale status. " +
-        "A Claim must pass compile before its status can advance to 'supported' or 'validated'. " +
+        "A Claim must pass compile before its status can advance to 'supported'. " +
         "Omit claim_ids to compile all Claims at once.",
       inputSchema: {
         claim_ids: z.array(z.number()).optional().describe("Specific Claim IDs to compile. Omit to compile all Claims."),

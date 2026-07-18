@@ -39,7 +39,7 @@ import {
   MutuallyExclusiveModeError,
   StatusTransitionError,
 } from "./errors.ts";
-import { WARNINGS } from "./content.ts";
+import { WARNINGS, HINTS } from "./content.ts";
 
 // =============================================================================
 // 辅助函数
@@ -683,6 +683,11 @@ export function updateNode(
   // 更新 content
   if (params.content !== undefined) {
     data.content = params.content;
+    // G_CONTENT: verified ground 内容变更 → 退回 pending
+    if (row.type === "ground" && data.verification === "verified") {
+      data.verification = "pending";
+      warnings.push(HINTS.groundVerificationReverted(nodeId));
+    }
   }
 
   // 更新 attachments（Ground/Backing/Rebuttal）

@@ -134,6 +134,9 @@ export const HINTS = {
   claimStale: (claimId: number) =>
     `Hint: Claim #${claimId} has pending changes that need review. ` +
     `Call compile to verify the argument.`,
+
+  groundVerificationReverted: (nodeId: number) =>
+    `Hint: Ground #${nodeId} content changed — verification reverted to pending. Re-mark as verified when ready.`,
 } as const;
 
 // =============================================================================

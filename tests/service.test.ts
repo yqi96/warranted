@@ -327,6 +327,13 @@ describe("updateNode", () => {
     expect((node as any).verification).toBe("verified");
   });
 
+  test("verified Ground 内容变更 → 自动退回 pending", () => {
+    const ground = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
+    const { node, warnings } = service.updateNode(db, ground.id, { content: "updated content" });
+    expect((node as any).verification).toBe("pending");
+    expect(warnings.some(w => w.includes("reverted to pending"))).toBe(true);
+  });
+
   test("更新不存在节点抛出 NotFoundError", () => {
     expect(() => service.updateNode(db, 999, { content: "x" })).toThrow(NotFoundError);
   });

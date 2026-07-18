@@ -527,7 +527,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         content: z.string().optional().describe("New content"),
         attachments: z.array(z.string()).optional().describe("New attachment file paths"),
         status: z.enum(["proposed", "supported", "disputed", "refuted"]).optional().describe(ELEMENTS.claim.status),
-        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe("Ground source"),
+        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(ELEMENTS.ground.source),
         verification: z.enum(["verified", "pending"]).optional().describe(ELEMENTS.ground.verification),
         ground_ids: z.object({
           add: z.array(z.number()).optional(),

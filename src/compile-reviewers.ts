@@ -3,7 +3,7 @@
  *
  * compile 包含多项检查，不同时机触发：
  * - 节点定义检查：节点 content 变化时触发（在 compile-service.reviewNodeDefinition 中实现）
- * - 逻辑链检查：论证图哈希变化时触发（本文件实现）
+ * - 逻辑链检查：agent 显式调用 compile_arguments 时触发（本文件实现）
  *
  * 本文件只负责逻辑链审查（reviewChain）。
  */
@@ -155,7 +155,7 @@ async function reviewChain(
 
 /**
  * 运行逻辑链审查。
- * 由 auto-review 在论证图哈希变化时触发。
+ * 由 compileArgument 调用，是 compile_arguments 工具的一部分。
  */
 export async function runChainReview(
   config: ReviewConfig,

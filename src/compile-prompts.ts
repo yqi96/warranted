@@ -28,6 +28,22 @@ Rules:
 - If both arrays are empty, the element passes cleanly.
 - If errors is non-empty, the element is REJECTED regardless of warnings.`;
 
+const CHAIN_OUTPUT_FORMAT = `Respond in JSON:
+{
+  "errors": [
+    "Specific description of the logical gap or incoherence"
+  ],
+  "warnings": [
+    "Specific description of the weakness or concern"
+  ]
+}
+
+Rules:
+- "errors": Logical gaps or incoherence that make the argument chain unsound. The compile will FAIL.
+- "warnings": Weaknesses or concerns that do not break the chain but should be addressed. The compile will PASS with warnings.
+- If both arrays are empty, the argument chain passes cleanly.
+- If errors is non-empty, the compile FAILS regardless of warnings.`;
+
 // =============================================================================
 // Claim 定义审查
 // =============================================================================
@@ -233,5 +249,5 @@ Evaluate the following, assuming all Grounds are factually true:
 
 7. **Rebuttal coverage**: Are there obvious counter-arguments or limitations that are NOT captured by existing Rebuttals? If the Claim is unqualified, are Rebuttals especially necessary?
 
-${OUTPUT_FORMAT}`;
+${CHAIN_OUTPUT_FORMAT}`;
 }

@@ -99,8 +99,8 @@ function toStr(e: unknown): string {
 }
 
 /**
- * 解析 Agent 的 JSON 响应。
- * 期望格式：{ errors: [], warnings: [] }
+ * 从 Agent 响应文本中提取 JSON 对象（通用解析器）。
+ * 自动剥除 markdown 代码围栏，返回任意 JSON 对象。
  * 如果解析失败，在返回值中标记 _parseFailed: true。
  */
 export function parseLLMResponse(

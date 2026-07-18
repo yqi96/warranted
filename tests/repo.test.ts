@@ -119,9 +119,9 @@ describe("updateNodeFields", () => {
 
   test("更新 data", () => {
     repo.insertNode(db, "claim", "测试", { status: "proposed" });
-    const updated = repo.updateNodeFields(db, 1, { data: { status: "validated" } });
+    const updated = repo.updateNodeFields(db, 1, { data: { status: "supported" } });
     const data = JSON.parse(updated!.data);
-    expect(data.status).toBe("validated");
+    expect(data.status).toBe("supported");
   });
 
   test("不存在的 ID 返回 null", () => {
@@ -218,7 +218,7 @@ describe("关联查询", () => {
   });
 
   test("findGroundsByRefClaim 返回链式推理 Ground", () => {
-    repo.insertNode(db, "claim", "C1", { status: "validated" });
+    repo.insertNode(db, "claim", "C1", { status: "proposed" });
     repo.insertNode(db, "ground", "G1", { source: "observed", verification: "verified", attachments: [], ref_claim_id: null });
     repo.insertNode(db, "ground", "G2", { source: "hypothesis", verification: "pending", attachments: [], ref_claim_id: 1 });
 

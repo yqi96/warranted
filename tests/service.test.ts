@@ -348,7 +348,7 @@ describe("updateNode", () => {
   test("给 Ground 设置 status 抛出 ValidationError", () => {
     const ground = makeGround(db);
     expect(() =>
-      service.updateNode(db, ground.id, { status: "validated" })
+      service.updateNode(db, ground.id, { status: "supported" })
     ).toThrow(ValidationError);
   });
 

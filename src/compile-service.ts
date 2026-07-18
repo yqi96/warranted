@@ -2,10 +2,10 @@
  * Toulmin MCP — Compile Service 层
  *
  * compile 包含多项检查，不同时机触发：
- * - 节点定义检查：节点 content 变化时触发（reviewNodeDefinition）
- * - 逻辑链检查：论证图哈希变化时触发（compileArgument → runChainReview）
+ * - 节点定义检查：节点 content 变化时触发（reviewNodeDefinition），同步阻断
+ * - 逻辑链检查：agent 显式调用 compile_arguments 时触发（首次或哈希变化时运行 LLM 审查）
  *
- * 失效管理：节点修改时清除受影响 Claim 的 compiled 状态
+ * 失效管理：节点修改时将受影响 Claim 的 compile_status 设为 stale
  */
 
 import type { Database } from "bun:sqlite";
@@ -82,7 +82,7 @@ function saveNodeReviewFile(
 
 /**
  * 对 content 执行节点定义审查。
- * create 时阻断（errors 非空 → 不入库），update 时非阻断（仅报告）。
+ * content 变化时触发（create 和 update 均阻断：errors 非空 → 操作拒绝）。
  * 审查结果保存到 reviews/ 目录。
  */
 export async function reviewNodeDefinition(

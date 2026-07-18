@@ -118,7 +118,7 @@ claude --dangerously-skip-permissions --agent toulmin-researcher
 
 | 工具 | 说明 | 关键参数 |
 |------|------|---------|
-| `compile_arguments` | LLM 审查论证逻辑链，校验 Ground→Warrant→Claim 推理的连贯性。Claim 状态进入 `supported` 或 `validated` 前必须通过 compile。需配置 `--review-config`。 | `claim_ids?`（省略则编译全部） |
+| `compile_arguments` | LLM 审查论证逻辑链，校验 Ground→Warrant→Claim 推理的连贯性。所有非 proposed 状态转换前必须通过 compile。需配置 `--review-config`。 | `claim_ids?`（省略则编译全部） |
 
 ---
 
@@ -152,10 +152,9 @@ Ground ──> Claim (ref_claim_id)  链式推理：引用已有 Claim 作为证
 | 目标状态 | 前提条件 |
 |---------|---------|
 | `proposed` | 初始状态，无条件 |
-| `supported` | compile_arguments 通过（非 stale，且有 compiled 标记）+ 至少一个 Warrant 且其所有 Ground 均 `verified` |
-| `validated` | 同 `supported` |
-| `disputed` | 至少存在一个 Rebuttal（指向该 Claim 或其 Warrant） |
-| `refuted` | 至少存在一个 Rebuttal |
+| `supported` | compile_status = passed + 至少一个 Warrant 且其所有 Ground 均 `verified` |
+| `disputed` | compile_status = passed + 至少一个 Rebuttal（指向该 Claim 或其 Warrant） |
+| `refuted` | compile_status = passed + 至少一个 Rebuttal |
 
 ### create_ground 两种模式
 
@@ -298,7 +297,7 @@ toulmin-mcp/
 ├── agents/
 │   ├── toulmin-researcher.md    # 论证推进 agent（英文）
 │   ├── toulmin-explorer.md      # 只读图探索 agent
-│   └── instruction-translator.md # 自然语言→结构化指令翻译
+│   └── toulmin-translator.md    # 自然语言→结构化指令翻译
 ├── skills/
 │   ├── paper-reproduce/         # 论文复现 Skill
 │   └── declare-barrier/         # 形式化声明任务阻塞 Skill
@@ -323,7 +322,7 @@ toulmin-mcp/
 |-------|------|
 | `toulmin-researcher` | 论证推进 agent。构建和验证 Toulmin 论证图，识别 Claim/Ground/Warrant 的结构缺口，记录 Rebuttal。每个任务都必须映射到论证节点。 |
 | `toulmin-explorer` | 只读图探索 agent。快速查找节点、查看验证状态、探索论证结构。不做修改或逻辑分析。 |
-| `instruction-translator` | 指令翻译 agent。将模糊的自然语言表达翻译为清晰、可执行的 agent 指令。 |
+| `toulmin-translator` | 指令翻译 agent。将用户自然语言定位在 meta/object 架构中，输出可执行的结构化指令，路由至 researcher 或 explorer。 |
 
 将 `agents/` 目录内容拷贝到 `.claude/agents/`（项目级或 `~/.claude/agents/` 系统级均可）即可加载。
 

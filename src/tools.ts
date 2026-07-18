@@ -526,9 +526,9 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         node_id: z.number().describe("Node ID to update"),
         content: z.string().optional().describe("New content"),
         attachments: z.array(z.string()).optional().describe("New attachment file paths"),
-        status: z.enum(["proposed", "supported", "disputed", "refuted"]).optional().describe("Claim status. 'proposed' = start state; 'supported' = compile passed + evidence assessed; 'disputed' = contradicting evidence. Requires compile to pass before advancing to 'supported'."),
+        status: z.enum(["proposed", "supported", "disputed", "refuted"]).optional().describe(ELEMENTS.claim.status),
         source: z.enum(["literature", "observed", "hypothesis"]).optional().describe("Ground source"),
-        verification: z.enum(["verified", "pending"]).optional().describe("Ground verification status"),
+        verification: z.enum(["verified", "pending"]).optional().describe(ELEMENTS.ground.verification),
         ground_ids: z.object({
           add: z.array(z.number()).optional(),
           remove: z.array(z.number()).optional(),

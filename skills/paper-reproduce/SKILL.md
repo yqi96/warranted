@@ -7,7 +7,7 @@ description: Build and verify an independent argument graph to assess whether a 
 
 Verify whether the paper's claims are correct. Maintain strict neutrality throughout: supported and disputed are equally valid scientific outcomes.
 
-**Done means**: every Claim has a clear conclusion — supported, disputed, or proposed. `proposed` is the conclusion of last resort when a verdict genuinely cannot be reached; it requires `declare-barrier` skill to have been invoked and is not an exit ramp.
+**Done means**: every Claim has a clear conclusion — supported, disputed, refuted, or proposed. `proposed` is the conclusion of last resort when a verdict genuinely cannot be reached; it requires `declare-barrier` skill to have been invoked and is not an exit ramp.
 
 ## How to use the Toulmin graph
 
@@ -15,7 +15,7 @@ Verify whether the paper's claims are correct. Maintain strict neutrality throug
 
 Read the paper and extract its argument structure. Every node starts as a hypothesis.
 
-- `create_claim` — the paper's conclusion; initializes as `proposed`, updated to `supported` or `disputed` via `update_node` based on verification results
+- `create_claim` — the paper's conclusion; initializes as `proposed`, updated to `supported`, `disputed`, or `refuted` via `update_node` based on verification results
 - `create_ground(source="hypothesis", verification="pending")` — the paper's stated experimental result, written as a declarative finding; initializes as a hypothesis, updated via `update_node` as verification proceeds
 - `create_warrant` — the inference principle connecting Ground to Claim
 - `create_backing` (if any) — what supports the Warrant's authority
@@ -27,7 +27,7 @@ Once extracted, run `compile_arguments` to verify the reasoning structure is log
 
 ### Drive action from Claims
 
-For each Claim, ask: what is preventing it from being marked supported or disputed? Act independently to remove that blocker, update the graph, and re-examine. Repeat until every Claim has a clear conclusion.
+For each Claim, ask: what is preventing it from being marked supported, disputed, or refuted? Act independently to remove that blocker, update the graph, and re-examine. Repeat until every Claim has a clear conclusion.
 
 ## Constraints
 
@@ -39,7 +39,7 @@ The argument graph represents the paper's argument, not a new one. Claims and Gr
 - **Ground**: extracted from the paper as a hypothesis. After reproduction, minor numerical corrections are permitted (e.g., 42.3 → 42.1 due to random seed or implementation variance). The logical assertion — what the Ground claims to show — must remain unchanged.
 - **Reasoning structure**: the Ground → Warrant → Claim chain reflects the paper's logic. Do not restructure it to make verification easier.
 
-If your reproduction yields a result that contradicts the paper, record it as a Rebuttal and update the Claim status to `disputed`. Do not rewrite the Claim or Ground to absorb the contradiction.
+If your reproduction yields a result that contradicts the paper, record it as a Rebuttal, then update the Claim status accordingly. Do not rewrite the Claim or Ground to absorb the contradiction.
 
 **Independence**
 

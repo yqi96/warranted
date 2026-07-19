@@ -80,6 +80,7 @@ function clearSelection() {
   g.selectAll('.node-shape').attr('filter', 'url(#shadow)');
   g.selectAll('.link').transition().duration(300).style('opacity', 1);
   closeBottomSheet();
+  updateSelectionVisuals();
   syncSelectionToServer();
 }
 

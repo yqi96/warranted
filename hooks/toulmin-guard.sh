@@ -12,14 +12,16 @@ INPUT=$(cat)
 if ! command -v python3 &>/dev/null; then exit 0; fi
 TOOL_NAME=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_name',''))" 2>/dev/null || echo "")
 
-# Reset counter on compile_arguments
-if [[ "$TOOL_NAME" == "mcp__toulmin-mcp__compile_arguments" ]]; then
+# Reset counter on compile_arguments (matches standalone and plugin-installed naming)
+# standalone: mcp__toulmin__compile_arguments
+# plugin:     mcp__plugin_warranted_toulmin__compile_arguments
+if [[ "$TOOL_NAME" == *__compile_arguments && "$TOOL_NAME" == mcp__*toulmin* ]]; then
   echo "0" > "$STATE_FILE"
   exit 0
 fi
 
 # All other Toulmin tools: pass silently (no counter change)
-if [[ "$TOOL_NAME" == mcp__toulmin-mcp__* ]]; then
+if [[ "$TOOL_NAME" == mcp__*toulmin*__* ]]; then
   exit 0
 fi
 

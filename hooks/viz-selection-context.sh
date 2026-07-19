@@ -71,7 +71,7 @@ output=$(python3 -c "
 import json, sys
 project = sys.argv[1]
 nodes = sys.argv[2]
-ctx = '[Toulmin Visualizer Selection]\nProject: ' + project + '\n' + nodes
+ctx = '[Visualizer Selection]\nProject: ' + project + '\n' + nodes
 print(json.dumps({
     'hookSpecificOutput': {
         'hookEventName': 'UserPromptSubmit',

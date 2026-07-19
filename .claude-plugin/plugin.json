@@ -1,12 +1,12 @@
 {
-  "name": "toulmin-mcp",
-  "displayName": "Toulmin Argumentation",
+  "name": "warranted",
+  "displayName": "Warranted",
   "version": "0.1.0",
-  "description": "Toulmin argumentation state management MCP server for scientific reasoning",
+  "description": "Make AI research agents accountable — give every conclusion a traceable argument graph.",
   "author": {
     "name": "QiYao"
   },
-  "repository": "https://github.com/qiyao/toulmin-mcp",
+  "repository": "https://github.com/yqi96/warranted",
   "license": "MIT",
   "keywords": ["toulmin", "argumentation", "mcp", "research", "reasoning"]
 }

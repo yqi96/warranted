@@ -1,13 +1,13 @@
 {
-  "name": "toulmin-mcp",
+  "name": "warranted",
   "owner": {
     "name": "QiYao"
   },
   "plugins": [
     {
-      "name": "toulmin-mcp",
+      "name": "warranted",
       "source": "./",
-      "description": "Toulmin argumentation state management MCP server for scientific reasoning"
+      "description": "Make AI research agents accountable — give every conclusion a traceable argument graph."
     }
   ]
 }

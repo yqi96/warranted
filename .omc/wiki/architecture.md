@@ -2,7 +2,7 @@
 title: Architecture Overview
 tags: [architecture, typescript, sqlite, mcp]
 category: architecture
-updated: 2026-07-17
+updated: 2026-07-19
 ---
 
 # toulmin-mcp 架构总览
@@ -61,7 +61,7 @@ Tools (tools.ts)        — MCP 工具注册、输入验证、错误处理（12 
 | `sql/schema.sql` | SQLite schema |
 | `agents/` | Claude Code agent 定义 |
 | `skills/` | paper-reproduce、declare-barrier 技能 |
-| `visualizer/` | Cytoscape.js 图可视化 |
+| `visualizer/` | D3.js v7 模块化可视化（双阶段，14 JS 模块） |
 | `tests/` | 测试文件，bun test |
 
 ## 数据模型

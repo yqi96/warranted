@@ -1,0 +1,12 @@
+{
+  "name": "toulmin-mcp",
+  "displayName": "Toulmin Argumentation",
+  "version": "0.1.0",
+  "description": "Toulmin argumentation state management MCP server for scientific reasoning",
+  "author": {
+    "name": "QiYao"
+  },
+  "repository": "https://github.com/qiyao/toulmin-mcp",
+  "license": "MIT",
+  "keywords": ["toulmin", "argumentation", "mcp", "research", "reasoning"]
+}

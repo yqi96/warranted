@@ -5,3 +5,4 @@ node_modules/
 .omc/prd.json
 .omc/progress.txt
 .omc/state/
+review.json

@@ -1,0 +1,13 @@
+{
+  "name": "toulmin-mcp",
+  "owner": {
+    "name": "QiYao"
+  },
+  "plugins": [
+    {
+      "name": "toulmin-mcp",
+      "source": "./",
+      "description": "Toulmin argumentation state management MCP server for scientific reasoning"
+    }
+  ]
+}

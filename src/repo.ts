@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — Repository 层
+ * Warranted — Repository 层
  *
  * 纯 SQL 操作，不含业务逻辑。所有函数接收 Database 作为首参数。
  */

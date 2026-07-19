@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — 审查审计日志
+ * Warranted — 审查审计日志
  *
  * 将每次 LLM 调用的输入（prompt）和原始输出保存为 JSON 文件，
  * 供后续分析 agent 缺陷。

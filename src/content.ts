@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — 面向 agent 的教学内容集中管理
+ * Warranted — 面向 agent 的教学内容集中管理
  *
  * 所有 tool description、field describe、Hint、Warning 文本常量。
  * tools.ts 和 service.ts 引用此文件，不内联字符串。

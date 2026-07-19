@@ -1,4 +1,4 @@
-# Wiki Index — toulmin-mcp
+# Wiki Index — warranted
 
 ## decision
 - [Design Philosophy](design-philosophy.md) — meta/object两层架构根本哲学；论证图即需求系统；content.ts作为in-context规范；矛盾即信息

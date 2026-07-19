@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — Service 层
+ * Warranted — Service 层
  *
  * 业务逻辑：参数校验、互斥模式检查、级联删除、类型检查。
  * 所有函数接收 Database 作为首参数。

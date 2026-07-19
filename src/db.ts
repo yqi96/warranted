@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — 数据库连接与 Schema 初始化
+ * Warranted — 数据库连接与 Schema 初始化
  *
  * 使用 bun:sqlite（同步 API），零配置嵌入式 SQLite。
  */

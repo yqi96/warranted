@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — MCP 工具注册
+ * Warranted — MCP 工具注册
  *
  * 12 个工具，每个定义 zod inputSchema + handler。
  * Handler 调用 service 层，错误在边界捕获转为文本返回。

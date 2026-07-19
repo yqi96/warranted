@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — 异步审查配置
+ * Warranted — 异步审查配置
  *
  * 从 JSON 配置文件加载审查功能配置。
  * 未提供配置文件或文件无效时返回 null，审查功能静默关闭。
@@ -54,13 +54,13 @@ export function loadReviewConfig(
 ): ReviewConfig | null {
   // 未提供配置文件
   if (!configPath) {
-    console.error("[Toulmin Review] No review config specified. Reviews disabled.");
+    console.error("[Warranted] No review config specified. Reviews disabled.");
     return null;
   }
 
   // 配置文件不存在
   if (!existsSync(configPath)) {
-    console.error(`[Toulmin Review] Config file not found: ${configPath}. Reviews disabled.`);
+    console.error(`[Warranted] Config file not found: ${configPath}. Reviews disabled.`);
     return null;
   }
 
@@ -70,7 +70,7 @@ export function loadReviewConfig(
     const content = readFileSync(configPath, "utf-8");
     fileConfig = JSON.parse(content);
   } catch (err) {
-    console.error(`[Toulmin Review] Failed to parse config file: ${configPath}. Reviews disabled.`);
+    console.error(`[Warranted] Failed to parse config file: ${configPath}. Reviews disabled.`);
     console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
@@ -78,7 +78,7 @@ export function loadReviewConfig(
   // 校验必需字段
   const apiKey = fileConfig.apiKey;
   if (!apiKey) {
-    console.error(`[Toulmin Review] No apiKey in config file. Reviews disabled.`);
+    console.error(`[Warranted] No apiKey in config file. Reviews disabled.`);
     return null;
   }
 
@@ -103,7 +103,7 @@ export function loadReviewConfig(
     mkdirSync(auditDir, { recursive: true });
   }
 
-  console.error(`[Toulmin Review] Config loaded: ${configPath}`);
+  console.error(`[Warranted] Config loaded: ${configPath}`);
 
   return {
     enabled: true,

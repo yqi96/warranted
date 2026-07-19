@@ -30,7 +30,7 @@ const PROJECT_DIR = process.env.PROJECT_DIR || (() => {
 })();
 
 const DB_PATH = join(PROJECT_DIR, ".toulmin", "argument.db");
-const CONFIG_PATH = "/home/qiyao/workspace/team-work/toulmin-mcp/.toulmin/review.json";
+const CONFIG_PATH = join(PROJECT_DIR, ".toulmin", "review.json");
 
 const dbExists = existsSync(DB_PATH);
 if (!dbExists) {

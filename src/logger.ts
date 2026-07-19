@@ -1,12 +1,12 @@
 /**
- * Toulmin MCP — 轻量操作日志
+ * Warranted — 轻量操作日志
  *
  * 记录每次工具调用的：工具名、输入摘要、结果（成功/失败）、耗时。
  * 输出目标：stderr（不影响 MCP stdout JSON-RPC 协议）。
  *
  * 日志格式（单行，便于 grep）：
- *   [Toulmin MCP] 2025-01-15T10:30:00.123Z | create_claim | OK  | 3ms | content="xxx"
- *   [Toulmin MCP] 2025-01-15T10:30:00.456Z | create_ground | ERR | 1ms | Error: validation failed
+ *   [Warranted] 2025-01-15T10:30:00.123Z | create_claim | OK  | 3ms | content="xxx"
+ *   [Warranted] 2025-01-15T10:30:00.456Z | create_ground | ERR | 1ms | Error: validation failed
  */
 
 import { appendFileSync } from "fs";
@@ -33,7 +33,7 @@ export function log(
   summary: string,
 ): void {
   const ts = new Date().toISOString();
-  const line = `[Toulmin MCP] ${ts} | ${toolName.padEnd(18)} | ${status} | ${durationMs}ms | ${summary}`;
+  const line = `[Warranted] ${ts} | ${toolName.padEnd(18)} | ${status} | ${durationMs}ms | ${summary}`;
 
   // 始终输出到 stderr
   console.error(line);

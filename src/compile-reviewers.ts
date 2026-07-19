@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — Compile 审查执行器
+ * Warranted — Compile 审查执行器
  *
  * compile 包含多项检查，不同时机触发：
  * - 节点定义检查：节点 content 变化时触发（在 compile-service.reviewNodeDefinition 中实现）

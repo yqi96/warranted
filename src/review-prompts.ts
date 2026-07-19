@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — 审查 Prompt 构建
+ * Warranted — 审查 Prompt 构建
  *
  * 为两种审查类型构建 LLM prompt：
  * 1. 推理链审查（Argument Review）

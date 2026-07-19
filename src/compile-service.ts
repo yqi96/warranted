@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — Compile Service 层
+ * Warranted — Compile Service 层
  *
  * compile 包含多项检查，不同时机触发：
  * - 节点定义检查：节点 content 变化时触发（reviewNodeDefinition），同步阻断

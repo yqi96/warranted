@@ -1,7 +1,7 @@
 {
-  "name": "toulmin-mcp",
+  "name": "warranted",
   "version": "0.1.0",
-  "description": "Toulmin argumentation state management MCP server",
+  "description": "Make AI research agents accountable — give every conclusion a traceable argument graph.",
   "type": "module",
   "scripts": {
     "dev": "bun src/index.ts",

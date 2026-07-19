@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Toulmin MCP Server — 入口文件
+ * Warranted MCP Server — 入口文件
  *
  * 启动 MCP Server，注册 12 个论证管理工具。
  * 通过 stdio 与 Agent 通信。
@@ -63,22 +63,22 @@ async function main() {
 
   // 打开数据库
   const db = openDatabase(dbPath);
-  console.error(`[Toulmin MCP] Database opened: ${dbPath}`);
+  console.error(`[Warranted] Database opened: ${dbPath}`);
 
   // 初始化操作日志（--no-persist 时跳过）
   if (!noPersist && dbPath !== ":memory:") {
     const logPath = dirname(dbPath) + "/operation.log";
     initLogger(logPath);
-    console.error(`[Toulmin MCP] Operation log: ${logPath}`);
+    console.error(`[Warranted] Operation log: ${logPath}`);
   }
 
   if (noPersist) {
-    console.error("[Toulmin MCP] --no-persist: log/review/audit writes disabled");
+    console.error("[Warranted] --no-persist: log/review/audit writes disabled");
   }
 
   // 创建 MCP Server
   const server = new McpServer({
-    name: "toulmin-mcp",
+    name: "warranted",
     version: "0.1.0",
   });
 
@@ -89,9 +89,9 @@ async function main() {
       reviewConfig.reviewDir = null;
       reviewConfig.auditDir = null;
     }
-    console.error(`[Toulmin MCP] Async review enabled (model: ${reviewConfig.model})`);
+    console.error(`[Warranted] Async review enabled (model: ${reviewConfig.model})`);
   } else {
-    console.error("[Toulmin MCP] Async review disabled");
+    console.error("[Warranted] Async review disabled");
   }
 
   // 追踪 in-flight 工具调用，确保关闭前全部完成
@@ -115,26 +115,26 @@ async function main() {
 
   // 注册工具
   registerTools(server, db, reviewConfig, lifecycle);
-  console.error("[Toulmin MCP] 12 tools registered");
+  console.error("[Warranted] 12 tools registered");
 
   // 连接 stdio transport
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("[Toulmin MCP] Server started on stdio");
+  console.error("[Warranted] Server started on stdio");
 
   // 优雅关闭
   let isShuttingDown = false;
   const shutdown = async () => {
     if (isShuttingDown) return;
     isShuttingDown = true;
-    console.error("[Toulmin MCP] Shutting down...");
+    console.error("[Warranted] Shutting down...");
     await server.close();
     await lifecycle.drain();
     try {
       db.close();
-      console.error("[Toulmin MCP] Database closed");
+      console.error("[Warranted] Database closed");
     } catch (e) {
-      console.error("[Toulmin MCP] Warning: db.close() failed:", e);
+      console.error("[Warranted] Warning: db.close() failed:", e);
     }
     process.exit(0);
   };
@@ -144,6 +144,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[Toulmin MCP] Fatal error:", err);
+  console.error("[Warranted] Fatal error:", err);
   process.exit(1);
 });

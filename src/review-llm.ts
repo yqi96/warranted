@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — LLM 调用层（Agent SDK）
+ * Warranted — LLM 调用层（Agent SDK）
  *
  * 使用 Claude Agent SDK 的 query() 进行审查。
  * Agent 可以自主读取附件文件，进行多轮推理后给出审查结论。

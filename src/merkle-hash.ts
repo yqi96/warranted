@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — Merkle Tree 哈希计算
+ * Warranted — Merkle Tree 哈希计算
  *
  * 两层哈希体系：
  * - Layer 1: computeNodeHash — per-node 内容哈希（仅 content），用于 smart skip

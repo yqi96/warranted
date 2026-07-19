@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — Compile 审查 Prompt 构建
+ * Warranted — Compile 审查 Prompt 构建
  *
  * 4 种审查 prompt：
  * 1. Claim 定义审查

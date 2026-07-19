@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — 自定义错误类
+ * Warranted — 自定义错误类
  */
 
 export class ToulminError extends Error {

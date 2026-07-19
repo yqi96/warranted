@@ -1,5 +1,5 @@
 /**
- * Toulmin MCP — 同步审查执行器
+ * Warranted — 同步审查执行器
  *
  * 直接调用 LLM API 执行审查，返回结果并保存到 review 目录。
  */
@@ -93,7 +93,7 @@ export async function executeArgumentReview(
 
     return null; // sound 时静默
   } catch (error) {
-    console.error(`[Toulmin Review] Argument review failed: ${error}`);
+    console.error(`[Warranted] Argument review failed: ${error}`);
     return null;
   }
 }

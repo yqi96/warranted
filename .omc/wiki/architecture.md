@@ -5,11 +5,11 @@ category: architecture
 updated: 2026-07-19
 ---
 
-# toulmin-mcp 架构总览
+# warranted 架构总览
 
 ## 项目定位
 
-MCP (Model Context Protocol) 服务器，实现 Toulmin 论证模型，用于科学推理和证据管理。支持论文复现、假设验证、科学主张管理等研究任务。为 AI agent 提供结构化论证图管理。
+MCP (Model Context Protocol) 服务器，实现 Toulmin 论证模型，用于科学推理和证据管理。支持论文复现、假设验证、科学主张管理等研究任务。为 AI agent 提供结构化论证图管理，使每个结论都有可追溯的论证图。
 
 ## 技术栈
 

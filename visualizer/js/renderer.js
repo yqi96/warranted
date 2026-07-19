@@ -50,9 +50,9 @@ function renderTreeLayout() {
   }
   function linkWidth(d) {
     const sType = d.source.data.type, tType = d.target.data.type;
-    if (sType === 'claim') return 2.5;
-    if (sType === 'ground' && tType === 'claim') return 2;
-    return 1.6;
+    if (sType === 'claim') return 3.5;
+    if (sType === 'ground' && tType === 'claim') return 2.8;
+    return 2.2;
   }
   function linkDash(d) {
     return (d.source.data.type === 'ground' && d.target.data.type === 'claim') ? '9,4' : 'none';
@@ -153,7 +153,7 @@ function renderForceLayout() {
 
   const linkEnter = linkSel.enter().append('path').attr('class', 'link')
     .attr('stroke', d => EDGE_COLORS[d.type] || 'rgba(200,180,140,0.30)')
-    .attr('stroke-width', d => d.type === 'supports' || d.type === 'challenges' ? 2 : 1.5)
+    .attr('stroke-width', d => d.type === 'supports' || d.type === 'challenges' ? 3 : 2.2)
     .attr('stroke-dasharray', d => d.type === 'reinforces' || d.type === 'challenges' ? '6,3' : d.type === 'derives_from' ? '2,3' : 'none')
     .attr('marker-end', d => `url(#arrow-${d.type})`)
     .style('opacity', 0);

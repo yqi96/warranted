@@ -11,6 +11,7 @@
 
 <!-- ════════ Phase 1: Full-screen Dashboard ════════ -->
 <div id="phase-1">
+  <div id="phase1-bg" aria-hidden="true"></div>
   <div id="phase1-inner">
     <div id="phase1-label">Toulmin Argument Map</div>
 
@@ -112,14 +113,6 @@
         </div>
 
         <div class="cw-section">
-          <div class="cw-section-label">布局</div>
-          <div class="cw-layout-pills">
-            <button class="cw-layout-btn active" data-layout="tree">Tree</button>
-            <button class="cw-layout-btn" data-layout="force">Force</button>
-          </div>
-        </div>
-
-        <div class="cw-section">
           <div class="cw-section-label">证据验证</div>
           <div class="cw-progress-item">
             <div class="cw-progress-header">
@@ -187,7 +180,6 @@
       <span id="stat-total">0</span> nodes
     </div>
     <div id="sb-right">
-      <span id="sb-layout">Tree</span>
     </div>
   </div>
 </div>
@@ -212,6 +204,7 @@
 </div>
 
 <!-- ════════ Scripts (load order matters) ════════ -->
+<script src="js/bg.js"></script>
 <script src="js/config.js"></script>
 <script src="js/utils.js"></script>
 <script src="js/tooltip.js"></script>

@@ -115,8 +115,10 @@ export async function reviewNodeDefinition(
     result = { errors: [`Reviewer error: ${error}`], warnings: [] };
   }
 
-  // 保存审查结果到 reviews/ 目录
-  saveNodeReviewFile(config, elementType, content, result, reviewedAt);
+  // 保存审查结果到 reviews/ 目录（--no-persist 时 reviewDir 为 null，跳过）
+  if (config.reviewDir) {
+    saveNodeReviewFile(config, elementType, content, result, reviewedAt);
+  }
 
   return result;
 }
@@ -463,12 +465,14 @@ export async function compileArgument(
   const elapsed = Date.now() - t0;
   log("review_dispatch", "OK", elapsed, `END claim=#${claimId} → verdict=${verdict}, "${summary.slice(0, 80)}"`);
 
-  // 6. 保存审查结果到 reviews/ 目录
-  for (const review of allReviews) {
-    try {
-      saveChainReviewFile(config, claimId, review, compiledAt);
-    } catch {
-      // 保存失败不影响主流程
+  // 6. 保存审查结果到 reviews/ 目录（--no-persist 时 reviewDir 为 null，跳过）
+  if (config.reviewDir) {
+    for (const review of allReviews) {
+      try {
+        saveChainReviewFile(config, claimId, review, compiledAt);
+      } catch {
+        // 保存失败不影响主流程
+      }
     }
   }
 

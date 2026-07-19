@@ -60,3 +60,4 @@ let selectedNodeIds = new Set();
 let nodeMap = new Map();
 let nodePositionMap = new Map();
 let currentLayout = 'tree';
+let selectionMode = 'box'; // 'box' | 'pan'

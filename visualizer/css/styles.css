@@ -311,6 +311,9 @@ body {
 }
 #toolbar button:hover { background: rgba(var(--gold-rgb), 0.10); color: var(--gold); }
 #toolbar-back { font-size: 12px; }
+.toolbar-sep { height: 1px; background: rgba(255,255,255,0.08); margin: 2px 4px; }
+.mode-btn { font-size: 16px !important; }
+.mode-btn.active { background: rgba(79,223,255,0.15) !important; color: #4FDFFF !important; }
 
 /* ── Empty state ── */
 #empty-state {

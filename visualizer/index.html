@@ -156,6 +156,9 @@
       <button onclick="fitGraph()">◎</button>
       <button onclick="centerGraph()">⊕</button>
       <button id="toolbar-back" onclick="returnToPhase1()" title="返回大盘">↓</button>
+      <div class="toolbar-sep"></div>
+      <button id="mode-box" class="mode-btn active" onclick="setSelectionMode('box')" title="框选模式 (拖动画框选中节点)">⬚</button>
+      <button id="mode-pan" class="mode-btn" onclick="setSelectionMode('pan')" title="拖动模式 (拖动平移画布)">✥</button>
     </div>
     <div id="cy"></div>
     <div id="empty-state" style="display:none">
@@ -180,6 +183,7 @@
       <span id="stat-total">0</span> nodes
     </div>
     <div id="sb-right">
+      <span id="selection-count" style="display:none; color:#4FDFFF; font-size:11px; font-weight:600; letter-spacing:0.04em;"></span>
     </div>
   </div>
 </div>

@@ -125,12 +125,17 @@ function renderTreeLayout() {
   nodeMerge
     .on('click', function(event, d) {
       event.stopPropagation();
-      const additive = event.ctrlKey || event.metaKey;
-      selectNodeById(d.data.id, additive);
-      if (!additive) highlightTreeNeighbors(d);
+      selectNodeById(d.data.id, event.shiftKey);
+      if (!event.shiftKey) highlightTreeNeighbors(d);
+    })
+    .on('dblclick', function(event, d) {
+      event.stopPropagation();
+      const node = nodeMap.get(String(d.data.id)) || nodeMap.get(d.data.id);
+      if (node) openBottomSheet(node);
     })
     .on('mouseenter', function(event, d) {
-      d3.select(this).select('.node-shape').attr('filter', 'url(#glow)');
+      if (!selectedNodeIds.has(String(d.data.id)))
+        d3.select(this).select('.node-shape').attr('filter', 'url(#glow)');
       showTooltip(event, d);
     })
     .on('mouseleave', function(event, d) {
@@ -199,19 +204,24 @@ function renderForceLayout() {
   nodeMerge
     .on('click', function(event, d) {
       event.stopPropagation();
-      const additive = event.ctrlKey || event.metaKey;
-      selectNodeById(d.id, additive);
-      if (!additive) highlightNeighbors(d.id);
+      selectNodeById(d.id, event.shiftKey);
+      if (!event.shiftKey) highlightNeighbors(d.id);
+    })
+    .on('dblclick', function(event, d) {
+      event.stopPropagation();
+      const node = nodeMap.get(String(d.id)) || nodeMap.get(d.id);
+      if (node) openBottomSheet(node);
     })
     .on('mouseenter', function(event, d) {
-      d3.select(this).select('.node-shape').attr('filter', 'url(#glow)');
+      if (!selectedNodeIds.has(String(d.id)))
+        d3.select(this).select('.node-shape').attr('filter', 'url(#glow)');
       showTooltip(event, d);
     })
     .on('mouseleave', function(event, d) {
       d3.select(this).select('.node-shape').attr('filter', selectedNodeIds.has(String(d.id)) ? 'url(#selectedGlow)' : 'url(#shadow)');
       hideTooltip();
     })
-    .call(d3.drag().on('start', dragStarted).on('drag', dragged).on('end', dragEnded));
+    .call(d3.drag().filter(e => !e.shiftKey).on('start', dragStarted).on('drag', dragged).on('end', dragEnded));
 
   simulation.nodes(nodes);
   simulation.force('link').links(edges);

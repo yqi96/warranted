@@ -21,6 +21,13 @@ function updateSelectionVisuals() {
     const id = currentLayout === 'tree' ? d.data?.id : d.id;
     return selectedNodeIds.has(String(id)) ? 'url(#selectedGlow)' : 'url(#shadow)';
   });
+  // Update selection count badge in status bar
+  const badge = document.getElementById('selection-count');
+  if (badge) {
+    const n = selectedNodeIds.size;
+    badge.textContent = n > 0 ? `${n} selected` : '';
+    badge.style.display = n > 0 ? 'inline' : 'none';
+  }
 }
 
 async function syncSelectionToServer() {
@@ -55,12 +62,11 @@ function selectNodeById(id, additive = false) {
       selectedNodeIds.add(sid);
       selectedNodeId = id;
     }
+    closeBottomSheet();
   } else {
     selectedNodeIds.clear();
     selectedNodeIds.add(sid);
     selectedNodeId = id;
-    const node = nodeMap.get(sid) || nodeMap.get(id);
-    if (node) openBottomSheet(node);
     panToNode(id);
   }
   updateSelectionVisuals();

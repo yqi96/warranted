@@ -34,22 +34,26 @@ function initGraph() {
 
   // ── Bright gold selected glow ──
   const selectedGlow = defs.append('filter').attr('id', 'selectedGlow')
-    .attr('x', '-80%').attr('y', '-80%').attr('width', '260%').attr('height', '260%');
-  selectedGlow.append('feFlood').attr('flood-color', '#C8A448').attr('flood-opacity', 0.55).attr('result', 'color');
-  selectedGlow.append('feComposite').attr('in', 'color').attr('in2', 'SourceGraphic').attr('operator', 'in').attr('result', 'coloredSrc');
-  selectedGlow.append('feGaussianBlur').attr('in', 'coloredSrc').attr('stdDeviation', 9).attr('result', 'goldGlow');
+    .attr('x', '-100%').attr('y', '-100%').attr('width', '300%').attr('height', '300%');
+  // Dilate → color cyan → blur for outer ring glow
+  selectedGlow.append('feMorphology').attr('in', 'SourceGraphic').attr('operator', 'dilate').attr('radius', 4).attr('result', 'dilated');
+  selectedGlow.append('feFlood').attr('flood-color', '#4FDFFF').attr('flood-opacity', 1).attr('result', 'ringColor');
+  selectedGlow.append('feComposite').attr('in', 'ringColor').attr('in2', 'dilated').attr('operator', 'in').attr('result', 'ring');
+  selectedGlow.append('feGaussianBlur').attr('in', 'ring').attr('stdDeviation', 5).attr('result', 'ringGlow');
   const sgMerge = selectedGlow.append('feMerge');
-  sgMerge.append('feMergeNode').attr('in', 'goldGlow');
+  sgMerge.append('feMergeNode').attr('in', 'ringGlow');
   sgMerge.append('feMergeNode').attr('in', 'SourceGraphic');
 
   zoomBehavior = d3.zoom()
     .scaleExtent([0.04, 5])
     .filter(event => {
-      // Always allow scroll-wheel zoom
       if (event.type === 'wheel') return true;
-      // Block pan-drag when starting on bare SVG background (box-select handles that)
-      const t = event.target;
-      if (event.type === 'mousedown' && (t === svg.node() || t.tagName === 'svg' || t.tagName === 'SVG')) return false;
+      if (event.type === 'mousedown') {
+        const t = event.target;
+        const onBackground = t === svg.node() || t.tagName === 'svg' || t.tagName === 'SVG'
+          || (!t.closest('.node-group') && !t.closest('.link'));
+        if (onBackground) return selectionMode === 'pan';
+      }
       return true;
     })
     .on('zoom', e => g.attr('transform', e.transform));
@@ -60,10 +64,13 @@ function initGraph() {
     .style('display', 'none');
 
   let rbStart = null;
+  let boxSelectDone = false;  // suppress click event after box-select
 
   svg.on('mousedown.boxselect', function(event) {
-    const t = event.target;
-    if (t !== this && t.tagName !== 'svg' && t.tagName !== 'SVG') return;
+    if (selectionMode !== 'box') return;
+    // Only start on background — skip if the click landed on a node or link
+    if (event.target.closest && event.target.closest('.node-group')) return;
+    if (event.target.closest && event.target.closest('.link')) return;
     event.preventDefault();
     const [mx, my] = d3.pointer(event, svg.node());
     rbStart = { x: mx, y: my };
@@ -85,13 +92,14 @@ function initGraph() {
     const x1 = Math.max(mx, rbStart.x), y1 = Math.max(my, rbStart.y);
     rbStart = null;
     rubberBand.style('display', 'none');
-    const dist = Math.sqrt((mx - event.clientX) ** 2 + (my - event.clientY) ** 2);
     if (x1 - x0 < 5 && y1 - y0 < 5) { clearSelection(); return; }
+    boxSelectDone = true;
     selectNodesInRect(x0, y0, x1, y1);
   });
 
   svg.on('click', function(e) {
-    if (e.target === this || e.target.tagName === 'svg') clearSelection();
+    if (boxSelectDone) { boxSelectDone = false; return; }
+    if (e.target === this || e.target.tagName === 'svg' || e.target.tagName === 'SVG') clearSelection();
   });
 
   g = svg.append('g');
@@ -122,8 +130,18 @@ function selectNodesInRect(x0, y0, x1, y1) {
     });
   }
   selectedNodeId = selectedNodeIds.size > 0 ? [...selectedNodeIds][0] : null;
+  closeBottomSheet();
   updateSelectionVisuals();
   syncSelectionToServer();
+}
+
+function setSelectionMode(mode) {
+  selectionMode = mode;
+  document.getElementById('mode-box')?.classList.toggle('active', mode === 'box');
+  document.getElementById('mode-pan')?.classList.toggle('active', mode === 'pan');
+  // Update canvas cursor
+  const cyEl = document.getElementById('cy');
+  if (cyEl) cyEl.style.cursor = mode === 'pan' ? 'grab' : 'default';
 }
 
 function drawNodeShape(el, d) {

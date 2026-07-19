@@ -2,7 +2,7 @@
   "mcpServers": {
     "toulmin": {
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/start.sh",
-      "args": ["--review-config", "${CLAUDE_PLUGIN_ROOT}/review.json"]
+      "args": ["--review-config", "${CLAUDE_PLUGIN_ROOT}/review.json", "--no-persist"]
     }
   }
 }

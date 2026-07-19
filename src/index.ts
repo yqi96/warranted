@@ -27,10 +27,11 @@ import { dirname } from "path";
 
 const DEFAULT_DB_PATH = ".toulmin/argument.db";
 
-function parseArgs(): { dbPath: string; reviewConfigPath: string | null } {
+function parseArgs(): { dbPath: string; reviewConfigPath: string | null; noPersist: boolean } {
   const args = process.argv.slice(2);
   let dbPath = DEFAULT_DB_PATH;
   let reviewConfigPath: string | null = null;
+  let noPersist = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--db-path" && args[i + 1]) {
@@ -39,10 +40,12 @@ function parseArgs(): { dbPath: string; reviewConfigPath: string | null } {
     } else if (args[i] === "--review-config" && args[i + 1]) {
       reviewConfigPath = args[i + 1];
       i++;
+    } else if (args[i] === "--no-persist") {
+      noPersist = true;
     }
   }
 
-  return { dbPath, reviewConfigPath };
+  return { dbPath, reviewConfigPath, noPersist };
 }
 
 // =============================================================================
@@ -50,7 +53,7 @@ function parseArgs(): { dbPath: string; reviewConfigPath: string | null } {
 // =============================================================================
 
 async function main() {
-  const { dbPath, reviewConfigPath } = parseArgs();
+  const { dbPath, reviewConfigPath, noPersist } = parseArgs();
 
   // 确保数据库目录存在（文件数据库时）
   if (dbPath !== ":memory:") {
@@ -62,11 +65,15 @@ async function main() {
   const db = openDatabase(dbPath);
   console.error(`[Toulmin MCP] Database opened: ${dbPath}`);
 
-  // 初始化操作日志（写入 .toulmin/ 目录下，与数据库同位置）
-  if (dbPath !== ":memory:") {
+  // 初始化操作日志（--no-persist 时跳过）
+  if (!noPersist && dbPath !== ":memory:") {
     const logPath = dirname(dbPath) + "/operation.log";
     initLogger(logPath);
     console.error(`[Toulmin MCP] Operation log: ${logPath}`);
+  }
+
+  if (noPersist) {
+    console.error("[Toulmin MCP] --no-persist: log/review/audit writes disabled");
   }
 
   // 创建 MCP Server
@@ -78,6 +85,10 @@ async function main() {
   // 加载审查配置
   const reviewConfig = loadReviewConfig(reviewConfigPath, dbPath);
   if (reviewConfig) {
+    if (noPersist) {
+      reviewConfig.reviewDir = null;
+      reviewConfig.auditDir = null;
+    }
     console.error(`[Toulmin MCP] Async review enabled (model: ${reviewConfig.model})`);
   } else {
     console.error("[Toulmin MCP] Async review disabled");

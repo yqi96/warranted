@@ -222,6 +222,7 @@ export function saveGroundReviewFile(
   groundId: number,
   result: GroundReviewResult
 ): void {
+  if (!config.reviewDir) return;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const filename = `ground_evidence_ground${groundId}_${timestamp}.json`;
   const filepath = join(config.reviewDir, filename);
@@ -240,6 +241,7 @@ function saveReviewResult(
   context: Record<string, any>,
   result: ReviewResult
 ): void {
+  if (!config.reviewDir) return;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const filename = `${reviewType}_${timestamp}.json`;
   const filepath = join(config.reviewDir, filename);

@@ -26,7 +26,7 @@ export interface ReviewConfig {
   baseUrl?: string;
   debounceMs: number;
   maxTurns: number;
-  reviewDir: string;
+  reviewDir: string | null;
   /** 审计日志目录。null = 禁用审计。默认 dirname(dbPath)/audit */
   auditDir: string | null;
   dbPath: string;

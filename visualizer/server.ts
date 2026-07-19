@@ -357,10 +357,20 @@ const server = Bun.serve({
         return Response.json({ success: true, path: newDbPath }, { headers: corsHeaders });
       }
 
-      // 静态文件: index.html
+      // 静态文件: index.html + css/js assets
       if (path === "/" || path === "/index.html") {
         const file = Bun.file(htmlPath);
         return new Response(file, { headers: { "Content-Type": "text/html" } });
+      }
+
+      if (path.startsWith("/css/") || path.startsWith("/js/")) {
+        const filePath = join(import.meta.dir, path);
+        const file = Bun.file(filePath);
+        if (await file.exists()) {
+          const ext = path.split(".").pop();
+          const mime = ext === "css" ? "text/css" : "application/javascript";
+          return new Response(file, { headers: { "Content-Type": mime } });
+        }
       }
 
       return new Response("Not Found", { status: 404 });

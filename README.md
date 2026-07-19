@@ -1,18 +1,20 @@
-# Toulmin MCP Server
+# Warranted
 
-Structure AI reasoning with argument graphs — not free-form guessing.
+Make AI research agents accountable — give every conclusion a traceable argument graph.
 
 > 中文文档：[docs/README.zh.md](docs/README.zh.md)
 
 ---
 
-## What it does
+## The problem
 
-AI agents doing research tend to fail in two ways: conclusions with no supporting evidence, or quietly rewriting prior claims when contradictions arise. Toulmin MCP gives agents a **persistent argument graph**: every Claim requires Grounds and a Warrant, contradictions are recorded as Rebuttals rather than erased, and status can only advance after passing a logic check (`compile`).
+AI coding agents converge because compilers and tests provide objective failure signals. Research has no equivalent — conclusions live in natural language with no external verifier, so agents routinely declare work complete with no way to know what's missing.
 
-Good fit for: **paper reproduction, hypothesis validation, multi-step scientific reasoning**.
+**Warranted** fills that gap. It gives AI agents a persistent argument graph where every Claim requires Grounds and a Warrant, contradictions are recorded as Rebuttals rather than erased, and status can only advance after passing a logic check (`compile`). The result is research reasoning that is auditable, reproducible, and verifiable — not just plausible-sounding.
 
-![Toulmin Argument Map](docs/screenshot.png)
+Good fit for: **paper reproduction, hypothesis verification, multi-step scientific reasoning, research transparency**.
+
+![Warranted Argument Map](docs/screenshot.png)
 
 ---
 
@@ -23,8 +25,8 @@ Good fit for: **paper reproduction, hypothesis validation, multi-step scientific
 Install [Bun](https://bun.com/docs/installation) (>= 1.0.0), then:
 
 ```bash
-git clone <this-repo>
-cd toulmin-mcp
+git clone https://github.com/yqi96/warranted
+cd warranted
 
 # Optional: enable LLM logic review
 cp review.json.example review.json
@@ -41,7 +43,7 @@ claude plugin marketplace add $(pwd)
 
 ```bash
 cd your-project
-claude plugin install toulmin-mcp@toulmin-mcp --scope local
+claude plugin install warranted@warranted --scope local
 ```
 
 On launch, `toulmin-researcher` becomes the primary agent and the MCP server starts automatically.
@@ -52,7 +54,7 @@ When LLM review is enabled, node definitions are reviewed on creation and `compi
 
 ## Visualizer
 
-From the `toulmin-mcp` directory:
+From the `warranted` directory:
 
 ```bash
 bun run viz

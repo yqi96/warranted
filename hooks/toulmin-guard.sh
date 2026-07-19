@@ -49,12 +49,12 @@ if [[ "$COUNTER" -lt "$SOFT_THRESHOLD" ]]; then
   exit 0
 fi
 
-# K in [SOFT_THRESHOLD, HARD_THRESHOLD): soft warning via stdout (exit 0 = allow)
+# K in [SOFT_THRESHOLD, HARD_THRESHOLD): soft warning via JSON additionalContext (exit 0 = allow)
 if [[ "$COUNTER" -lt "$HARD_THRESHOLD" ]]; then
-  echo "Hint: ${STALE_COUNT} Claim(s) have pending argument chain review. Call compile_arguments soon."
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","additionalContext":"Hint: %d Claim(s) have pending argument chain review. Call compile_arguments soon."}}' "$STALE_COUNT"
   exit 0
 fi
 
-# K >= HARD_THRESHOLD: hard block via stderr (exit 1 = block)
+# K >= HARD_THRESHOLD: hard block via stderr (exit 2 = block)
 echo "Blocked: ${STALE_COUNT} Claim(s) require argument review before continuing. Call compile_arguments now." >&2
-exit 1
+exit 2

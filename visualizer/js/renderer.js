@@ -125,15 +125,16 @@ function renderTreeLayout() {
   nodeMerge
     .on('click', function(event, d) {
       event.stopPropagation();
-      selectNodeById(d.data.id);
-      highlightTreeNeighbors(d);
+      const additive = event.ctrlKey || event.metaKey;
+      selectNodeById(d.data.id, additive);
+      if (!additive) highlightTreeNeighbors(d);
     })
     .on('mouseenter', function(event, d) {
       d3.select(this).select('.node-shape').attr('filter', 'url(#glow)');
       showTooltip(event, d);
     })
     .on('mouseleave', function(event, d) {
-      d3.select(this).select('.node-shape').attr('filter', selectedNodeId === d.data.id ? 'url(#selectedGlow)' : 'url(#shadow)');
+      d3.select(this).select('.node-shape').attr('filter', selectedNodeIds.has(String(d.data.id)) ? 'url(#selectedGlow)' : 'url(#shadow)');
       hideTooltip();
     });
 
@@ -198,15 +199,16 @@ function renderForceLayout() {
   nodeMerge
     .on('click', function(event, d) {
       event.stopPropagation();
-      selectNodeById(d.id);
-      highlightNeighbors(d.id);
+      const additive = event.ctrlKey || event.metaKey;
+      selectNodeById(d.id, additive);
+      if (!additive) highlightNeighbors(d.id);
     })
     .on('mouseenter', function(event, d) {
       d3.select(this).select('.node-shape').attr('filter', 'url(#glow)');
       showTooltip(event, d);
     })
     .on('mouseleave', function(event, d) {
-      d3.select(this).select('.node-shape').attr('filter', selectedNodeId === d.id ? 'url(#selectedGlow)' : 'url(#shadow)');
+      d3.select(this).select('.node-shape').attr('filter', selectedNodeIds.has(String(d.id)) ? 'url(#selectedGlow)' : 'url(#shadow)');
       hideTooltip();
     })
     .call(d3.drag().on('start', dragStarted).on('drag', dragged).on('end', dragEnded));

@@ -3,7 +3,7 @@ function panToNode(id) {
   if (currentLayout === 'tree') {
     pos = nodePositionMap.get(id);
   } else {
-    const n = nodeMap.get(id);
+    const n = nodeMap.get(String(id));
     if (n?.x != null) pos = { x: n.x, y: n.y };
   }
   if (!pos) return;
@@ -15,23 +15,66 @@ function panToNode(id) {
   );
 }
 
-function selectNodeById(id) {
-  selectedNodeId = id;
-  const node = nodeMap.get(id);
-  if (node) openBottomSheet(node);
+function updateSelectionVisuals() {
+  if (!g) return;
   g.selectAll('.node-shape').attr('filter', d => {
-    const nid = currentLayout === 'tree' ? d.data?.id : d.id;
-    return nid === id ? 'url(#selectedGlow)' : 'url(#shadow)';
+    const id = currentLayout === 'tree' ? d.data?.id : d.id;
+    return selectedNodeIds.has(String(id)) ? 'url(#selectedGlow)' : 'url(#shadow)';
   });
-  panToNode(id);
+}
+
+async function syncSelectionToServer() {
+  try {
+    const ids = [...selectedNodeIds].map(id => parseInt(id)).filter(n => !isNaN(n));
+    const nodes = ids.map(id => {
+      const node = nodeMap.get(String(id)) || nodeMap.get(id);
+      if (!node) return null;
+      const type = node.type || node.data?.type || '';
+      const content = node.content || node.data?.content || '';
+      return { id, type, content };
+    }).filter(Boolean);
+    await fetch('http://localhost:3456/viz/selection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, nodes }),
+    });
+  } catch (_) {
+    // Server may not be running — ignore silently
+  }
+}
+
+function selectNodeById(id, additive = false) {
+  const sid = String(id);
+  if (additive) {
+    if (selectedNodeIds.has(sid)) {
+      selectedNodeIds.delete(sid);
+      if (selectedNodeId === id) {
+        selectedNodeId = selectedNodeIds.size > 0 ? [...selectedNodeIds][selectedNodeIds.size - 1] : null;
+      }
+    } else {
+      selectedNodeIds.add(sid);
+      selectedNodeId = id;
+    }
+  } else {
+    selectedNodeIds.clear();
+    selectedNodeIds.add(sid);
+    selectedNodeId = id;
+    const node = nodeMap.get(sid) || nodeMap.get(id);
+    if (node) openBottomSheet(node);
+    panToNode(id);
+  }
+  updateSelectionVisuals();
+  syncSelectionToServer();
 }
 
 function clearSelection() {
   selectedNodeId = null;
+  selectedNodeIds.clear();
   g.selectAll('.node-group').transition().duration(300).style('opacity', 1);
   g.selectAll('.node-shape').attr('filter', 'url(#shadow)');
   g.selectAll('.link').transition().duration(300).style('opacity', 1);
   closeBottomSheet();
+  syncSelectionToServer();
 }
 
 function highlightTreeNeighbors(hierarchyNode) {

@@ -42,8 +42,54 @@ function initGraph() {
   sgMerge.append('feMergeNode').attr('in', 'goldGlow');
   sgMerge.append('feMergeNode').attr('in', 'SourceGraphic');
 
-  zoomBehavior = d3.zoom().scaleExtent([0.04, 5]).on('zoom', e => g.attr('transform', e.transform));
+  zoomBehavior = d3.zoom()
+    .scaleExtent([0.04, 5])
+    .filter(event => {
+      // Always allow scroll-wheel zoom
+      if (event.type === 'wheel') return true;
+      // Block pan-drag when starting on bare SVG background (box-select handles that)
+      const t = event.target;
+      if (event.type === 'mousedown' && (t === svg.node() || t.tagName === 'svg' || t.tagName === 'SVG')) return false;
+      return true;
+    })
+    .on('zoom', e => g.attr('transform', e.transform));
   svg.call(zoomBehavior);
+
+  // ── Box-select rubber-band ──
+  const rubberBand = svg.append('rect').attr('class', 'rubber-band')
+    .style('display', 'none');
+
+  let rbStart = null;
+
+  svg.on('mousedown.boxselect', function(event) {
+    const t = event.target;
+    if (t !== this && t.tagName !== 'svg' && t.tagName !== 'SVG') return;
+    event.preventDefault();
+    const [mx, my] = d3.pointer(event, svg.node());
+    rbStart = { x: mx, y: my };
+    rubberBand.attr('x', mx).attr('y', my).attr('width', 0).attr('height', 0).style('display', 'block');
+  });
+
+  d3.select(window).on('mousemove.boxselect', function(event) {
+    if (!rbStart) return;
+    const [mx, my] = d3.pointer(event, svg.node());
+    const x = Math.min(mx, rbStart.x), y = Math.min(my, rbStart.y);
+    const w = Math.abs(mx - rbStart.x), h = Math.abs(my - rbStart.y);
+    rubberBand.attr('x', x).attr('y', y).attr('width', w).attr('height', h);
+  });
+
+  d3.select(window).on('mouseup.boxselect', function(event) {
+    if (!rbStart) return;
+    const [mx, my] = d3.pointer(event, svg.node());
+    const x0 = Math.min(mx, rbStart.x), y0 = Math.min(my, rbStart.y);
+    const x1 = Math.max(mx, rbStart.x), y1 = Math.max(my, rbStart.y);
+    rbStart = null;
+    rubberBand.style('display', 'none');
+    const dist = Math.sqrt((mx - event.clientX) ** 2 + (my - event.clientY) ** 2);
+    if (x1 - x0 < 5 && y1 - y0 < 5) { clearSelection(); return; }
+    selectNodesInRect(x0, y0, x1, y1);
+  });
+
   svg.on('click', function(e) {
     if (e.target === this || e.target.tagName === 'svg') clearSelection();
   });
@@ -52,7 +98,6 @@ function initGraph() {
   g.append('g').attr('class', 'links-layer');
   g.append('g').attr('class', 'cross-links-layer');
   g.append('g').attr('class', 'nodes-layer');
-
   simulation = d3.forceSimulation()
     .force('charge', d3.forceManyBody().strength(-420).distanceMax(500))
     .force('link', d3.forceLink().id(d => d.id).distance(120).strength(0.4))
@@ -60,6 +105,25 @@ function initGraph() {
     .force('center', d3.forceCenter(0, 0).strength(0.03))
     .on('tick', forceTicked);
   simulation.stop();
+}
+
+function selectNodesInRect(x0, y0, x1, y1) {
+  const t = d3.zoomTransform(svg.node());
+  selectedNodeIds.clear();
+  if (currentLayout === 'tree') {
+    nodePositionMap.forEach((pos, id) => {
+      const sx = t.applyX(pos.x), sy = t.applyY(pos.y);
+      if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1) selectedNodeIds.add(String(id));
+    });
+  } else {
+    nodeMap.forEach((node, id) => {
+      const sx = t.applyX(node.x || 0), sy = t.applyY(node.y || 0);
+      if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1) selectedNodeIds.add(String(id));
+    });
+  }
+  selectedNodeId = selectedNodeIds.size > 0 ? [...selectedNodeIds][0] : null;
+  updateSelectionVisuals();
+  syncSelectionToServer();
 }
 
 function drawNodeShape(el, d) {

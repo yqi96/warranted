@@ -7,3 +7,4 @@ node_modules/
 .omc/state/
 review.json
 memory/
+operation.log

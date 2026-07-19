@@ -56,6 +56,7 @@ const TYPE_SHAPES = {
 let svg, g, zoomBehavior, simulation;
 let graphData = { nodes: [], edges: [], stats: {} };
 let selectedNodeId = null;
+let selectedNodeIds = new Set();
 let nodeMap = new Map();
 let nodePositionMap = new Map();
 let currentLayout = 'tree';

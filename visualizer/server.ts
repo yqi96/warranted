@@ -9,7 +9,7 @@
 
 import { openDatabase } from "../src/db.ts";
 import { mkdirSync, existsSync, watch as fsWatch } from "fs";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import type { Database } from "bun:sqlite";
 import type { NodeRow, NodeType } from "../src/types.ts";
 import * as repo from "../src/repo.ts";
@@ -31,7 +31,7 @@ function parseArgs(): { dbPath: string } {
     }
   }
 
-  return { dbPath };
+  return { dbPath: resolve(dbPath) };
 }
 
 // =============================================================================
@@ -163,6 +163,10 @@ if (initialDbPath !== ":memory:") {
 let db = openDatabase(initialDbPath);
 let currentDbPath = initialDbPath;
 console.error(`[Toulmin Viz] Database opened: ${initialDbPath}`);
+
+// ── In-memory selection state (written by browser, read by hook) ──
+interface SelectionNode { id: number; type: string; content: string; }
+let currentSelection: { ids: number[]; nodes: SelectionNode[] } = { ids: [], nodes: [] };
 
 // 获取 index.html 路径
 const htmlPath = join(import.meta.dir, "index.html");
@@ -329,6 +333,23 @@ const server = Bun.serve({
       // API: 查询当前监控路径
       if (path === "/viz/current-db") {
         return Response.json({ dir: dirname(currentDbPath), path: currentDbPath }, { headers: corsHeaders });
+      }
+
+      // API: 获取当前选中节点
+      if (path === "/viz/selection" && req.method === "GET") {
+        return Response.json(currentSelection, { headers: corsHeaders });
+      }
+
+      // API: 更新选中节点（由浏览器 POST）
+      if (path === "/viz/selection" && req.method === "POST") {
+        let body: { ids?: number[]; nodes?: SelectionNode[] };
+        try {
+          body = await req.json() as { ids?: number[]; nodes?: SelectionNode[] };
+        } catch {
+          return Response.json({ error: "Invalid JSON body" }, { status: 400, headers: corsHeaders });
+        }
+        currentSelection = { ids: body.ids || [], nodes: body.nodes || [] };
+        return Response.json({ ok: true }, { headers: corsHeaders });
       }
 
       // API: 切换监控目录（接收 .toulmin 目录路径或 argument.db 文件路径）

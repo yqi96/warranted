@@ -14,6 +14,8 @@
 
 ![Toulmin Argument Map](screenshot.png)
 
+![Warranted — 多树全局视图](screenshot2.png)
+
 ---
 
 ## 接入 Claude Code

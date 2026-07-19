@@ -16,6 +16,8 @@ Good fit for: **paper reproduction, hypothesis verification, multi-step scientif
 
 ![Warranted Argument Map](docs/screenshot.png)
 
+![Warranted — multi-tree overview](docs/screenshot2.png)
+
 ---
 
 ## Setup with Claude Code

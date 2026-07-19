@@ -1,3 +1,7 @@
 node_modules/
 .toulmin/
 *.db
+.omc/plans/
+.omc/prd.json
+.omc/progress.txt
+.omc/state/

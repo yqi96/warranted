@@ -263,9 +263,13 @@ export function createGround(
     const claimRow = assertNodeExists(repo.getNodeById(db, refClaimId!), refClaimId!);
     assertNodeType(claimRow, "claim");
 
+    // 初始 verification 随被引用 Claim 的 status 自动决定
+    const refData = JSON.parse(claimRow.data) as { status?: string };
+    const initialVerification = refData.status === "supported" ? "verified" : "pending";
+
     const row = repo.insertNode(db, "ground", `Reference to Claim #${refClaimId}`, {
       source: "hypothesis",
-      verification: "pending",
+      verification: initialVerification,
       attachments: [],
       ref_claim_id: refClaimId,
     });
@@ -764,6 +768,18 @@ export function updateNode(
     }
 
     data.status = params.status;
+
+    // 联动更新：所有 ref_claim_id 指向本 Claim 的 Ground，随 status 同步 verification
+    // supported → verified；其他 → pending
+    const refGrounds = repo.findGroundsByRefClaim(db, nodeId);
+    const syncedVerification = params.status === "supported" ? "verified" : "pending";
+    for (const rg of refGrounds) {
+      const rgData = JSON.parse(rg.data);
+      if (rgData.verification !== syncedVerification) {
+        rgData.verification = syncedVerification;
+        repo.updateNodeFields(db, rg.id, { data: rgData });
+      }
+    }
   }
 
   // 更新 source（Ground only）
@@ -778,6 +794,12 @@ export function updateNode(
   if (params.verification !== undefined) {
     if (row.type !== "ground") {
       throw new ValidationError("Only Ground nodes have verification");
+    }
+    // ref ground 的 verification 由被引用 Claim 的 status 自动决定，不允许手动修改
+    if (data.ref_claim_id != null) {
+      throw new ValidationError(
+        `Cannot manually set verification on ref Ground #${nodeId}: its verification is automatically synced with the referenced Claim #${data.ref_claim_id}'s status.`
+      );
     }
     const prevVerification = data.verification;
     data.verification = params.verification;

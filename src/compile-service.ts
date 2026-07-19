@@ -42,6 +42,7 @@ function saveChainReviewFile(
   review: ElementReviewResult,
   compiledAt: string
 ): void {
+  if (!config.reviewDir) return;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const filename = `compile_claim${claimId}_chain_${timestamp}.json`;
   const filepath = join(config.reviewDir, filename);
@@ -62,6 +63,7 @@ function saveNodeReviewFile(
   result: { errors: string[]; warnings: string[] },
   reviewedAt: string
 ): void {
+  if (!config.reviewDir) return;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const filename = `create_${elementType}_${timestamp}.json`;
   const filepath = join(config.reviewDir, filename);

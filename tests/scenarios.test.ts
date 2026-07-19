@@ -287,7 +287,7 @@ describe("场景 4：链式推理", () => {
     const gChain = service.createGround(db, { refClaimId: claimA.id });
     expect(gChain.refClaimId).toBe(claimA.id);
     expect(gChain.source).toBe("hypothesis");
-    expect(gChain.verification).toBe("pending");
+    expect(gChain.verification).toBe("verified"); // Claim A is supported → ref ground auto-verified
 
     // 额外补充文献证据
     const gLit = service.createGround(db, {

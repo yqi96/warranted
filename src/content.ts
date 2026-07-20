@@ -122,10 +122,14 @@ export const HINTS = {
     "  3. create_backing (optional) — support the warrant's credibility",
   ].join("\n"),
 
-  groundPending:
-    "Hint: This is a hypothesis to verify. Verification work requires documentation: " +
-    "a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this ground — explaining what the ground states and how evidence was produced, plus supporting files. " +
-    "Without these, the Ground cannot pass acceptance.",
+  groundPendingHypothesis:
+    "Hint: This is a hypothesis to verify. To mark it verified, provide a description document explaining what the ground states and how evidence was produced, plus supporting files.",
+
+  groundPendingLiterature:
+    "Hint: This ground cites published work. To mark it verified, attach the source (PDF, webpage, or equivalent) with a specific reference (author, year, title, DOI or page).",
+
+  groundPendingObserved:
+    "Hint: This ground reports an original observation or experiment. To mark it verified, attach all available evidence: raw data, result files, code, logs, or any other artifacts produced.",
 
   reviewDispatched:
     "Hint: An async review has been dispatched to verify the reasoning chain. " +

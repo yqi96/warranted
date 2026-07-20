@@ -329,7 +329,12 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           saveGroundReviewFile(reviewConfig, ground.id, preCreateReviewResult);
         }
         const lines = [`Created ground #${ground.id}`];
-        if (opts.verification === "pending") lines.push("", HINTS.groundPending);
+        if (opts.verification === "pending") {
+          const src = opts.source ?? "hypothesis";
+          if (src === "literature") lines.push("", HINTS.groundPendingLiterature);
+          else if (src === "observed") lines.push("", HINTS.groundPendingObserved);
+          else lines.push("", HINTS.groundPendingHypothesis);
+        }
         return ok(lines.join("\n"));
       } catch (e) {
         return fail(formatError(e));
@@ -576,6 +581,12 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         const invalidateWarnings = compileService.invalidateCompiledClaims(db, opts.node_id);
         let text = `Updated ${formatNodeBrief(node)}`;
         if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
+        if (node.type === "ground" && opts.verification === "pending") {
+          const src = node.source ?? "hypothesis";
+          if (src === "literature") text += "\n\n" + HINTS.groundPendingLiterature;
+          else if (src === "observed") text += "\n\n" + HINTS.groundPendingObserved;
+          else text += "\n\n" + HINTS.groundPendingHypothesis;
+        }
         return ok(appendInvalidateHint(text, invalidateWarnings));
       } catch (e) {
         return fail(formatError(e));

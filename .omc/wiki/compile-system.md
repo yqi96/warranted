@@ -2,7 +2,7 @@
 title: Compile System
 tags: [compile, merkle, hash, staleness, review, llm]
 category: architecture
-updated: 2026-07-17
+updated: 2026-07-20
 ---
 
 # Compile 系统
@@ -53,6 +53,10 @@ updated: 2026-07-17
 |----------|---------|
 | `structure` | 论证结构完整性（确定性规则，无 LLM） |
 | `chain` | 整体论证链路逻辑连贯性（LLM） |
+
+### chain reviewer — ref_claim ground 内容展开
+
+当 Ground 通过 `ref_claim_id` 引用另一个 Claim（链式推理）时，chain reviewer 收到的是**被引用 Claim 的 content**，而非 Ground 自身的占位文本（`"Reference to Claim #N"`）。这确保 LLM 能对实际前置主张内容作逻辑判断。
 
 ## 状态流转约束（A0 规则）
 

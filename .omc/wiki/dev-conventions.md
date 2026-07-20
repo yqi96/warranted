@@ -2,7 +2,7 @@
 title: Development Conventions
 tags: [dev, bun, test, logging, mcp, review]
 category: environment
-updated: 2026-07-17
+updated: 2026-07-20
 ---
 
 # 开发规范
@@ -61,6 +61,16 @@ updated: 2026-07-17
 | 逻辑链审查 | compile_arguments（显式调用） | verdict=failed |
 
 Ground content 变更时若已 verified，自动退回 pending。
+
+### Pending Ground 提示文案（按 source 区分）
+
+`create_ground` 和 `update_node` 在 Ground 处于 pending 状态时，根据 `source` 返回不同的操作指引：
+
+| source | 提示要点 |
+|--------|---------|
+| `literature` | 附上来源文件（PDF/网页），含作者/年份/DOI |
+| `observed` | 附上所有产出物：原始数据、结果文件、代码、日志等 |
+| `hypothesis` | 提供说明文档（描述内容和产出方式）+ 支持文件 |
 
 ## MCP 协议
 

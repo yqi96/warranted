@@ -54,7 +54,7 @@ export const ELEMENTS = {
       "Ground verification status. " +
       "'pending' = not yet independently verified; " +
       "'verified' = triggers automatic evidence review — only succeeds if review passes, otherwise reverts to pending.",
-    attachments: "File paths supporting this ground. Grounds with ref_claim_id (chain reasoning) do not need attachments. Other grounds MUST have a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this ground — explaining: what the ground states, how the evidence was produced, and where the files come from. Files alone without explanation are not enough — the document is the ground's provenance record.",
+    attachments: "File paths supporting this ground. Grounds with ref_claim_id (chain reasoning) do not need attachments. Grounds with source='literature' do not require attachments if the citation is embedded in the content (e.g., 'Smith et al. 2023 found X') — the citation itself is the evidence. Other grounds MUST have a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this ground — explaining: what the ground states, how the evidence was produced, and where the files come from. Files alone without explanation are not enough — the document is the ground's provenance record.",
     refClaimId: "Use an existing Claim as a Ground for chain reasoning (Claim A's conclusion becomes Claim B's evidence). Mutually exclusive with content/source/verification/attachments — the Ground's content is auto-derived from the referenced Claim.",
   },
 

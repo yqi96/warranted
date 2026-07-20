@@ -88,7 +88,8 @@ export function loadArgumentContext(db: Database, claimId: number): ArgumentCont
 async function reviewChain(
   config: ReviewConfig,
   ctx: ArgumentContext,
-  cwd: string
+  cwd: string,
+  db: Database
 ): Promise<ElementReviewResult> {
   const prompt = buildChainReviewPrompt({
     claim: {
@@ -105,6 +106,14 @@ async function reviewChain(
         grounds: groundIds.map(gid => {
           const gIdx = ctx.groundRows.findIndex(g => g.id === gid);
           if (gIdx === -1) return { id: gid, content: "(not found)" };
+          const gData = ctx.groundDatas[gIdx];
+          const refClaimId = gData.ref_claim_id as number | null | undefined;
+          if (refClaimId != null) {
+            const refRow = repo.getNodeById(db, refClaimId);
+            if (refRow?.type === "claim") {
+              return { id: gid, content: refRow.content };
+            }
+          }
           return {
             id: gid,
             content: ctx.groundRows[gIdx].content,
@@ -177,7 +186,7 @@ export async function runChainReview(
 
   log("chain_review", "OK", 0, `claim=#${claimId} → starting chain review`);
   const t1 = Date.now();
-  const chainResult = await reviewChain(config, ctx, cwd);
+  const chainResult = await reviewChain(config, ctx, cwd, db);
   const chainElapsed = Date.now() - t1;
 
   const chainStatus = chainResult.errors.length > 0 ? "ERROR" : chainResult.warnings.length > 0 ? "WARN" : "PASS";

@@ -41,15 +41,15 @@ afterEach(() => {
 // =============================================================================
 
 describe("工具注册", () => {
-  test("注册了 13 个工具", () => {
-    expect(Object.keys(tools).length).toBe(13);
+  test("注册了 14 个工具", () => {
+    expect(Object.keys(tools).length).toBe(14);
   });
 
   test("所有必需工具已注册", () => {
     const expected = [
       "create_claim", "create_ground", "create_warrant",
       "create_backing", "create_rebuttal",
-      "list_claims", "list_ground", "get_argument", "search_nodes",
+      "list_claims", "list_grounds", "get_argument", "get_node", "search_nodes",
       "get_stats", "update_node", "delete_node",
       "compile_arguments",
     ];
@@ -378,16 +378,16 @@ describe("mutation 工具 — compile hint", () => {
 // list_ground 工具
 // =============================================================================
 
-describe("list_ground 工具", () => {
+describe("list_grounds 工具", () => {
   test("空数据库返回 'No grounds found.'", async () => {
-    const result = await tools.list_ground.handler({});
+    const result = await tools.list_grounds.handler({});
     expect(result.content[0].text).toBe("No grounds found.");
   });
 
   test("无过滤返回所有 ground，格式含 [source/verification]", async () => {
     makeGround(db, { content: "实验数据", source: "observed", verification: "verified" });
     makeGround(db, { content: "文献引用", source: "literature", verification: "pending" });
-    const result = await tools.list_ground.handler({});
+    const result = await tools.list_grounds.handler({});
     const text = result.content[0].text;
     expect(text).toContain("[observed/verified]");
     expect(text).toContain("实验数据");
@@ -397,14 +397,14 @@ describe("list_ground 工具", () => {
 
   test("输出行以 '#N ' 开头", async () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    const result = await tools.list_ground.handler({});
+    const result = await tools.list_grounds.handler({});
     expect(result.content[0].text).toMatch(/^#\d+ \[/);
   });
 
   test("source 过滤只返回匹配行", async () => {
     makeGround(db, { content: "G-obs", source: "observed", verification: "verified" });
     makeGround(db, { content: "G-lit", source: "literature", verification: "verified" });
-    const result = await tools.list_ground.handler({ source: "literature" });
+    const result = await tools.list_grounds.handler({ source: "literature" });
     const text = result.content[0].text;
     expect(text).toContain("G-lit");
     expect(text).not.toContain("G-obs");
@@ -414,7 +414,7 @@ describe("list_ground 工具", () => {
     makeGround(db, { content: "G-obs", source: "observed", verification: "verified" });
     makeGround(db, { content: "G-lit", source: "literature", verification: "verified" });
     makeGround(db, { content: "G-hyp", source: "hypothesis", verification: "pending" });
-    const result = await tools.list_ground.handler({ source: "observed,hypothesis" });
+    const result = await tools.list_grounds.handler({ source: "observed,hypothesis" });
     const text = result.content[0].text;
     expect(text).toContain("G-obs");
     expect(text).toContain("G-hyp");
@@ -424,7 +424,7 @@ describe("list_ground 工具", () => {
   test("verification 过滤", async () => {
     makeGround(db, { content: "G-v", source: "observed", verification: "verified" });
     makeGround(db, { content: "G-p", source: "observed", verification: "pending" });
-    const result = await tools.list_ground.handler({ verification: "pending" });
+    const result = await tools.list_grounds.handler({ verification: "pending" });
     const text = result.content[0].text;
     expect(text).toContain("G-p");
     expect(text).not.toContain("G-v");
@@ -434,7 +434,7 @@ describe("list_ground 工具", () => {
     makeGround(db, { content: "G-lit-v", source: "literature", verification: "verified" });
     makeGround(db, { content: "G-lit-p", source: "literature", verification: "pending" });
     makeGround(db, { content: "G-obs-v", source: "observed", verification: "verified" });
-    const result = await tools.list_ground.handler({ source: "literature", verification: "verified" });
+    const result = await tools.list_grounds.handler({ source: "literature", verification: "verified" });
     const text = result.content[0].text;
     expect(text).toContain("G-lit-v");
     expect(text).not.toContain("G-lit-p");
@@ -443,14 +443,14 @@ describe("list_ground 工具", () => {
 
   test("无效 source 值返回 'No grounds found.'", async () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    const result = await tools.list_ground.handler({ source: "invalid_source" });
+    const result = await tools.list_grounds.handler({ source: "invalid_source" });
     expect(result.content[0].text).toBe("No grounds found.");
   });
 
   test("ref_claim ground 显示下游 claim content 和前缀", async () => {
     const claim = makeClaim(db, "下游主张内容");
     makeGround(db, { content: "Reference to Claim #1", refClaimId: claim.id });
-    const result = await tools.list_ground.handler({});
+    const result = await tools.list_grounds.handler({});
     const text = result.content[0].text;
     expect(text).toContain(`[ref_claim #${claim.id}]`);
     expect(text).toContain("下游主张内容");
@@ -465,7 +465,7 @@ describe("list_ground 工具", () => {
     db.prepare("INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(
       "ground", "dangling ref", data, now, now
     );
-    const result = await tools.list_ground.handler({});
+    const result = await tools.list_grounds.handler({});
     const text = result.content[0].text;
     expect(text).toContain("[ref_claim #999]");
     expect(text).toContain("Claim #999");
@@ -481,5 +481,103 @@ describe("list_claims 工具 — formatNodeLine 重构后格式验证", () => {
     makeClaim(db, "主张文本", "proposed");
     const result = await tools.list_claims.handler({});
     expect(result.content[0].text).toMatch(/^#\d+ \[proposed\] 主张文本/);
+  });
+});
+
+// =============================================================================
+// get_node 工具
+// =============================================================================
+
+describe("get_node 工具", () => {
+  test("不存在节点返回 isError", async () => {
+    const result = await tools.get_node.handler({ node_id: 999 });
+    expect(result.isError).toBe(true);
+  });
+
+  test("claim 无 qualifier 时输出含 compile_status: null，不含 qualifier 行", async () => {
+    const claim = makeClaim(db, "无 qualifier 的主张");
+    const result = await tools.get_node.handler({ node_id: claim.id });
+    const text = result.content[0].text;
+    expect(text).toContain("compile_status: null");
+    expect(text).not.toContain("qualifier:");
+  });
+
+  test("claim 有 qualifier 时输出含 qualifier 行", async () => {
+    const claim = makeClaim(db, "有 qualifier 的主张");
+    // Set qualifier directly
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    const data = JSON.parse(row.data);
+    data.qualifier = "仅在图像分类任务上验证";
+    db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(data), claim.id);
+
+    const result = await tools.get_node.handler({ node_id: claim.id });
+    const text = result.content[0].text;
+    expect(text).toContain("qualifier: 仅在图像分类任务上验证");
+  });
+
+  test("ground attachments 为空时输出 attachments: []", async () => {
+    const ground = makeGround(db, { content: "无附件的证据", attachments: [] });
+    const result = await tools.get_node.handler({ node_id: ground.id });
+    const text = result.content[0].text;
+    expect(text).toContain("attachments: []");
+  });
+
+  test("ground attachments 非空时逐行输出", async () => {
+    const ground = makeGround(db, {
+      content: "有附件的证据",
+      attachments: ["/data/exp1.csv", "/data/exp2.csv"],
+    });
+    const result = await tools.get_node.handler({ node_id: ground.id });
+    const text = result.content[0].text;
+    expect(text).toContain("/data/exp1.csv");
+    expect(text).toContain("/data/exp2.csv");
+  });
+
+  test("ground ref_claim_id 非 null 时输出 ref_claim_id 行", async () => {
+    const refClaim = makeClaim(db, "前置主张");
+    const ground = makeGround(db, { content: `Reference to Claim #${refClaim.id}`, refClaimId: refClaim.id });
+    const result = await tools.get_node.handler({ node_id: ground.id });
+    const text = result.content[0].text;
+    expect(text).toContain(`ref_claim_id: ${refClaim.id}`);
+  });
+
+  test("ground ref_claim_id 为 null 时不输出 ref_claim_id 行", async () => {
+    const ground = makeGround(db, { content: "普通证据" });
+    const result = await tools.get_node.handler({ node_id: ground.id });
+    const text = result.content[0].text;
+    expect(text).not.toContain("ref_claim_id:");
+  });
+
+  test("warrant ground_ids 输出为 [id1, id2] 格式", async () => {
+    const claim = makeClaim(db, "主张");
+    const g1 = makeGround(db, { content: "G1" });
+    const g2 = makeGround(db, { content: "G2" });
+    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id], "推理规则");
+
+    const result = await tools.get_node.handler({ node_id: warrant.id });
+    const text = result.content[0].text;
+    expect(text).toContain(`ground_ids: [${g1.id}, ${g2.id}]`);
+  });
+
+  test("backing 输出含 warrant_id 和 attachments", async () => {
+    const claim = makeClaim(db, "主张");
+    const warrant = makeWarrant(db, claim.id, [], "推理规则");
+    const backing = makeBacking(db, warrant.id, "支撑材料", ["/papers/ref.pdf"]);
+
+    const result = await tools.get_node.handler({ node_id: backing.id });
+    const text = result.content[0].text;
+    expect(text).toContain(`warrant_id: ${warrant.id}`);
+    expect(text).toContain("/papers/ref.pdf");
+  });
+
+  test("rebuttal 输出含 target_type/target_id/attachments", async () => {
+    const claim = makeClaim(db, "主张");
+    const rebuttal = makeRebuttal(db, claim.id, "claim", "反驳内容", ["/rebuttal/doc.pdf"]);
+
+    const result = await tools.get_node.handler({ node_id: rebuttal.id });
+    const text = result.content[0].text;
+    expect(text).toContain("target_type: claim");
+    expect(text).toContain(`target_id: ${claim.id}`);
+    expect(text).toContain("/rebuttal/doc.pdf");
   });
 });

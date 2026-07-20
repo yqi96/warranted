@@ -1,7 +1,7 @@
 /**
  * Warranted — MCP 工具注册
  *
- * 13 个工具，每个定义 zod inputSchema + handler。
+ * 14 个工具，每个定义 zod inputSchema + handler。
  * Handler 调用 service 层，错误在边界捕获转为文本返回。
  */
 
@@ -18,7 +18,7 @@ import {
   MutuallyExclusiveModeError,
   StatusTransitionError,
 } from "./errors.ts";
-import type { ArgumentResult, Stats, ToulminNode, AutoVerifyResult } from "./types.ts";
+import type { ArgumentResult, Stats, ToulminNode, AutoVerifyResult, NodeRow } from "./types.ts";
 import { log, summarizeInput, summarizeOutput } from "./logger.ts";
 import { ELEMENTS, HINTS, WARNINGS } from "./content.ts";
 import type { ReviewConfig } from "./review-config.ts";
@@ -75,6 +75,42 @@ function formatNodeLine(node: ToulminNode, displayContent?: string): string {
     default:
       return `#${node.id} ${content}`;
   }
+}
+
+/** 单节点完整字段格式，供 get_node 使用 */
+function formatNodeDetail(row: NodeRow): string {
+  const data = JSON.parse(row.data);
+  const lines: string[] = [`[${row.type} #${row.id}]`];
+  lines.push(`content: ${row.content}`);
+  switch (row.type) {
+    case "claim":
+      lines.push(`status: ${data.status ?? "proposed"}`);
+      if (data.qualifier != null && data.qualifier !== "") lines.push(`qualifier: ${data.qualifier}`);
+      lines.push(`compile_status: ${data.compile_status ?? null}`);
+      break;
+    case "ground": {
+      lines.push(`source: ${data.source}`);
+      lines.push(`verification: ${data.verification}`);
+      const atts: string[] = data.attachments ?? [];
+      lines.push(`attachments: [${atts.join(", ")}]`);
+      if (data.ref_claim_id != null) lines.push(`ref_claim_id: ${data.ref_claim_id}`);
+      break;
+    }
+    case "warrant":
+      lines.push(`claim_id: ${data.claim_id}`);
+      lines.push(`ground_ids: [${(data.ground_ids ?? []).join(", ")}]`);
+      break;
+    case "backing":
+      lines.push(`warrant_id: ${data.warrant_id}`);
+      lines.push(`attachments: [${(data.attachments ?? []).join(", ")}]`);
+      break;
+    case "rebuttal":
+      lines.push(`target_type: ${data.target_type}`);
+      lines.push(`target_id: ${data.target_id}`);
+      lines.push(`attachments: [${(data.attachments ?? []).join(", ")}]`);
+      break;
+  }
+  return lines.join("\n");
 }
 
 /** 不含 content 的简短节点格式（用于 update 返回） */
@@ -466,10 +502,10 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 7. list_ground
+  // 7. list_grounds
   // ===========================================================================
   server.registerTool(
-    "list_ground",
+    "list_grounds",
     {
       title: "List Grounds",
       description: "List all ground (evidence) nodes, optionally filtered by source type and/or verification status.",
@@ -478,7 +514,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         verification: z.string().optional().describe("Filter by verification status (comma-separated: verified,pending). Omit to include all."),
       },
     },
-    withLog("list_ground", async ({ source, verification }: { source?: string; verification?: string }) => {
+    withLog("list_grounds", async ({ source, verification }: { source?: string; verification?: string }) => {
       try {
         const grounds = service.listGrounds(db, source, verification);
         if (grounds.length === 0) return ok("No grounds found.");
@@ -520,7 +556,30 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 9. search_nodes
+  // 9. get_node
+  // ===========================================================================
+  server.registerTool(
+    "get_node",
+    {
+      title: "Get Node",
+      description: "Get all fields of a single node by ID, including attachments. Does not traverse relationships.",
+      inputSchema: {
+        node_id: z.number().describe("Node ID"),
+      },
+    },
+    withLog("get_node", async ({ node_id }: { node_id: number }) => {
+      try {
+        const row = repo.getNodeById(db, node_id);
+        if (!row) return fail(`Node not found: ${node_id}`);
+        return ok(formatNodeDetail(row));
+      } catch (e) {
+        return fail(formatError(e));
+      }
+    })
+  );
+
+  // ===========================================================================
+  // 10. search_nodes
   // ===========================================================================
   server.registerTool(
     "search_nodes",
@@ -545,7 +604,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 10. get_stats
+  // 11. get_stats
   // ===========================================================================
   server.registerTool(
     "get_stats",
@@ -565,7 +624,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 11. update_node
+  // 12. update_node
   // ===========================================================================
   server.registerTool(
     "update_node",
@@ -640,7 +699,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 12. delete_node
+  // 13. delete_node
   // ===========================================================================
   server.registerTool(
     "delete_node",

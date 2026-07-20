@@ -45,7 +45,7 @@ updated: 2026-07-20
 |----------|---------|
 | `claim` | create_claim / update_node 修改 claim content |
 | `warrant` | create_warrant / update_node 修改 warrant content |
-| `ground` | create_ground / update_node 修改 ground content |
+| `ground` | create_ground / update_node 修改 ground content；**`source=literature` 跳过**（内容合法性由证据审查保证）；`ref_claim_id` 模式同样跳过（占位文本） |
 
 **compile_arguments 审查**（显式调用触发）：
 

@@ -352,7 +352,8 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("create_ground", async (opts: any) => {
       try {
         // 链式推理 Ground（ref_claim_id）跳过定义审查：content 是自动生成的占位文本
-        if (reviewConfig && !opts.ref_claim_id) {
+        // literature Ground 跳过定义审查：内容是引用文献的陈述，合法性由证据审查保证
+        if (reviewConfig && !opts.ref_claim_id && opts.source !== "literature") {
           const review = await compileService.reviewNodeDefinition(reviewConfig, "ground", opts.content || "");
           if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
         }
@@ -648,16 +649,27 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     withLog("update_node", async (opts: any) => {
       try {
         // 阻断式定义审查（如果更新了 content）
+        // literature Ground 跳过：内容是文献引用，合法性由证据审查保证
         if (reviewConfig && opts.content !== undefined) {
           const existingNode = repo.getNodeById(db, opts.node_id);
           if (existingNode && (existingNode.type === "claim" || existingNode.type === "warrant" || existingNode.type === "ground")) {
-            const review = await compileService.reviewNodeDefinition(
-              reviewConfig,
-              existingNode.type as "claim" | "warrant" | "ground",
-              opts.content,
-              opts.qualifier
-            );
-            if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
+            let effectiveSource: string | null = null;
+            if (existingNode.type === "ground") {
+              try {
+                effectiveSource = opts.source ?? (JSON.parse(existingNode.data).source as string);
+              } catch {
+                // malformed data → reviewNodeDefinition runs (safe default)
+              }
+            }
+            if (effectiveSource !== "literature") {
+              const review = await compileService.reviewNodeDefinition(
+                reviewConfig,
+                existingNode.type as "claim" | "warrant" | "ground",
+                opts.content,
+                opts.qualifier
+              );
+              if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
+            }
           }
         }
 

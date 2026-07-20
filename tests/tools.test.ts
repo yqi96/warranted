@@ -581,3 +581,74 @@ describe("get_node 工具", () => {
     expect(text).toContain("/rebuttal/doc.pdf");
   });
 });
+
+// =============================================================================
+// create_ground — literature 跳过定义审查
+// =============================================================================
+
+describe("create_ground — literature 跳过定义审查", () => {
+  const fakeConfig: ReviewConfig = {
+    enabled: true,
+    provider: "anthropic",
+    model: "claude-haiku-4-5-20251001",
+    apiKey: "sk-fake",
+    debounceMs: 0,
+    maxTurns: 1,
+    reviewDir: "/tmp",
+    auditDir: null,
+    dbPath: ":memory:",
+  };
+
+  test("literature ground 跳过定义审查，直接创建成功", async () => {
+    const db2 = createTestDb();
+    const server2 = createMockServer();
+    registerTools(server2, db2, fakeConfig);
+    const result = await server2._tools.create_ground.handler({
+      content: "Smith et al. (2023) report method A achieves 95% accuracy on benchmark B.",
+      source: "literature",
+      verification: "pending",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("Created ground");
+    cleanupDb(db2);
+  });
+
+  test("update_node — literature ground 更新 content 跳过定义审查", async () => {
+    // create without reviewConfig, then update with fakeConfig
+    // if review were called during update, sk-fake would hang; success proves skip fired
+    const db2 = createTestDb();
+    const server2 = createMockServer();
+    registerTools(server2, db2); // no reviewConfig for create
+    const createResult = await server2._tools.create_ground.handler({
+      content: "Smith et al. (2020) baseline results.",
+      source: "literature",
+      verification: "pending",
+    });
+    const nodeId = parseInt(createResult.content[0].text.match(/#(\d+)/)?.[1] ?? "0");
+
+    // re-register with fakeConfig for update
+    const server3 = createMockServer();
+    registerTools(server3, db2, fakeConfig);
+    const updateResult = await server3._tools.update_node.handler({
+      node_id: nodeId,
+      content: "Smith et al. (2020) revised: accuracy 97% on dataset X.",
+    });
+    expect(updateResult.isError).toBeFalsy();
+    cleanupDb(db2);
+  });
+
+  test("observed ground 无 reviewConfig 时直接创建成功（对照组）", async () => {
+    // without reviewConfig both sources succeed; proves skip is source-conditional, not path-conditional
+    const db2 = createTestDb();
+    const server2 = createMockServer();
+    registerTools(server2, db2); // no reviewConfig
+    const result = await server2._tools.create_ground.handler({
+      content: "观测数据：实验组准确率95%",
+      source: "observed",
+      verification: "pending",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("Created ground");
+    cleanupDb(db2);
+  });
+});

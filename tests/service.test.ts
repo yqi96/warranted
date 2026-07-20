@@ -580,6 +580,87 @@ describe("listClaims", () => {
 });
 
 // =============================================================================
+// listGrounds
+// =============================================================================
+
+describe("listGrounds", () => {
+  test("空数据库返回空数组", () => {
+    const grounds = service.listGrounds(db);
+    expect(grounds).toEqual([]);
+  });
+
+  test("只返回 ground 类型节点", () => {
+    makeClaim(db, "C1");
+    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
+    const grounds = service.listGrounds(db);
+    expect(grounds.length).toBe(1);
+    expect(grounds[0].type).toBe("ground");
+  });
+
+  test("无过滤器返回所有 ground", () => {
+    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
+    makeGround(db, { content: "G2", source: "literature", verification: "pending" });
+    makeGround(db, { content: "G3", source: "hypothesis", verification: "pending" });
+    const grounds = service.listGrounds(db);
+    expect(grounds.length).toBe(3);
+  });
+
+  test("source 单值过滤", () => {
+    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
+    makeGround(db, { content: "G2", source: "literature", verification: "verified" });
+    const grounds = service.listGrounds(db, "literature");
+    expect(grounds.length).toBe(1);
+    expect(grounds[0].content).toBe("G2");
+  });
+
+  test("source 逗号分隔多值过滤（OR 语义）", () => {
+    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
+    makeGround(db, { content: "G2", source: "literature", verification: "verified" });
+    makeGround(db, { content: "G3", source: "hypothesis", verification: "pending" });
+    const grounds = service.listGrounds(db, "literature,hypothesis");
+    expect(grounds.length).toBe(2);
+    expect(grounds.map(g => g.content).sort()).toEqual(["G2", "G3"]);
+  });
+
+  test("verification 过滤", () => {
+    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
+    makeGround(db, { content: "G2", source: "observed", verification: "pending" });
+    const verified = service.listGrounds(db, undefined, "verified");
+    expect(verified.length).toBe(1);
+    expect(verified[0].content).toBe("G1");
+  });
+
+  test("source + verification AND 组合过滤", () => {
+    makeGround(db, { content: "G1", source: "literature", verification: "verified" });
+    makeGround(db, { content: "G2", source: "literature", verification: "pending" });
+    makeGround(db, { content: "G3", source: "observed", verification: "verified" });
+    const grounds = service.listGrounds(db, "literature", "verified");
+    expect(grounds.length).toBe(1);
+    expect(grounds[0].content).toBe("G1");
+  });
+
+  test("无效 source 值静默返回空列表", () => {
+    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
+    const grounds = service.listGrounds(db, "nonexistent");
+    expect(grounds).toEqual([]);
+  });
+
+  test("无效 verification 值静默返回空列表", () => {
+    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
+    const grounds = service.listGrounds(db, undefined, "invalid");
+    expect(grounds).toEqual([]);
+  });
+
+  test("ref_claim ground 包含 refClaimId", () => {
+    const claim = makeClaim(db, "下游主张");
+    makeGround(db, { content: "Reference to Claim #1", refClaimId: claim.id });
+    const grounds = service.listGrounds(db);
+    expect(grounds.length).toBe(1);
+    expect(grounds[0].refClaimId).toBe(claim.id);
+  });
+});
+
+// =============================================================================
 // getStats
 // =============================================================================
 

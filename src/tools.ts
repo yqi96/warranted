@@ -1,7 +1,7 @@
 /**
  * Warranted — MCP 工具注册
  *
- * 12 个工具，每个定义 zod inputSchema + handler。
+ * 13 个工具，每个定义 zod inputSchema + handler。
  * Handler 调用 service 层，错误在边界捕获转为文本返回。
  */
 
@@ -61,6 +61,19 @@ function formatNode(node: ToulminNode): string {
       return `${base} (claim_id: ${node.claimId}, ground_ids: [${node.groundIds.join(", ")}])`;
     default:
       return base;
+  }
+}
+
+/** 列表行格式：#N [key-metadata] content，供 list_* 工具统一使用 */
+function formatNodeLine(node: ToulminNode, displayContent?: string): string {
+  const content = displayContent ?? node.content;
+  switch (node.type) {
+    case "claim":
+      return `#${node.id} [${node.status}] ${content}`;
+    case "ground":
+      return `#${node.id} [${node.source}/${node.verification}] ${content}`;
+    default:
+      return `#${node.id} ${content}`;
   }
 }
 
@@ -444,7 +457,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
       try {
         const claims = service.listClaims(db, status);
         if (claims.length === 0) return ok("No claims found.");
-        const lines = claims.map(c => `#${c.id} [${c.status}] ${c.content}`);
+        const lines = claims.map(c => formatNodeLine(c));
         return ok(lines.join("\n"));
       } catch (e) {
         return fail(formatError(e));
@@ -453,7 +466,39 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 7. get_argument
+  // 7. list_ground
+  // ===========================================================================
+  server.registerTool(
+    "list_ground",
+    {
+      title: "List Grounds",
+      description: "List all ground (evidence) nodes, optionally filtered by source type and/or verification status.",
+      inputSchema: {
+        source: z.string().optional().describe("Filter by source type (comma-separated: literature,observed,hypothesis). Omit to include all."),
+        verification: z.string().optional().describe("Filter by verification status (comma-separated: verified,pending). Omit to include all."),
+      },
+    },
+    withLog("list_ground", async ({ source, verification }: { source?: string; verification?: string }) => {
+      try {
+        const grounds = service.listGrounds(db, source, verification);
+        if (grounds.length === 0) return ok("No grounds found.");
+        const lines = grounds.map(g => {
+          if (g.refClaimId != null) {
+            const refRow = repo.getNodeById(db, g.refClaimId);
+            const refContent = refRow ? refRow.content : `Claim #${g.refClaimId}`;
+            return formatNodeLine(g, `[ref_claim #${g.refClaimId}] ${refContent}`);
+          }
+          return formatNodeLine(g);
+        });
+        return ok(lines.join("\n"));
+      } catch (e) {
+        return fail(formatError(e));
+      }
+    })
+  );
+
+  // ===========================================================================
+  // 8. get_argument
   // ===========================================================================
   server.registerTool(
     "get_argument",
@@ -475,7 +520,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 8. search_nodes
+  // 9. search_nodes
   // ===========================================================================
   server.registerTool(
     "search_nodes",
@@ -500,7 +545,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 9. get_stats
+  // 10. get_stats
   // ===========================================================================
   server.registerTool(
     "get_stats",
@@ -520,7 +565,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 10. update_node
+  // 11. update_node
   // ===========================================================================
   server.registerTool(
     "update_node",
@@ -595,7 +640,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 11. delete_node
+  // 12. delete_node
   // ===========================================================================
   server.registerTool(
     "delete_node",
@@ -621,7 +666,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 12. compile_arguments
+  // 13. compile_arguments
   // ===========================================================================
   server.registerTool(
     "compile_arguments",

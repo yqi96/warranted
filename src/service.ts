@@ -449,6 +449,23 @@ export function listClaims(db: Database, statusFilter?: string): ClaimNode[] {
   return claims;
 }
 
+/** 列出所有 Ground，可按 source 和/或 verification 过滤 */
+export function listGrounds(db: Database, sourceFilter?: string, verificationFilter?: string): GroundNode[] {
+  const rows = repo.listNodesByType(db, "ground");
+  let grounds = rows.map(toGroundNode);
+
+  if (sourceFilter) {
+    const sources = sourceFilter.split(",").map(s => s.trim());
+    grounds = grounds.filter(g => sources.includes(g.source));
+  }
+  if (verificationFilter) {
+    const statuses = verificationFilter.split(",").map(s => s.trim());
+    grounds = grounds.filter(g => statuses.includes(g.verification));
+  }
+
+  return grounds;
+}
+
 /** 获取节点的完整论证子图 */
 export function getArgument(db: Database, nodeId: number): ArgumentResult {
   const row = assertNodeExists(repo.getNodeById(db, nodeId), nodeId);

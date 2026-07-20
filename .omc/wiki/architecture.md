@@ -2,7 +2,7 @@
 title: Architecture Overview
 tags: [architecture, typescript, sqlite, mcp]
 category: architecture
-updated: 2026-07-19
+updated: 2026-07-20
 ---
 
 # warranted 架构总览
@@ -32,15 +32,15 @@ Repository (repo.ts)    — 纯 SQL CRUD，JSON_EXTRACT 查询
         ↓
 Service (service.ts)    — 业务逻辑、验证、状态流转、级联规则
         ↓
-Tools (tools.ts)        — MCP 工具注册、输入验证、错误处理（12 个工具）
+Tools (tools.ts)        — MCP 工具注册、输入验证、错误处理（13 个工具）
 ```
 
 修改规则：新功能先在 tools.ts 注册，再在 service.ts 实现；repo.ts 只做纯 SQL。
 
-## 12 个 MCP 工具
+## 13 个 MCP 工具
 
 - **创建(5)**: create_claim, create_ground, create_warrant, create_backing, create_rebuttal
-- **读取(4)**: list_claims, get_argument, search_nodes, get_stats
+- **读取(5)**: list_claims, list_ground, get_argument, search_nodes, get_stats
 - **修改(2)**: update_node, delete_node
 - **编译(1)**: compile_arguments
 

@@ -47,6 +47,7 @@ export const ELEMENTS = {
       "Three forms of composite Grounds: (1) before/after or comparison ('reduces from 42.3 to 38.7' bundles baseline=42.3 and ablated=38.7), (2) multiple metrics ('achieves 85% accuracy AND 12ms latency'), (3) multiple conditions ('performs well on clean AND noisy inputs').",
       "Each form decomposes into one Ground per independent measurement.",
       "Test: how many independent measurements does verifying this require? Each one is a separate Ground.",
+      "Exception — source='literature': content may be a reported finding, opinion, perspective, or argument from published work (e.g., 'Smith et al. argue that method A is unsuitable for sparse data'). No definition review is applied; content validity is covered when verification='verified'.",
     ].join(" "),
     source: "Evidence source: 'observed' (independently produced), 'hypothesis' (to be verified), or 'literature' (from published work). If source='hypothesis', write in the same declarative form as observed Grounds — source='hypothesis' already encodes uncertainty; do not add hedging language to content.",
     verification:

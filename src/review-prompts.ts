@@ -150,11 +150,11 @@ Evaluate the following and report any issues found:
    - What the ground states
    - How the evidence was produced
    - Where the files come from
-   Report an error if no such document exists — EXCEPT for source='literature': literature grounds may rely on the citation embedded in the Ground content itself (e.g., "Smith et al. 2023 found X"), in which case attachments are optional and a missing document is not an error.
+   Report an error if no such document exists — EXCEPT for source='literature': if the attachments include the actual reference files (e.g., a paper PDF, a reference document) and those files are readable, the reference files themselves serve as the description document; no separate markdown description file is required.
 
 3. **Evidence sufficiency**: Are the attachments sufficient to independently verify the Ground's correctness?
    - For "observed" grounds: Are there experimental results, data files, or observation logs?
-   - For "literature" grounds: Is there a specific citation or reference — either in the content itself or in an attachment? A citation in the content (author, year, finding) is acceptable; attachments are optional.
+   - For "literature" grounds: Is there a specific citation or reference in the attachments? The reference files themselves (e.g., a paper PDF) are sufficient evidence; no separate description document is required as long as the files are readable.
    - For "hypothesis" grounds marked verified: Is there independent verification evidence?
    Report an error if the evidence is insufficient. Report a warning if partial evidence exists but gaps remain.
 

@@ -47,14 +47,14 @@ export const ELEMENTS = {
       "Three forms of composite Grounds: (1) before/after or comparison ('reduces from 42.3 to 38.7' bundles baseline=42.3 and ablated=38.7), (2) multiple metrics ('achieves 85% accuracy AND 12ms latency'), (3) multiple conditions ('performs well on clean AND noisy inputs').",
       "Each form decomposes into one Ground per independent measurement.",
       "Test: how many independent measurements does verifying this require? Each one is a separate Ground.",
-      "Exception — source='literature': content may be a reported finding, opinion, perspective, or argument from published work (e.g., 'Smith et al. argue that method A is unsuitable for sparse data'). No definition review is applied; content validity is covered when verification='verified'.",
+      "Exception — source='literature': content may be a reported finding, opinion, perspective, or argument from published work (e.g., 'Smith et al. argue that method A is unsuitable for sparse data'). No definition review is applied; provide the reference files as attachments.",
     ].join(" "),
     source: "Evidence source: 'observed' (independently produced), 'hypothesis' (to be verified), or 'literature' (from published work). If source='hypothesis', write in the same declarative form as observed Grounds — source='hypothesis' already encodes uncertainty; do not add hedging language to content.",
     verification:
       "Ground verification status. " +
       "'pending' = not yet independently verified; " +
       "'verified' = triggers automatic evidence review — only succeeds if review passes, otherwise reverts to pending.",
-    attachments: "File paths supporting this ground. Grounds with ref_claim_id (chain reasoning) do not need attachments. Grounds with source='literature' do not require attachments if the citation is embedded in the content (e.g., 'Smith et al. 2023 found X') — the citation itself is the evidence. Other grounds MUST have a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this ground — explaining: what the ground states, how the evidence was produced, and where the files come from. Files alone without explanation are not enough — the document is the ground's provenance record.",
+    attachments: "File paths supporting this ground. Grounds with ref_claim_id (chain reasoning) do not need attachments. Grounds with source='literature' must provide the reference files (e.g., paper PDF, reference document) as attachments; the reference files themselves serve as the description document — no separate markdown description file is required. Other grounds MUST have a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this ground — explaining: what the ground states, how the evidence was produced, and where the files come from. Files alone without explanation are not enough — the document is the ground's provenance record.",
     refClaimId: "Use an existing Claim as a Ground for chain reasoning (Claim A's conclusion becomes Claim B's evidence). Mutually exclusive with content/source/verification/attachments — the Ground's content is auto-derived from the referenced Claim.",
   },
 

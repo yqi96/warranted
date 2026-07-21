@@ -90,7 +90,6 @@ The visualizer server tracks the current selection. Once the plugin is running, 
 |-------|------|
 | `toulmin-researcher` | Primary agent. Builds and validates the argument graph, identifies structural gaps, drives each Claim toward a well-evidenced conclusion. |
 | `toulmin-explorer` | Read-only. Quickly finds nodes, checks verification status, explores argument structure without making changes. |
-| `toulmin-translator` | Translation layer. Converts natural-language instructions into structured operations and routes them to researcher or explorer. |
 
 ---
 

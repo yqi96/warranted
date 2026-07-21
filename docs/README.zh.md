@@ -86,7 +86,6 @@ bun run viz
 |-------|------|
 | `toulmin-researcher` | 主力 Agent。构建和验证论证图，识别结构缺口，驱动每个 Claim 走向有据可查的结论。 |
 | `toulmin-explorer` | 只读浏览。快速查找节点、查看验证状态、探索论证结构，不做修改。 |
-| `toulmin-translator` | 翻译层。将自然语言指令转为结构化操作，路由给 researcher 或 explorer。 |
 
 ---
 

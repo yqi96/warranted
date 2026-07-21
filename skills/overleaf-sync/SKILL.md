@@ -19,5 +19,5 @@ uv tool install overleaf-for-agents          # recommended with uv
 leaf claude
 ```
 
-Follow the prompts as documented in the [overleaf-for-agents documentation](https://github.com/yqi96/overleaf-for-agents).
+Follow the prompts. If you run into issues, refer to https://github.com/yqi96/overleaf-for-agents.
 

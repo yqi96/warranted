@@ -96,3 +96,4 @@ bun run viz
 |-------|----------|------|
 | `paper-reproduce` | `/paper-reproduce` | 论文复现工作流。构建独立论证图，逐步验证论文主张是否成立。 |
 | `declare-barrier` | `/declare-barrier` | 形式化声明任务阻塞。声明无法继续前，系统检查所有已知的假性阻塞模式。 |
+| `literature-survey` | `/literature-survey` | 文献调研工作流。将外部文献的发现存入论证图作为 Ground，用 LaTeX 写作时通过 Ground ID 引用，定稿时替换为 bib key。 |

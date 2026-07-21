@@ -100,3 +100,4 @@ The visualizer server tracks the current selection. Once the plugin is running, 
 |-------|---------|------|
 | `paper-reproduce` | `/paper-reproduce` | Paper reproduction workflow. Builds an independent argument graph and verifies paper claims step by step. |
 | `declare-barrier` | `/declare-barrier` | Formally declares a task blocker. Before accepting the block, the system checks all known false-blocker patterns. |
+| `literature-survey` | `/literature-survey` | Literature survey workflow. Grounds external findings in the argument graph, writes the survey in LaTeX with Ground-linked citations, and substitutes bib keys at finalization. |

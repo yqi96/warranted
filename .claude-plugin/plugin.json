@@ -1,12 +1,18 @@
 {
   "name": "warranted",
   "displayName": "Warranted",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Make AI research agents accountable — give every conclusion a traceable argument graph.",
   "author": {
     "name": "QiYao"
   },
   "repository": "https://github.com/yqi96/warranted",
   "license": "MIT",
-  "keywords": ["toulmin", "argumentation", "mcp", "research", "reasoning"]
+  "keywords": [
+    "toulmin",
+    "argumentation",
+    "mcp",
+    "research",
+    "reasoning"
+  ]
 }

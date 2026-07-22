@@ -12,7 +12,6 @@ There is no fixed workflow. Use the graph and the writing together however the w
 **Done means**:
 - every Ground is `verified`; every Claim has status `supported`, `disputed`, or `refuted`; every Claim has passed `compile_arguments`
 - the tex is logically coherent: the argument flows, and each citation's surrounding text faithfully represents its Ground
-- `finalize-cites.py` has been run — all `\cite{ground_<N>}` replaced with bib keys
 
 `proposed` is the initial state for Claims, not a resting place.
 
@@ -49,16 +48,17 @@ For each Claim, ask: what is preventing it from being marked `supported`, `dispu
 
 ## Writing
 
-Write the survey in `.tex`, citing Grounds by ID during drafting — `\cite{ground_42}` — rather than managing bib keys while writing. This keeps the text coupled to the argument graph. Bib keys are substituted at finalization.
+Write the survey in `.tex`, citing Grounds by ID — `\cite{ground_42}` — rather than managing bib keys while writing. This keeps the text coupled to the argument graph.
 
-Name each paper using its bib key as soon as it is downloaded: `vaswani2017attention.pdf`. This is an ongoing convention, not a finalization step. It makes three identifiers converge on one string throughout the process:
+Name each paper using its bib key as soon as it is downloaded: `vaswani2017attention.pdf`. It makes three identifiers converge on one string throughout the process:
 
 | Element | Value |
 |---------|-------|
 | `.bib` entry key | `vaswani2017attention` |
-| Local paper file | `vaswani2017attention.pdf` |
-| Ground attachment | `vaswani2017attention.pdf` |
-| In-text citation (final) | `\cite{vaswani2017attention}` |
+| Local paper file | `/path/to/vaswani2017attention.pdf` |
+| Ground attachment | `/path/to/vaswani2017attention.pdf` |
+
+**Maintain the `.bib` file as you go.** Every time you add a paper, add its BibTeX entry to the project `.bib` file immediately — do not batch this at the end. The bib key must match the filename stem exactly. Required fields: `author`, `title`, `year`, and venue (`journal`, `booktitle`, or `url` for preprints). A Ground whose attachment has no matching `.bib` entry is incomplete.
 
 **Synthesize, don't enumerate.** Each paragraph makes a claim and marshals evidence for it. The structure is: claim → evidence → inference. Do not write "Paper A says X. Paper B says Y." — that is a list, not a survey.
 
@@ -86,27 +86,3 @@ Never let these blur. A citation is not your argument; it is your evidence.
 **Attachment is provenance**: `source="literature"` Grounds do not require a separate description document. The attached paper file is the provenance record.
 
 **Claim revision discipline**: revising a Claim is legitimate when the evidence genuinely does not support the original formulation. It is not legitimate to revise a Claim to avoid reporting contradicting evidence. When a Claim is revised, the revision must be motivated by the evidence; if conflicting Grounds exist, record them as Rebuttals and let the Claim status reflect the state of the evidence.
-
-## Finalization
-
-### Replacing citations
-
-Build a ground map from the argument graph — for each Ground cited in the tex, look up its attachment filename(s) and strip the extension. A Ground with multiple attachments maps to multiple bib keys:
-
-```json
-{
-  "42": "vaswani2017attention",
-  "7": ["ouyang2022training", "ziegler2019fine"],
-  "13": "wei2022finetuned"
-}
-```
-
-`\cite{ground_7}` expands to `\cite{ouyang2022training, ziegler2019fine}`.
-
-Run the replacement:
-
-```
-uv run scripts/finalize-cites.py survey.tex ground-map.json --output survey-final.tex
-```
-
-The script reports every substitution and warns about Ground IDs missing from the map.

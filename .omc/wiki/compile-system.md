@@ -2,7 +2,7 @@
 title: Compile System
 tags: [compile, merkle, hash, staleness, review, llm]
 category: architecture
-updated: 2026-07-20
+updated: 2026-07-22
 ---
 
 # Compile 系统
@@ -70,6 +70,23 @@ if (status === "supported" || status === "disputed" || status === "refuted") {
 ```
 
 `supported`、`disputed`、`refuted` 三种目标状态都需要 compile 通过。不是只有 `supported` 需要 compile。
+
+## Invalidation — Status 回退
+
+当论证链中任意节点被修改（添加/删除/更新 Ground、Warrant 等），`invalidateCompiledClaims` 触发：
+
+1. `compile_status` → `"stale"`
+2. 若 Claim 的 `status` 为 `supported` / `disputed` / `refuted`，**回退到 `"proposed"`**
+
+工具响应中会出现两条 warning：
+
+```
+Warning: Claim #N's compiled status has been cleared because node #M in its argument chain was modified.
+Warning: Claim #N status reverted from "supported" to "proposed" because node #M in its argument chain was modified. Re-run compile_arguments and re-assess status when ready.
+Hint: Call compile_arguments to verify the argument chain.
+```
+
+`status: "proposed"` 的 Claim 不触发回退（无 statusReverted warning）。这保证了 Claim 状态始终和论证链一致——不存在"supported 但 stale"的矛盾状态。
 
 ## 相关类型
 

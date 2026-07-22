@@ -8,4 +8,4 @@
 - [Development Conventions](dev-conventions.md) — Bun工具链、测试结构、日志规范、MCP协议
 
 ---
-_Last updated: 2026-07-21 | Pages: 3_
+_Last updated: 2026-07-22 | Pages: 3_

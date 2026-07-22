@@ -99,4 +99,5 @@ The visualizer server tracks the current selection. Once the plugin is running, 
 |-------|---------|------|
 | `paper-reproduce` | `/paper-reproduce` | Paper reproduction workflow. Builds an independent argument graph and verifies paper claims step by step. |
 | `declare-barrier` | `/declare-barrier` | Formally declares a task blocker. Before accepting the block, the system checks all known false-blocker patterns. |
-| `literature-survey` | `/literature-survey` | Literature survey workflow. Grounds external findings in the argument graph, writes the survey in LaTeX with Ground-linked citations, and substitutes bib keys at finalization. |
+| `literature-survey` | `/literature-survey` | Literature survey workflow. Grounds external findings in the argument graph, writes the survey in LaTeX with `\cite{ground_N}` citations. Maintains a `.bib` file throughout. |
+| `overleaf-setup` | `/overleaf-setup` | One-time setup skill. Installs `leaf`, authenticates, links a local LaTeX directory to an Overleaf project, and writes a Stop hook that auto-pushes on every conversation turn (skips if no files changed). |

@@ -43,8 +43,7 @@ GROUND_KEY_RE = re.compile(r'\bground_(\d+)\b')
 
 def build_ground_map(db_path: str, include_all: bool = False) -> dict[str, list[str]]:
     if not os.path.exists(db_path):
-        print(f"Error: database not found at {db_path}", file=sys.stderr)
-        sys.exit(1)
+        return {}  # no DB → no ground map; citations left as-is
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -164,8 +163,7 @@ def main():
 
     # ── Directory mode ────────────────────────────────────────────────────────
     if not args.dir.is_dir():
-        print(f"Error: {args.dir} is not a directory", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(0)  # LATEX_DIR doesn't exist in this project — skip silently
 
     leaf_toml = args.dir / "leaf.toml"
     if not leaf_toml.exists() and not args.no_push:

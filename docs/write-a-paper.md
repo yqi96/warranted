@@ -57,48 +57,14 @@ Name papers by their bib key when you download them. Add the BibTeX entry to the
 
 ---
 
-## When something seems off
+## Graph states to watch
 
----
-
-**You feel:** "The agent is summarizing papers rather than making arguments."
-
-If Claim nodes read like "X et al. showed...", the attribution boundary has been crossed.
-
-**Say:** "Claim #N describes what a paper found — that belongs in a Ground with `source='literature'`. A Claim is your synthesis conclusion. What is the independent judgment you're making across these findings?"
-
----
-
-**You feel:** "I added a new paper but the graph doesn't feel connected."
-
-A Ground with no Warrant path to any Claim is isolated evidence.
-
-**Say:** "Ground #N has no Warrant connecting it to a Claim. Either connect it to an existing Claim via a Warrant, or identify what Claim this finding contributes to."
-
----
-
-**You feel:** "The citation in the text doesn't match what I'd expect from the paper."
-
-The Ground content is the source of truth for what a citation claims.
-
-**Say:** "What is the content of Ground #N? Does the surrounding text in the `.tex` accurately represent what that Ground says? If not, revise the text — not the Ground."
-
----
-
-**You feel:** "A Claim was changed and I'm not sure it reflects the evidence."
-
-**Say:** "Why was Claim #N revised? Are there Grounds that conflict with the new formulation? If so, they should be Rebuttals, not suppressed. The Claim status should reflect the actual state of the evidence."
-
----
-
-**You feel:** "A Claim is supported but I'm not sure the reasoning holds."
-
-**Say:** "Run `compile_arguments` on Claim #N and show me the result. A `supported` status requires compile to have passed."
-
----
-
-**You feel:** "The `.tex` still has regular `\cite{authorname}` keys instead of `\cite{ground_N}`."
-
-The auto-replace on push only works with the `\cite{ground_N}` format.
-
-**Say:** "This citation uses a bib key directly. Use `\cite{ground_N}` where N is the Ground ID. The hook replaces it with the bib key automatically when pushing to Overleaf."
+| State | What it means |
+|-------|--------------|
+| A `Claim` content reads "X et al. found that..." | Attribution boundary crossed — that's a Ground, not a Claim |
+| A `Ground` has no attached PDF | Provenance is missing; the PDF is the evidence record |
+| A `Ground` has no Warrant path to any `Claim` | Isolated evidence — not yet connected to any argument |
+| A `Claim` has no `Warrant` | `compile_arguments` will fail the structure check |
+| A `Warrant` content restates the support relationship | Circular — not an inference principle; chain reviewer will flag it |
+| A `Claim` was revised and has conflicting `Ground`s with no `Rebuttal` | Contradiction is being suppressed rather than recorded |
+| `.tex` contains `\cite{authorname}` instead of `\cite{ground_N}` | Auto-replace on push won't work |

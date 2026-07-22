@@ -38,54 +38,15 @@ A Claim may not remain `proposed` without `declare-barrier` having been invoked.
 
 ---
 
-## When something seems off
+## Graph states to watch
 
-The graph gives you a precise language to describe problems. These translations reduce the back-and-forth.
+These states are visible in the graph or the visualizer and signal that something needs attention.
 
----
-
-**You feel:** "The agent's conclusion doesn't quite match the paper."
-
-The Claim content may have been modified. In this scenario, Claims must be verbatim from the paper.
-
-**Say:** "What is the current content of Claim #N? Compare it against the paper's original wording. If it has been changed, revert it — differences go in a Rebuttal, not in the Claim."
-
----
-
-**You feel:** "The agent says it's done but I'm not sure the work holds up."
-
-Check whether Grounds are actually verified.
-
-**Say:** "How many Grounds still have `verification='pending'`? A Claim cannot be considered supported on unverified evidence."
-
----
-
-**You feel:** "The agent gave up on something and moved on."
-
-A Claim in `proposed` state signals this.
-
-**Say:** "Claim #N is still `proposed`. Has `declare-barrier` been invoked for this Claim? If not, invoke it now."
-
----
-
-**You feel:** "The agent declared it was blocked but didn't actually do anything about it."
-
-`declare-barrier` Class B requires executing the narrowed sub-task — the declaration is not the deliverable.
-
-**Say:** "The `declare-barrier` classification for Claim #N was Class B. Where are the results of the narrowed sub-task? Class B without sub-task execution is treated as Class C."
-
----
-
-**You feel:** "I'm not sure the reproduction is actually independent."
-
-Check the description documents attached to Grounds.
-
-**Say:** "For Ground #N — what was the source of verification? Was any data or output produced by the paper itself used? Supplementary data or pre-computed outputs cannot be used as verification evidence."
-
----
-
-**You feel:** "The results are clearly different from the paper but the Claim is marked supported."
-
-The contradiction should be a Rebuttal.
-
-**Say:** "If your result contradicts the paper's stated Ground, create a Rebuttal documenting the discrepancy. Then reassess Claim #N — it should be `disputed` or `refuted`, not `supported`."
+| State | What it means |
+|-------|--------------|
+| A `Claim`'s content differs from the paper's original wording | Claims are immutable — differences belong in a Rebuttal, not the Claim |
+| A `Ground` has `verification='pending'` while its Claim is `supported` | The conclusion rests on unverified evidence |
+| A `Ground` has no description document | Reproduction is incomplete regardless of verification status |
+| A `Claim` is `proposed` with no active work remaining | `declare-barrier` has not been invoked |
+| A `Claim` is `stale` | Something in the argument chain was modified — rerun `compile_arguments` |
+| A `Rebuttal` exists but the `Claim` is `supported` | A contradiction has been recorded; the verdict may need reassessment |

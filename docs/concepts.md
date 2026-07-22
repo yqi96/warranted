@@ -16,7 +16,21 @@ Warranted implements the [Toulmin model](https://en.wikipedia.org/wiki/Toulmin_m
 
 **Ground** — evidence that supports the Claim. In paper reproduction, this is the paper's stated experimental result (initially a hypothesis, updated as you verify). In literature writing, this is a specific finding from a published paper (with the PDF attached as provenance).
 
-**Warrant** — the inference principle connecting Ground to Claim. Not "these grounds support the claim" (that's circular) — but the reasoning rule that makes the inference valid: "given [condition], [evidence type] implies [conclusion direction]."
+**Warrant** — the inference principle connecting Ground to Claim. This is the hardest node to write correctly.
+
+A Warrant is not a restatement of the support relationship. "Ground 1 and Ground 2 support Claim" is circular — it says the evidence supports the conclusion without explaining *why*. That's not an inference principle, it's just naming the connection.
+
+A Warrant answers: given this type of evidence, by what reasoning does it imply this type of conclusion?
+
+| ❌ Circular (not a Warrant) | ✓ Inference principle (Warrant) |
+|---|---|
+| "The experimental results support the warming claim" | "Controlled experiments showing a statistically significant treatment effect compared to control provide causal evidence for the tested mechanism" |
+| "The three papers all agree, supporting the Claim" | "Convergent findings across independent studies with different methods reduce the probability that any single result is an artifact of methodology" |
+| "The benchmark scores show the method is better" | "Lower held-out test error indicates better generalization to unseen data under the same distribution" |
+
+When `compile_arguments` reports that the chain reviewer found the reasoning incoherent, the Warrant is usually the cause — either circular, too vague to evaluate, or genuinely not connecting the specific Grounds to the specific Claim.
+
+A Warrant lists `ground_ids` — the specific Grounds whose evidence it is channeling toward the Claim. Multiple Grounds can feed into one Warrant when the inference depends on them together.
 
 **Backing** — support for the Warrant's authority. Used when the inference principle itself needs justification — typically a methodological consensus or meta-analysis.
 

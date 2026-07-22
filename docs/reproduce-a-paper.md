@@ -2,13 +2,13 @@
 
 ## Goal
 
-Verify whether a paper's claims are correct by building an independent argument graph. The outcome is a verdict for each Claim — `supported`, `disputed`, or `refuted`. `proposed` means the evidence is still incomplete, not that the question is unanswerable.
+Verify whether a paper's claims are correct by building an independent argument graph. **Done** means every Claim has a verdict — `supported`, `disputed`, or `refuted`. `proposed` is acceptable only when `declare-barrier` has been invoked and a genuine barrier confirmed.
 
 ---
 
 ## The graph in this scenario
 
-The graph represents the paper's argument, not a new one. Every node is extracted from the paper and remains fixed throughout reproduction.
+The graph represents the paper's argument, not a new one. Every node is extracted from the paper.
 
 | Node | What it represents | Initial state |
 |------|--------------------|---------------|
@@ -18,39 +18,23 @@ The graph represents the paper's argument, not a new one. Every node is extracte
 | **Backing** | Support for the Warrant's authority | — |
 | **Rebuttal** | A contradiction found during reproduction | — |
 
-Two constraints to internalize:
+**Claims are immutable.** A Claim encodes exactly what you are verifying. If reproduction yields a different result, the difference belongs in a Rebuttal — not in a modified Claim. Changing the Claim changes what you're testing.
 
-**Claims are immutable.** A Claim encodes exactly what you are verifying. If your reproduction yields a different result, that difference belongs in a Rebuttal — not in a modified Claim. Changing the Claim changes what you're testing.
+**Grounds start as hypotheses.** A Ground initializes as `verification="pending"`. To verify it: reproduce the result independently, write a description document explaining what was done and what was found, then mark it `verified`. A Ground without a description document is incomplete.
 
-**Grounds start as hypotheses.** A Ground initializes as `verification="pending"` because you haven't verified it yet. As you reproduce each result, you update the Ground: attach a description document, then mark it `verified`. A Ground without a description document is incomplete.
+**Independence.** If the paper produced an artifact — supplementary data, pre-computed outputs, model weights — you cannot use it as verification evidence. That is circular. Author-published code may be reused as long as it matches the paper's described methodology. The test: *did this paper produce this artifact, or did the paper use it as external input?*
 
 ---
 
-## Workflow
+## declare-barrier
 
-### 1. Extract
+Any time the agent encounters "cannot / not available / too complex / not feasible", it must invoke `/declare-barrier` before accepting the block. The skill interrogates the claimed barrier against eight recurring patterns of false barriers and produces a classification:
 
-Run `/paper-reproduce`. The agent reads the paper and builds the initial graph: Claims extracted verbatim, Grounds initialized as pending hypotheses, Warrant connecting them.
+- **Class A** — false barrier, path is clear, proceed immediately
+- **Class B** — scope reduction: define the narrower sub-task and execute it (the declaration alone is not the deliverable)
+- **Class C** — genuine barrier, only after all four hard conditions are met
 
-### 2. Reproduce
-
-For each Ground, independently reproduce the stated result. The test for independence: if the paper produced this artifact (data file, pre-computed output, model weights), you cannot use it as verification — reproduce it from scratch. Author-published code is fine to reuse as long as it matches the paper's described methodology.
-
-Update each Ground as you work: attach the description document, then set `verification="verified"`. Run `compile_arguments` after the graph is built, and again after any structural change.
-
-### 3. Assess
-
-Once all Grounds are verified, assess each Claim: does the evidence support it, dispute it, or refute it? Update Claim status via `update_node`.
-
-### 4. When you can't proceed: `declare-barrier`
-
-Any time the agent encounters "cannot / not available / too complex / not feasible" — it must invoke `/declare-barrier` before accepting the block. The skill runs through eight recurring patterns of false barriers and produces a classification:
-
-- **Class A** — false barrier, path is clear, implement immediately
-- **Class B** — scope reduction, execute the narrowed sub-task (declaring Class B without executing the sub-task is invalid)
-- **Class C** — real barrier, only after all four hard conditions are met
-
-A Claim may not remain `proposed` at the end without `declare-barrier` having been invoked. If you reach the end and a Claim is still `proposed`, you can invoke `declare-barrier` yourself to force the assessment.
+A Claim may not remain `proposed` without `declare-barrier` having been invoked. If a Claim is still `proposed` when everything else is done, you can invoke `/declare-barrier` yourself to force the assessment.
 
 ---
 
@@ -62,15 +46,15 @@ The graph gives you a precise language to describe problems. These translations 
 
 **You feel:** "The agent's conclusion doesn't quite match the paper."
 
-The problem is likely the Claim content was modified. In this scenario, Claims must be verbatim from the paper.
+The Claim content may have been modified. In this scenario, Claims must be verbatim from the paper.
 
 **Say:** "What is the current content of Claim #N? Compare it against the paper's original wording. If it has been changed, revert it — differences go in a Rebuttal, not in the Claim."
 
 ---
 
-**You feel:** "The agent says it's done but I'm not sure the work actually holds up."
+**You feel:** "The agent says it's done but I'm not sure the work holds up."
 
-Check whether Grounds are verified.
+Check whether Grounds are actually verified.
 
 **Say:** "How many Grounds still have `verification='pending'`? A Claim cannot be considered supported on unverified evidence."
 
@@ -78,7 +62,7 @@ Check whether Grounds are verified.
 
 **You feel:** "The agent gave up on something and moved on."
 
-A Claim in `proposed` state at the end of the workflow signals this.
+A Claim in `proposed` state signals this.
 
 **Say:** "Claim #N is still `proposed`. Has `declare-barrier` been invoked for this Claim? If not, invoke it now."
 
@@ -94,9 +78,9 @@ A Claim in `proposed` state at the end of the workflow signals this.
 
 **You feel:** "I'm not sure the reproduction is actually independent."
 
-Check the description documents attached to the Grounds.
+Check the description documents attached to Grounds.
 
-**Say:** "For Ground #N — what was the source of verification? Was any data or output from the paper itself used? Supplementary data or pre-computed outputs produced by the paper cannot be used as verification evidence."
+**Say:** "For Ground #N — what was the source of verification? Was any data or output produced by the paper itself used? Supplementary data or pre-computed outputs cannot be used as verification evidence."
 
 ---
 

@@ -2,13 +2,18 @@
 
 ## Goal
 
-Produce a research paper — or a literature survey — where every claim is traceable to evidence in the argument graph. The graph is the quality mechanism: it tracks what you've actually read, what you've concluded, and why.
+Produce a research paper — or a literature survey — where every claim is traceable to evidence in the argument graph. **Done** means:
+
+- Every Ground is `verified` (PDF attached, content confirmed)
+- Every Claim has passed `compile_arguments`
+- Every Claim has a verdict: `supported`, `disputed`, or `refuted`
+- The `.tex` is coherent: each citation's surrounding text faithfully represents its Ground
 
 ---
 
 ## Setup (once): `overleaf-setup`
 
-Before writing, run `/overleaf-setup`. This is a one-time configuration that:
+Run `/overleaf-setup` before writing. This is infrastructure, not a recurring step:
 
 1. Installs the `leaf` CLI and links your local LaTeX directory to an Overleaf project
 2. Writes a hook that pushes to Overleaf automatically at the end of each conversation turn (skips turns where no files changed)
@@ -26,21 +31,19 @@ The fundamental distinction: **papers' findings go in Grounds, your conclusions 
 |------|--------------------|
 | **Claim** | Your independent synthesis conclusion — something you are arguing, not reporting |
 | **Ground** | A specific finding, result, or argument from a published paper; the PDF is attached as provenance |
-| **Warrant** | The inference principle that connects this body of evidence to your Claim |
+| **Warrant** | The inference principle connecting this body of evidence to your Claim |
 | **Backing** | Methodological consensus or meta-analysis that legitimizes the Warrant |
 | **Rebuttal** | A paper with contradicting findings, or a documented boundary condition of your Claim |
 
 One way to check: if the sentence starts with "Smith et al. found that..." or "The paper reports...", it belongs in a Ground. If it starts with "We argue..." or "The evidence suggests...", it may be a Claim.
 
-**Entry points.** You can start either way:
-- *Framework-first*: formulate your Claims first, then find Grounds to populate them
-- *Evidence-first*: collect papers first, then identify what Claims the pattern of evidence supports
+**Claim revision discipline.** Revising a Claim is legitimate when evidence genuinely doesn't support the original formulation. It is not legitimate as a way to avoid acknowledging contradictions — conflicting Grounds become Rebuttals, and the Claim status reflects the actual state of the evidence.
 
 ---
 
 ## The `\cite{ground_N}` standard
 
-While writing, cite by Ground ID: `\cite{ground_42}`. Do not look up bib keys while drafting.
+Write citations by Ground ID: `\cite{ground_42}`. Don't look up bib keys while drafting.
 
 When you push to Overleaf, the hook automatically replaces each `\cite{ground_N}` with the real bib key derived from the Ground's attached filename. This only works if the filename is already the bib key:
 
@@ -54,26 +57,13 @@ Name papers by their bib key when you download them. Add the BibTeX entry to the
 
 ---
 
-## Workflow
-
-Run `/literature-survey`. The skill has no fixed sequence — you can start from Claims or from papers. The done condition is:
-
-- Every Ground is `verified` (PDF attached, content confirmed)
-- Every Claim has passed `compile_arguments`
-- Every Claim has a verdict: `supported`, `disputed`, or `refuted`
-- The `.tex` is coherent: each `\cite{ground_N}` surrounding text faithfully represents what the Ground says
-
-Run `compile_arguments` after building the initial structure, and again after any structural change.
-
----
-
 ## When something seems off
 
 ---
 
 **You feel:** "The agent is summarizing papers rather than making arguments."
 
-The Claim structure reveals this: if every Claim node content reads like "X et al. showed...", the attribution boundary has been crossed.
+If Claim nodes read like "X et al. showed...", the attribution boundary has been crossed.
 
 **Say:** "Claim #N describes what a paper found — that belongs in a Ground with `source='literature'`. A Claim is your synthesis conclusion. What is the independent judgment you're making across these findings?"
 
@@ -81,7 +71,7 @@ The Claim structure reveals this: if every Claim node content reads like "X et a
 
 **You feel:** "I added a new paper but the graph doesn't feel connected."
 
-A Ground without a Warrant path to any Claim sits as isolated evidence.
+A Ground with no Warrant path to any Claim is isolated evidence.
 
 **Say:** "Ground #N has no Warrant connecting it to a Claim. Either connect it to an existing Claim via a Warrant, or identify what Claim this finding contributes to."
 
@@ -91,21 +81,17 @@ A Ground without a Warrant path to any Claim sits as isolated evidence.
 
 The Ground content is the source of truth for what a citation claims.
 
-**Say:** "What is the content of Ground #N? Does the surrounding text in the `.tex` accurately represent what that Ground says? If not, the text needs to be revised — not the Ground."
+**Say:** "What is the content of Ground #N? Does the surrounding text in the `.tex` accurately represent what that Ground says? If not, revise the text — not the Ground."
 
 ---
 
-**You feel:** "A Claim was changed and I'm not sure it reflects what the evidence actually supports."
-
-Claim revision is legitimate when evidence doesn't support the original formulation. It is not legitimate when it's used to avoid acknowledging contradictions.
+**You feel:** "A Claim was changed and I'm not sure it reflects the evidence."
 
 **Say:** "Why was Claim #N revised? Are there Grounds that conflict with the new formulation? If so, they should be Rebuttals, not suppressed. The Claim status should reflect the actual state of the evidence."
 
 ---
 
-**You feel:** "A Claim is supported but I'm not sure the reasoning actually holds."
-
-`compile_arguments` is the check for this.
+**You feel:** "A Claim is supported but I'm not sure the reasoning holds."
 
 **Say:** "Run `compile_arguments` on Claim #N and show me the result. A `supported` status requires compile to have passed."
 
@@ -115,4 +101,4 @@ Claim revision is legitimate when evidence doesn't support the original formulat
 
 The auto-replace on push only works with the `\cite{ground_N}` format.
 
-**Say:** "This citation uses a bib key directly. During the writing phase, use `\cite{ground_N}` where N is the Ground ID. The hook replaces it with the bib key automatically when pushing to Overleaf."
+**Say:** "This citation uses a bib key directly. Use `\cite{ground_N}` where N is the Ground ID. The hook replaces it with the bib key automatically when pushing to Overleaf."

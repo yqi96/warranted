@@ -50,13 +50,7 @@ claude plugin install warranted@warranted --scope local
 
 On launch, `toulmin-researcher` becomes the primary agent and the MCP server starts automatically.
 
----
-
-## What do you want to do?
-
-- **Reproduce a paper** — verify whether a paper's claims hold up under independent reproduction → [docs/reproduce-a-paper.md](docs/reproduce-a-paper.md)
-- **Write a paper** — produce a survey or original argument with every claim traceable to evidence → [docs/write-a-paper.md](docs/write-a-paper.md)
-- **Understand the argument graph** — node types, compile, status lifecycle → [docs/concepts.md](docs/concepts.md)
+When LLM review is enabled, node definitions are reviewed on creation and `compile_arguments` runs a full logic-chain audit.
 
 ---
 
@@ -70,6 +64,8 @@ bun run viz
 
 Open `http://localhost:3456` in your browser.
 
+### Interaction
+
 | Action | Effect |
 |--------|--------|
 | Click a node | Select it (cyan glow ring) |
@@ -82,7 +78,9 @@ Open `http://localhost:3456` in your browser.
 
 The **⬚ / ✥** buttons in the toolbar switch between box-select and pan mode.
 
-**Selection as context**: the visualizer tracks the current selection. Every message you send to Claude automatically includes the selected nodes as context — select a node, then ask about it directly.
+### Selection as context
+
+The visualizer server tracks the current selection. Once the plugin is running, **every message you send to Claude automatically includes the selected nodes as context** — no need to describe which nodes you mean, just select and ask.
 
 ---
 
@@ -103,4 +101,3 @@ The **⬚ / ✥** buttons in the toolbar switch between box-select and pan mode.
 | `declare-barrier` | `/declare-barrier` | Formally declares a task blocker. Before accepting the block, the system checks all known false-blocker patterns. |
 | `literature-survey` | `/literature-survey` | Literature survey workflow. Grounds external findings in the argument graph, writes the survey in LaTeX with `\cite{ground_N}` citations. Maintains a `.bib` file throughout. |
 | `overleaf-setup` | `/overleaf-setup` | One-time setup skill. Installs `leaf`, authenticates, links a local LaTeX directory to an Overleaf project, and writes a Stop hook that auto-pushes on every conversation turn (skips if no files changed). |
-

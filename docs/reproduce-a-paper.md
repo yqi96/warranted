@@ -44,7 +44,6 @@ These states are visible in the graph or the visualizer and signal that somethin
 
 | State | What it means |
 |-------|--------------|
-| A `Claim`'s content differs from the paper's original wording | Claims are immutable — differences belong in a Rebuttal, not the Claim |
 | A `Ground` has `verification='pending'` while its Claim is `supported` | The conclusion rests on unverified evidence |
 | A `Ground` has no description document | Reproduction is incomplete regardless of verification status |
 | A `Claim` is `proposed` with no active work remaining | `declare-barrier` has not been invoked |

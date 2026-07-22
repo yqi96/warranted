@@ -102,7 +102,7 @@ The hook fires once when Claude Code stops. The script skips the push automatica
 Tell the user:
 
 > "Hook configured. **Please restart Claude Code** to activate it — hooks only take effect after a restart, and restarting also clears this setup context.
-> After restart, every time Claude Code stops it will push any changed files under `LATEX_DIR` to Overleaf automatically. Sessions with no file changes are skipped."
+> After restart, Overleaf will be updated automatically at the end of each conversation turn. Turns where no files under `LATEX_DIR` changed are skipped."
 
 The skill is complete. Do not proceed further.
 

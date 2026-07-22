@@ -1,6 +1,6 @@
 ---
 name: overleaf-setup
-description: One-time setup skill. Configures automatic Overleaf push for a LaTeX directory — installs leaf, authenticates, inits the project, and writes the auto-push hook to settings.local.json. After setup, every .tex edit in the configured directory triggers a push automatically. Run this skill once; restart Claude Code when done.
+description: One-time setup skill. Configures automatic Overleaf push for a LaTeX directory.
 ---
 
 ## Goal
@@ -82,9 +82,9 @@ Merge the following into `.claude/settings.local.json`, preserving any existing 
     "Stop": [{
       "hooks": [{
         "type": "command",
-        "command": "uv run SKILL_DIR/scripts/overleaf-push.py --dir LATEX_DIR --db DB_PATH",
+        "command": "uv run SKILL_DIR/scripts/overleaf-push.py --dir LATEX_DIR --db DB_PATH --require-ground-cites",
         "timeout": 120,
-        "statusMessage": "Pushing to Overleaf..."
+        "statusMessage": "Checking citations and pushing to Overleaf..."
       }]
     }]
   }
@@ -92,8 +92,6 @@ Merge the following into `.claude/settings.local.json`, preserving any existing 
 ```
 
 Replace `LATEX_DIR`, `SKILL_DIR`, and `DB_PATH` with the actual absolute paths before writing.
-
-The hook fires once when Claude Code stops. The script skips the push automatically if no files changed since the last push (tracked via `LATEX_DIR/.overleaf-last-push`).
 
 ---
 

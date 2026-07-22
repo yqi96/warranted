@@ -14,6 +14,9 @@ Usage:
     # Push to Overleaf (hook or manual):
     uv run overleaf-push.py --dir LATEX_DIR
 
+    # Push only if every citation key is a ground_N key:
+    uv run overleaf-push.py --dir LATEX_DIR --require-ground-cites
+
     # Stage only, do not push (for inspection):
     uv run overleaf-push.py --dir LATEX_DIR --stage /tmp/inspect --no-push
 
@@ -38,7 +41,7 @@ from pathlib import Path
 GROUND_CITE_RE = re.compile(
     r'(\\cite\w*\*?(?:\[[^\]]*\]){0,2}\{)([^}]+)(\})'
 )
-GROUND_KEY_RE = re.compile(r'\bground_(\d+)\b')
+GROUND_KEY_RE = re.compile(r'ground_(\d+)')
 
 
 def build_ground_map(db_path: str, include_all: bool = False) -> dict[str, list[str]]:
@@ -85,7 +88,7 @@ def replace_cites(tex: str, ground_map: dict[str, list[str]]) -> tuple[str, int]
         keys = [k.strip() for k in keys_str.split(',')]
         new_keys: list[str] = []
         for key in keys:
-            gnd = GROUND_KEY_RE.match(key)
+            gnd = GROUND_KEY_RE.fullmatch(key)
             if gnd:
                 gid = gnd.group(1)
                 if gid in ground_map:
@@ -107,10 +110,50 @@ def replace_cites(tex: str, ground_map: dict[str, list[str]]) -> tuple[str, int]
     return updated, count
 
 
-def mirror_to_stage(source: Path, stage: Path, ground_map: dict[str, list[str]]) -> int:
+def find_non_ground_cites(tex: str, source_name: str) -> list[str]:
+    errors: list[str] = []
+
+    for match in GROUND_CITE_RE.finditer(tex):
+        line = tex.count("\n", 0, match.start()) + 1
+        keys = [k.strip() for k in match.group(2).split(',')]
+        for key in keys:
+            if not GROUND_KEY_RE.fullmatch(key):
+                errors.append(f"{source_name}:{line}: citation key is not ground_N: {key}")
+
+    return errors
+
+
+def find_non_ground_cites_in_dir(source: Path) -> list[str]:
+    errors: list[str] = []
+
+    for src_path in source.rglob("*.tex"):
+        if src_path.is_file():
+            rel = src_path.relative_to(source)
+            tex = src_path.read_text(encoding="utf-8")
+            errors.extend(find_non_ground_cites(tex, str(rel)))
+
+    return errors
+
+
+def fail_for_citation_errors(citation_errors: list[str]) -> None:
+    if citation_errors:
+        print("Error: non-ground citation key(s) found:", file=sys.stderr)
+        for error in citation_errors:
+            print(f"  {error}", file=sys.stderr)
+        print("Replace every listed citation key with a ground_N key before stopping.", file=sys.stderr)
+        raise SystemExit(2)
+
+
+def mirror_to_stage(
+    source: Path,
+    stage: Path,
+    ground_map: dict[str, list[str]],
+    require_ground_cites: bool = False,
+) -> int:
     """Copy source → stage. .tex files get citation replacement; everything else copied as-is."""
     stage.mkdir(parents=True, exist_ok=True)
     total = 0
+    citation_errors: list[str] = []
 
     for src_path in source.rglob("*"):
         if src_path.is_dir():
@@ -121,6 +164,8 @@ def mirror_to_stage(source: Path, stage: Path, ground_map: dict[str, list[str]])
 
         if src_path.suffix == ".tex":
             tex = src_path.read_text(encoding="utf-8")
+            if require_ground_cites:
+                citation_errors.extend(find_non_ground_cites(tex, str(rel)))
             updated, count = replace_cites(tex, ground_map)
             dst_path.write_text(updated, encoding="utf-8")
             if count:
@@ -128,6 +173,8 @@ def mirror_to_stage(source: Path, stage: Path, ground_map: dict[str, list[str]])
                 total += count
         else:
             shutil.copy2(src_path, dst_path)
+
+    fail_for_citation_errors(citation_errors)
 
     return total
 
@@ -143,6 +190,8 @@ def main():
     ap.add_argument("--no-push", action="store_true",
                     help="Stage only, do not call leaf push (useful with --stage for inspection)")
     ap.add_argument("--all", action="store_true", help="Include non-literature Grounds")
+    ap.add_argument("--require-ground-cites", action="store_true",
+                    help="Fail if any citation key is not exactly ground_N")
     args = ap.parse_args()
 
     ground_map = build_ground_map(args.db, include_all=args.all)
@@ -153,6 +202,8 @@ def main():
             print(f"Error: {args.tex} not found", file=sys.stderr)
             sys.exit(1)
         tex = args.tex.read_text(encoding="utf-8")
+        if args.require_ground_cites:
+            fail_for_citation_errors(find_non_ground_cites(tex, str(args.tex)))
         updated, count = replace_cites(tex, ground_map)
         if count == 0:
             print("No Ground citations found.", file=sys.stderr)
@@ -164,6 +215,9 @@ def main():
     # ── Directory mode ────────────────────────────────────────────────────────
     if not args.dir.is_dir():
         sys.exit(0)  # LATEX_DIR doesn't exist in this project — skip silently
+
+    if args.require_ground_cites:
+        fail_for_citation_errors(find_non_ground_cites_in_dir(args.dir))
 
     leaf_toml = args.dir / "leaf.toml"
     if not leaf_toml.exists() and not args.no_push:
@@ -188,7 +242,7 @@ def main():
 
     try:
         print(f"Staging {args.dir} → {stage}", file=sys.stderr)
-        total = mirror_to_stage(args.dir, stage, ground_map)
+        total = mirror_to_stage(args.dir, stage, ground_map, require_ground_cites=args.require_ground_cites)
         print(f"Staged. {total} citation(s) replaced.", file=sys.stderr)
 
         if not args.no_push:

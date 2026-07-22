@@ -1,5 +1,5 @@
 ---
-name: overleaf-sync
+name: overleaf-setup
 description: One-time setup skill. Configures automatic Overleaf push for a LaTeX directory — installs leaf, authenticates, inits the project, and writes the auto-push hook to settings.local.json. After setup, every .tex edit in the configured directory triggers a push automatically. Run this skill once; restart Claude Code when done.
 ---
 

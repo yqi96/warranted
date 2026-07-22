@@ -2,6 +2,8 @@
 
 让 AI Agent 的科研推理可被审计——每一个结论都有可追溯的论证图。
 
+> [English](README.md) | [简体中文](README.zh-CN.md)
+
 ---
 
 ## 它解决什么问题
@@ -12,9 +14,23 @@
 
 适合的场景：**论文复现、假设验证、多步骤科学推理、研究透明度**。
 
-![Toulmin Argument Map](screenshot.png)
+![Toulmin Argument Map](docs/assets/screenshot.png)
 
-![Warranted — 多树全局视图](screenshot2.png)
+![Warranted — 多树全局视图](docs/assets/screenshot2.png)
+
+---
+
+## 文档
+
+第一次来？按这个顺序读：
+
+| 文档 | 讲什么 |
+|------|--------|
+| [论证图](docs/zh-CN/concepts.md) | 核心概念——五种节点、`compile`、状态生命周期，以及如何用论证图的语言跟 Agent 沟通。**从这里开始。** |
+| [复现一篇论文](docs/zh-CN/reproduce-a-paper.md) | 场景指南：用一张独立的论证图验证论文主张（`/paper-reproduce`、`declare-barrier`）。 |
+| [写一篇论文](docs/zh-CN/write-a-paper.md) | 场景指南：写论文或文献综述，让每处引用都能追溯到一个 verified 的 Ground（`/overleaf-setup`、`/literature-survey`）。 |
+
+更新历史：[CHANGELOG.md](CHANGELOG.md)
 
 ---
 
@@ -49,6 +65,8 @@ claude plugin install warranted@warranted --scope local
 启动后自动以 `toulmin-researcher` 为主 Agent，MCP server 随之拉起。
 
 启用 LLM 审查后，创建节点时自动触发节点定义审查，`compile_arguments` 执行完整逻辑链审查。
+
+> 安装或版本有问题？见 [已验证的依赖版本](docs/reference/known-working-versions.md)。
 
 ## 可视化
 
@@ -95,4 +113,5 @@ bun run viz
 |-------|----------|------|
 | `paper-reproduce` | `/paper-reproduce` | 论文复现工作流。构建独立论证图，逐步验证论文主张是否成立。 |
 | `declare-barrier` | `/declare-barrier` | 形式化声明任务阻塞。声明无法继续前，系统检查所有已知的假性阻塞模式。 |
-| `literature-survey` | `/literature-survey` | 文献调研工作流。将外部文献的发现存入论证图作为 Ground，用 LaTeX 写作时通过 Ground ID 引用，定稿时替换为 bib key。 |
+| `literature-survey` | `/literature-survey` | 文献综述工作流。将外部发现接入论证图作为 Ground，用 LaTeX 以 `\cite{ground_N}` 引用写作，全程维护 `.bib` 文件。 |
+| `overleaf-setup` | `/overleaf-setup` | 一次性配置 skill。安装 `leaf`、完成认证、把本地 LaTeX 目录关联到 Overleaf 项目，并写入一个 Stop hook，在每轮对话结束时自动推送（无文件改动则跳过）。 |

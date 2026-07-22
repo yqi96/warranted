@@ -2,7 +2,7 @@
 
 Make AI research agents accountable — give every conclusion a traceable argument graph.
 
-> 中文文档：[docs/README.zh.md](docs/README.zh.md)
+> [English](README.md) | [简体中文](README.zh-CN.md)
 
 ---
 
@@ -14,9 +14,23 @@ AI coding agents converge because compilers and tests provide objective failure 
 
 Good fit for: **paper reproduction, hypothesis verification, multi-step scientific reasoning, research transparency**.
 
-![Warranted Argument Map](docs/screenshot.png)
+![Warranted Argument Map](docs/assets/screenshot.png)
 
-![Warranted — multi-tree overview](docs/screenshot2.png)
+![Warranted — multi-tree overview](docs/assets/screenshot2.png)
+
+---
+
+## Documentation
+
+New here? Read in this order:
+
+| Doc | What it covers |
+|-----|----------------|
+| [The Argument Graph](docs/en/concepts.md) | Core concepts — the five node types, `compile`, the status lifecycle, and how to talk to the agent in graph terms. **Start here.** |
+| [Reproducing a Paper](docs/en/reproduce-a-paper.md) | Scenario guide: verify a paper's claims with an independent argument graph (`/paper-reproduce`, `declare-barrier`). |
+| [Writing a Paper](docs/en/write-a-paper.md) | Scenario guide: draft a paper or literature survey where every citation traces to a verified Ground (`/overleaf-setup`, `/literature-survey`). |
+
+Release history: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
@@ -51,6 +65,8 @@ claude plugin install warranted@warranted --scope local
 On launch, `toulmin-researcher` becomes the primary agent and the MCP server starts automatically.
 
 When LLM review is enabled, node definitions are reviewed on creation and `compile_arguments` runs a full logic-chain audit.
+
+> Hitting install or version issues? See [known-working versions](docs/reference/known-working-versions.md) for a verified dependency snapshot.
 
 ---
 

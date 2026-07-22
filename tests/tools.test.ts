@@ -375,6 +375,95 @@ describe("mutation 工具 — compile hint", () => {
 });
 
 // =============================================================================
+// invalidateCompiledClaims — status reversion
+// =============================================================================
+
+describe("invalidateCompiledClaims — status reversion", () => {
+  test("supported Claim reverts to proposed when argument chain mutated", async () => {
+    const claim = makeCompiledClaim(db, "Supported claim");
+    const claimData = JSON.parse(
+      (db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string }).data
+    );
+    claimData.status = "supported";
+    db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(claimData), claim.id);
+
+    const ground = makeGround(db);
+    makeWarrant(db, claim.id, [ground.id]);
+
+    const result = await tools.update_node.handler({ node_id: ground.id, content: "Modified ground" });
+
+    expect(result.content[0].text).toContain('reverted from "supported" to "proposed"');
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    expect(JSON.parse(row.data).status).toBe("proposed");
+  });
+
+  test("disputed Claim reverts to proposed when argument chain mutated", async () => {
+    const claim = makeCompiledClaim(db, "Disputed claim");
+    const claimData = JSON.parse(
+      (db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string }).data
+    );
+    claimData.status = "disputed";
+    db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(claimData), claim.id);
+
+    const ground = makeGround(db);
+    makeWarrant(db, claim.id, [ground.id]);
+
+    const result = await tools.update_node.handler({ node_id: ground.id, content: "Modified ground" });
+
+    expect(result.content[0].text).toContain('reverted from "disputed" to "proposed"');
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    expect(JSON.parse(row.data).status).toBe("proposed");
+  });
+
+  test("refuted Claim reverts to proposed when argument chain mutated", async () => {
+    const claim = makeCompiledClaim(db, "Refuted claim");
+    const claimData = JSON.parse(
+      (db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string }).data
+    );
+    claimData.status = "refuted";
+    db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(claimData), claim.id);
+
+    const ground = makeGround(db);
+    makeWarrant(db, claim.id, [ground.id]);
+
+    const result = await tools.update_node.handler({ node_id: ground.id, content: "Modified ground" });
+
+    expect(result.content[0].text).toContain('reverted from "refuted" to "proposed"');
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    expect(JSON.parse(row.data).status).toBe("proposed");
+  });
+
+  test("proposed Claim does NOT produce reversion warning", async () => {
+    const claim = makeCompiledClaim(db, "Proposed claim");
+    const ground = makeGround(db);
+    makeWarrant(db, claim.id, [ground.id]);
+
+    const result = await tools.update_node.handler({ node_id: ground.id, content: "Modified ground" });
+
+    expect(result.content[0].text).toContain("compiled status has been cleared");
+    expect(result.content[0].text).not.toContain("reverted from");
+  });
+
+  test("status reversion and compile invalidation both appear in output", async () => {
+    const claim = makeCompiledClaim(db, "Full test claim");
+    const claimData = JSON.parse(
+      (db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string }).data
+    );
+    claimData.status = "supported";
+    db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(claimData), claim.id);
+
+    const ground = makeGround(db);
+    makeWarrant(db, claim.id, [ground.id]);
+
+    const result = await tools.update_node.handler({ node_id: ground.id, content: "Modified" });
+
+    expect(result.content[0].text).toContain("compiled status has been cleared");
+    expect(result.content[0].text).toContain("reverted from");
+    expect(result.content[0].text).toContain("compile_arguments");
+  });
+});
+
+// =============================================================================
 // list_ground 工具
 // =============================================================================
 

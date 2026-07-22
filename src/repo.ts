@@ -256,6 +256,16 @@ export function setCompileStatus(db: Database, claimId: number, status: "passed"
     .run(JSON.stringify(data), new Date().toISOString().slice(0, 19), claimId);
 }
 
+/** 设置 ClaimData 的 status 字段 */
+export function setClaimStatus(db: Database, claimId: number, status: string): void {
+  const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claimId) as { data: string } | null;
+  if (!row) return;
+  const data = JSON.parse(row.data);
+  data.status = status;
+  db.prepare("UPDATE nodes SET data = ?, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(data), new Date().toISOString().slice(0, 19), claimId);
+}
+
 // =============================================================================
 // 辅助函数
 // =============================================================================

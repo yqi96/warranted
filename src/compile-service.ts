@@ -584,6 +584,14 @@ export function invalidateCompiledClaims(db: Database, nodeId: number): string[]
     if (data.compile_status === "passed") {
       warnings.push(WARNINGS.compileInvalidated(claimId, nodeId));
     }
+
+    // Revert non-proposed status — a stale compile invalidates the basis for the verdict
+    const currentStatus = data.status || "proposed";
+    if (currentStatus === "supported" || currentStatus === "disputed" || currentStatus === "refuted") {
+      repo.setClaimStatus(db, claimId, "proposed");
+      warnings.push(WARNINGS.statusReverted(claimId, currentStatus, nodeId));
+    }
+
     // Always clear compile_state on structural change — even after a failed compile,
     // the cached argumentHash is now stale and must not block future hash comparisons.
     repo.deleteCompileState(db, claimId);

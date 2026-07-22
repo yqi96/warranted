@@ -179,6 +179,12 @@ export const WARNINGS = {
     `Warning: Claim #${claimId}'s compiled status has been cleared ` +
     `because node #${nodeId} in its argument chain was modified.`,
 
+  /** Claim status 被回退 */
+  statusReverted: (claimId: number, previousStatus: string, nodeId: number) =>
+    `Warning: Claim #${claimId} status reverted from "${previousStatus}" to "proposed" ` +
+    `because node #${nodeId} in its argument chain was modified. ` +
+    `Re-run compile_arguments and re-assess status when ready.`,
+
   /** 自动审查触发 */
   autoReviewTriggered: (claimId: number, triggerNode?: number) =>
     `Auto-review triggered for Claim #${claimId}` +

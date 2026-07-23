@@ -183,6 +183,7 @@ export function buildGroundReviewPrompt(data: GroundReviewData): string {
 2. **Is it NOT a data availability statement?** It should not merely state what data is available.
 3. **Is it NOT a methodology description?** It should not describe what methods were used (that belongs in Backing).
 4. **Is it NOT a hypothesis?** It should state what was found, not predict what might be found.
+5. **Is it atomic?** Does it contain only one independent measurement or observation? Report an error if it bundles multiple independent measurements that should each be a separate Ground. Common patterns: (a) before/after or comparison ("reduces from 42.3 to 38.7" bundles baseline and result), (b) multiple metrics ("achieves 85% accuracy AND 12ms latency"), (c) multiple conditions ("performs well on clean AND noisy inputs"). Test: how many independent measurements does verifying this require? If more than one, it is not atomic.
 
 ${OUTPUT_FORMAT}`;
 }

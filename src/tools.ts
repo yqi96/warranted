@@ -694,7 +694,9 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           } catch { /* 审查本身出错不阻断 */ }
         }
 
-        const invalidateWarnings = compileService.invalidateCompiledClaims(db, opts.node_id);
+        const invalidateWarnings = opts.content !== undefined
+          ? compileService.invalidateCompiledClaims(db, opts.node_id)
+          : [];
         let text = `Updated ${formatNodeBrief(node)}`;
         if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
         if (node.type === "ground" && opts.verification === "pending") {

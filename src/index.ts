@@ -18,7 +18,7 @@ import { registerTools } from "./tools.ts";
 import type { Lifecycle } from "./tools.ts";
 import { initLogger } from "./logger.ts";
 import { loadReviewConfig } from "./review-config.ts";
-import pkg from "../package.json";
+import plugin from "../.claude-plugin/plugin.json";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
 
@@ -80,7 +80,7 @@ async function main() {
   // 创建 MCP Server
   const server = new McpServer({
     name: "warranted",
-    version: pkg.version,
+    version: plugin.version,
   });
 
   // 加载审查配置

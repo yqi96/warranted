@@ -1,6 +1,5 @@
 {
   "name": "warranted",
-  "version": "0.2.1",
   "description": "Make AI research agents accountable — give every conclusion a traceable argument graph.",
   "type": "module",
   "scripts": {

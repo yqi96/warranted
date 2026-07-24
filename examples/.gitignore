@@ -1,0 +1,21 @@
+# Regenerable outputs of a reproduction — never commit these (not even to LFS).
+# They can always be produced again by re-running the case.
+**/build/
+**/outputs/
+**/.cache/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.bbl
+*.blg
+
+# The exported argument graph IS the deliverable — keep it even though the
+# repo root ignores *.db. Prefer committing graph.json when the exporter allows.
+!**/graph.db
+!**/graph.json

@@ -49,13 +49,14 @@ export const ELEMENTS = {
       "Test: how many independent measurements does verifying this require? Each one is a separate Ground.",
       "Exception — source='literature': content may be a reported finding, opinion, perspective, or argument from published work (e.g., 'Smith et al. argue that method A is unsuitable for sparse data'). No definition review is applied; provide the reference files as attachments.",
     ].join(" "),
-    source: "Evidence source: 'observed' (independently produced), 'hypothesis' (to be verified), or 'literature' (from published work). If source='hypothesis', write in the same declarative form as observed Grounds — source='hypothesis' already encodes uncertainty; do not add hedging language to content.",
+    source: "Evidence source: 'observed' (independently produced), 'hypothesis' (to be verified), or 'literature' (from published work). If source='hypothesis', write in the same declarative form as observed Grounds — source='hypothesis' already encodes uncertainty; do not add hedging language to content. If the observed result comes from exploratory analysis without a predefined criterion, use source='observed' but scope the Ground to what was actually tested — do not let an exploratory finding support an unscoped Claim.",
     verification:
       "Ground verification status. " +
       "'pending' = not yet independently verified; " +
-      "'verified' = triggers automatic evidence review — only succeeds if review passes, otherwise reverts to pending.",
+      "'verified' = triggers automatic evidence review — only succeeds if review passes, otherwise reverts to pending. " +
+      "Verification evidence must match the Ground's scope: scoped or pilot analysis cannot verify an unscoped Ground.",
     attachments: "File paths supporting this ground. Grounds with ref_claim_id (chain reasoning) do not need attachments. Grounds with source='literature' must provide the reference files (e.g., paper PDF, reference document) as attachments; the reference files themselves serve as the description document — no separate markdown description file is required. Other grounds MUST have a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this ground — explaining: what the ground states, how the evidence was produced, and where the files come from. Files alone without explanation are not enough — the document is the ground's provenance record.",
-    refClaimId: "Use an existing Claim as a Ground for chain reasoning (Claim A's conclusion becomes Claim B's evidence). Mutually exclusive with content/source/verification/attachments — the Ground's content is auto-derived from the referenced Claim.",
+    refClaimId: "Use an existing Claim as a Ground for chain reasoning (Claim A's conclusion becomes Claim B's evidence). Mutually exclusive with content/source/verification/attachments — the Ground's content is auto-derived from the referenced Claim. Do not manually verify a ref-claim Ground; its verification status follows the referenced Claim's status automatically.",
   },
 
   warrant: {

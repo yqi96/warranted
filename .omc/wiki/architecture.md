@@ -2,7 +2,7 @@
 title: Architecture Overview
 tags: [architecture, typescript, sqlite, mcp]
 category: architecture
-updated: 2026-07-22
+updated: 2026-07-25
 ---
 
 # warranted 架构总览
@@ -59,8 +59,8 @@ Tools (tools.ts)        — MCP 工具注册、输入验证、错误处理（14 
 | `src/compile-prompts.ts` | Compile LLM prompt 模板 |
 | `src/merkle-hash.ts` | 论证图 Merkle 哈希（staleness 检测） |
 | `sql/schema.sql` | SQLite schema |
-| `agents/` | Claude Code agent 定义（toulmin-researcher、toulmin-explorer） |
-| `skills/` | paper-reproduce、declare-barrier、literature-survey、overleaf-setup 技能 |
+| `agents/` | Claude Code agent 定义（Toulmin 层：toulmin-researcher、toulmin-explorer；object 层：code-experimenter、discrepancy-auditor） |
+| `skills/` | paper-reproduce、literature-survey、cite-review、overleaf-setup、academic-writing 技能 |
 | `visualizer/` | D3.js v7 模块化可视化（双阶段，14 JS 模块） |
 | `tests/` | 测试文件，bun test |
 

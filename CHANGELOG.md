@@ -7,12 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-25
+
 ### Added
+- `academic-writing` skill: the manuscript-writing umbrella that projects graph-backed arguments into paper prose across Introduction, Related Work, Results, Discussion, Methods, figures, tables, source data, and citation handles, with per-section reference files.
+- `cite-review` skill: audits citation faithfulness in LaTeX; extracts every `\cite{ground_N}`, delegates per-cite checks in parallel, reasons across the reports, then corrects the text and reconciles the graph.
+- `code-experimenter` and `discrepancy-auditor` object-layer agents. `code-experimenter` executes bounded coding, reproduction, and experiment tasks and returns evidence reports. `discrepancy-auditor` challenges a negative outcome before it enters the graph — both an unexpected mismatch about to become a Rebuttal and a claimed blocker about to halt an obligation.
+- Paper-reproduction example scaffold under `examples/` (case template + manifest), with a `.gitattributes` Git LFS rule for `examples/**/data/**`.
 - Scenario-based documentation: `The Argument Graph` (concepts), `Reproducing a Paper`, and `Writing a Paper` guides, in English and Simplified Chinese.
 - A `Documentation` section in the README linking the reading path.
 - This changelog.
 
 ### Changed
+- Sharpened the `toulmin-researcher` "object-driven restructuring" anti-pattern: the prohibition now targets concealment (revising so a contradiction disappears) rather than all structural change, so author-led Claim revision is legitimate under a visibility test. Individual tasks may still impose stricter rules (reproduction fixes Claims verbatim).
+- `paper-reproduce`: delegates object-layer work to the `code-experimenter` and `discrepancy-auditor` agents rather than inlining execution and audit methodology; the discrepancy audit now also covers claimed blockers (the former `declare-barrier` skill, merged into `discrepancy-auditor` as a barrier-audit mode).
+- `literature-survey`: made the paragraph↔Claim coupling explicit, symmetric to the citation↔Ground coupling.
 - Restructured `docs/` by language (`en/`, `zh-CN/`) with `reference/` and `assets/` folders; added bidirectional language switchers across all docs.
 - Moved the Chinese README to the repository root as `README.zh-CN.md`.
 
@@ -43,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `UserPromptSubmit` hook that injects the current node selection as context.
 - Bilingual README and a known-working dependency versions snapshot.
 
-[Unreleased]: https://github.com/yqi96/warranted/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/yqi96/warranted/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/yqi96/warranted/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yqi96/warranted/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yqi96/warranted/releases/tag/v0.1.0

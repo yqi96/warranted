@@ -4,7 +4,7 @@
 
 ## Goal
 
-Verify whether a paper's claims are correct by building an independent argument graph. Run `/paper-reproduce` to start. **Done** means every Claim has a verdict — `supported`, `disputed`, or `refuted`. `proposed` is acceptable only when `declare-barrier` has been invoked and a genuine barrier confirmed.
+Verify whether a paper's claims are correct by building an independent argument graph. Run `/paper-reproduce` to start. **Done** means every Claim has a verdict — `supported`, `disputed`, or `refuted`. `proposed` is acceptable only when a barrier audit has confirmed a genuine barrier.
 
 ---
 
@@ -28,17 +28,17 @@ The graph represents the paper's argument, not a new one. Every node is extracte
 
 ---
 
-## declare-barrier
+## Barrier audits
 
-Agents give up too easily — they hit "the data isn't available" or "this is too complex" and stop. `declare-barrier` is built around that instinct: it presents itself as the official, sanctioned way to declare a task blocked, which is exactly why an agent reaches for it. But instead of granting the exit, it interrogates the claimed barrier against eight recurring patterns of false barriers. The only way "out" is to prove the barrier is real — which, far more often, means discovering it wasn't.
+Agents give up too easily — they hit "the data isn't available" or "this is too complex" and stop. So a claimed block is never accepted at face value: the agent routes it to the `discrepancy-auditor`, which interrogates the claim against eight recurring patterns of false barriers and classifies it. The only way "out" is to prove the barrier is real — which, far more often, means discovering it wasn't.
 
-Any time the agent encounters "cannot / not available / too complex / not feasible", it must invoke `/declare-barrier` before accepting the block. The skill produces a classification:
+Any time the agent encounters "cannot / not available / too complex / not feasible", the block goes to a barrier audit before it is accepted. The audit returns a classification:
 
-- **Class A** — false barrier, path is clear, proceed immediately
-- **Class B** — scope reduction: define the narrower sub-task and execute it (the declaration alone is not the deliverable)
-- **Class C** — genuine barrier, only after all four hard conditions are met
+- **FALSE_BARRIER** — the path is clear, proceed immediately
+- **SCOPE_REDUCTION** — define the narrower sub-task and execute it (the classification alone is not the deliverable)
+- **REAL_BARRIER** — a genuine barrier, only after all four hard conditions are met
 
-A Claim may not remain `proposed` without `declare-barrier` having been invoked. If a Claim is still `proposed` when everything else is done, you can invoke `/declare-barrier` yourself to force the assessment.
+A Claim may not remain `proposed` without a barrier audit. If a Claim is still `proposed` when everything else is done, tell the agent to run a barrier audit on it.
 
 ---
 
@@ -50,7 +50,7 @@ These states are visible in the graph or the visualizer and signal that somethin
 |-------|--------------|
 | A `Ground` has `verification='pending'` while its Claim is `supported` | The conclusion rests on unverified evidence |
 | A `Ground` has no description document | Reproduction is incomplete regardless of verification status |
-| A `Claim` is `proposed` with no active work remaining | `declare-barrier` has not been invoked |
+| A `Claim` is `proposed` with no active work remaining | No barrier audit has been run |
 | A `Claim`'s compile is `stale` | Something in the argument chain was modified — rerun `compile_arguments` |
 | A `Rebuttal` exists but the `Claim` is `supported` | A contradiction has been recorded; the verdict may need reassessment |
 
@@ -60,7 +60,7 @@ These states are visible in the graph or the visualizer and signal that somethin
 
 These are the failures you'll actually see, and the most direct way to name each one. Describing the graph state gets to the root faster than describing the symptom.
 
-**The agent gave up without invoking `declare-barrier`.** It left a Claim `proposed`, or said a step "wasn't feasible," but you never saw a barrier assessment. Invoke it yourself: `/declare-barrier`. Most of the time the assessment finds the barrier was false and the work continues.
+**The agent gave up without a barrier audit.** It left a Claim `proposed`, or said a step "wasn't feasible," but you never saw a barrier assessment. Tell it to route the block to `discrepancy-auditor`. Most of the time the audit finds the barrier was false and the work continues.
 
 **The agent reported a conclusion that doesn't match the paper.** Somewhere along the way it quietly rewrote the Claim to fit what it managed to reproduce. Say: *"In reproduction the Claim must stay verbatim to the paper. If your result differs, that's a Rebuttal — don't change the Claim."* This is the most common drift, and it's invisible unless you compare the Claim node against the paper's wording.
 
@@ -70,4 +70,4 @@ These are the failures you'll actually see, and the most direct way to name each
 
 **The agent called a Claim `supported`, but its compile is `stale`.** It changed something in the chain — a Ground, the Warrant — which reverts the Claim to `proposed` and marks the compile stale, then reported success anyway. Say: *"The compile is stale — re-run `compile_arguments` and re-assess the evidence before this is `supported`."*
 
-**The agent declared a Class B barrier and stopped.** Class B is a scope *reduction*, not an exit — the narrower sub-task still has to be defined and executed. Say: *"Class B means do the reduced task, not just declare it. What's the narrower version, and where's its result?"*
+**The agent got a `SCOPE_REDUCTION` verdict and stopped.** A scope reduction is not an exit — the narrower sub-task still has to be defined and executed. Say: *"`SCOPE_REDUCTION` means do the reduced task, not just declare it. What's the narrower version, and where's its result?"*

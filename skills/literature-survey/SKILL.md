@@ -1,88 +1,87 @@
 ---
 name: literature-survey
-description: Synthesize what a body of literature says about a research question. Builds an argument graph where external findings are Grounds (with paper attachments) and your independent conclusions are Claims. Use when surveying a topic, synthesizing evidence across papers, or assessing whether a research claim is settled.
+description: Use for literature-backed surveys, related work, introductions, discussions, or prose whose evidence comes from published papers. Translate citable propositions into verified literature Grounds and cite them as \cite{ground_N}.
 ---
 
-## Goal
+## Graph Mapping
 
-Write a literature survey whose claims are grounded in the argument graph. The tex and the graph are coupled throughout: each `\cite{ground_<N>}` in the tex links to a Ground node that holds the cited finding and its source paper. The graph is the quality mechanism — compile verifies the argument chain, verified Grounds confirm the evidence is in hand, and the citation linkage ensures the text faithfully represents what the papers say.
+Never cite a paper directly. A citable proposition from a paper first becomes a `source="literature"` Ground; LaTeX then cites that Ground with `\cite{ground_N}`. The citation is a pointer into the argument graph, not a bibliography shortcut.
 
-There is no fixed workflow. Use the graph and the writing together however the work demands.
+```
+citable proposition from a paper -> literature Ground
+paragraph point                  -> Claim
+why findings support the point   -> Warrant
+methodological authority         -> Backing
+conflicting paper finding        -> Rebuttal
+```
 
-**Done means**:
-- every Ground is `verified`; every Claim has status `supported`, `disputed`, or `refuted`; every Claim has passed `compile_arguments`
-- the tex is logically coherent: the argument flows, and each citation's surrounding text faithfully represents its Ground
+Granularity:
 
-`proposed` is the initial state for Claims, not a resting place.
+- one paper yields multiple Grounds when it offers multiple distinct citable propositions
+- one Ground carries multiple paper attachments when several papers support the same proposition
+- different findings, populations, methods, measurements, or scopes are separate Grounds
+- convergence across distinct Grounds is a Warrant's job, not a merge into a vague composite Ground
 
-## How to use the Toulmin graph
+## Obligations
 
-### Extract the argument structure
+Object-layer work in this channel — search, reading, download, BibTeX, prose edits — is valid only when it creates, verifies, cites, or reconciles a literature Ground, or a Claim built from literature Grounds. A searched paper must become a Ground, Backing, or Rebuttal, or be discarded with a reason; it is never accumulated as an inert reading list.
 
-Two entry points are equally valid:
+| Graph state | Required action |
+|---|---|
+| No Claim for a load-bearing paragraph thesis | Create or update the Claim |
+| A sentence cites a paper for a proposition | Reuse a matching Ground, or create a literature Ground and attach the paper |
+| A paper provides several relevant propositions | Create one Ground per distinct proposition |
+| Several papers support the same specific finding | Attach them to the same Ground only when they support the same proposition |
+| A literature Ground is cited but not verified | Check the paper supports it, then mark verified |
+| A Claim has Grounds but no Warrant | Write the inference principle |
+| A Warrant needs authority | Add Backing |
+| A paper contradicts the Claim or Warrant | Create Rebuttal |
+| The text changes the paragraph thesis | Reconcile the Claim |
+| A citation points to the wrong Ground | Point to the correct Ground, or create one; edit an existing Ground only to fix an error, never to fit the sentence |
+| Existing LaTeX uses author-year keys | Migrate each: identify the cited proposition, create/reuse its Ground, replace the key with `ground_N` |
 
-**Framework-first**: formulate your research conclusions as Claims (`proposed`), then find literature to populate Grounds. Revise Claims based on what the evidence actually shows.
+A citable proposition may be a result, definition, taxonomy, dataset description, method claim, limitation, opinion, or argument — but it must be specific enough that citation faithfulness can be checked.
 
-**Evidence-first**: collect papers first. Each paper's relevant finding becomes a Ground. After accumulating Grounds, identify the pattern and formulate Claims.
+## Citation Contract
 
-Node mappings:
+For every external citation in `.tex`:
 
-- `create_claim` — your independent synthesis conclusion; `proposed` initially, advances after `compile_arguments` passes and evidence is assessed as sufficient
-- `create_ground(source="literature")` — a finding, result, opinion, or argument from a specific paper; one paper can produce multiple Grounds; attach the paper file as the provenance record
-- `create_warrant` — the inference principle connecting the body of Grounds to the Claim
-- `create_backing` (if any) — methodological consensus or meta-analysis that legitimizes the Warrant's authority
-- `create_rebuttal` (if any) — a paper with contradicting findings, or a documented boundary condition of the Claim
+1. the source uses `\cite{ground_N}`
+2. Ground N exists, is `source="literature"`, and is `verified`
+3. Ground N states the exact proposition being cited
+4. Ground N attaches every source paper supporting it in this citation
+5. each attached paper's filename stem matches a BibTeX key in the project `.bib`
 
-> **Chained reasoning**: when a sub-Claim's conclusion serves as evidence for another Claim, use `create_ground(ref_claim_id=sub-Claim.id)`.
+This contract proves provenance, not argument strength — a citation can be faithful while the Claim stays unsupported.
 
-Run `compile_arguments` after building the initial structure. Re-run it any time you modify the argument structure.
+Get faithfulness right while writing: each `\cite{ground_N}` sentence must already represent Ground N at the moment you write it. A mismatch caught late — after the argument has been built on it — can force reworking the paper's logic.
 
-### Drive action from Claims
+## Writing As Graph Projection
 
-For each Claim, ask: what is preventing it from being marked `supported`, `disputed`, or `refuted`? Act independently to remove that blocker, update the graph, and re-examine. Repeat until every Claim has a clear status.
+A load-bearing paragraph is a projection of a Claim and its supporting structure. A transitional or roadmap paragraph needs no Claim, but must not smuggle in uncited external assertions or unsupported synthesis.
 
-- Grounds missing → search for papers, extract findings
-- Grounds not yet verified → attach paper files, then batch-mark `verified`
-- Argument chain incomplete → add Warrant or Backing
-- `compile_arguments` fails → fix the chain structure
+- paragraph thesis matches a Claim
+- sentences reporting papers cite literature Grounds
+- synthesis language reflects the Warrant, not a list of sources
+- contradictions surface as limitations, disagreements, or boundary conditions, and exist in the graph as Rebuttals
 
-## Writing
+Keep three voices distinct:
 
-Write the survey in `.tex`, citing Grounds by ID — `\cite{ground_42}` — rather than managing bib keys while writing. This keeps the text coupled to the argument graph.
+- **Paper voice** — what a source reports → literature Ground + `\cite{ground_N}`
+- **Synthesis voice** — what the body of evidence suggests → Claim + Grounds + Warrant
+- **Verdict voice** — what the graph has earned → Claim status
 
-Name each paper using its bib key as soon as it is downloaded: `vaswani2017attention.pdf`. It makes three identifiers converge on one string throughout the process:
+Do not let a citation carry the argument: citations supply Grounds; Warrants explain why they matter.
 
-| Element | Value |
-|---------|-------|
-| `.bib` entry key | `vaswani2017attention` |
-| Local paper file | `/path/to/vaswani2017attention.pdf` |
-| Ground attachment | `/path/to/vaswani2017attention.pdf` |
+## Revision Discipline
 
-**Maintain the `.bib` file as you go.** Every time you add a paper, add its BibTeX entry to the project `.bib` file immediately — do not batch this at the end. The bib key must match the filename stem exactly. Required fields: `author`, `title`, `year`, and venue (`journal`, `booktitle`, or `url` for preprints). A Ground whose attachment has no matching `.bib` entry is incomplete.
+Prose and graph are coupled both ways. Any meaning-bearing edit on one side obliges a matching, honest edit on the other; they must never silently diverge.
 
-**Synthesize, don't enumerate.** Each paragraph makes a claim and marshals evidence for it. The structure is: claim → evidence → inference. Do not write "Paper A says X. Paper B says Y." — that is a list, not a survey.
+Recurring cases:
 
-**Claim-first.** Open each paragraph with the point it establishes. Citations follow as evidence; they do not precede the point.
+- **Prose asserts something new** → the Ground or Claim behind it must exist first; do not write around a missing node.
+- **Prose narrows, broadens, or strengthens a thesis** → re-scope or re-status the Claim so the graph actually earns the new wording.
+- **Prose drops a caveat or conflict** → it must reappear as a Rebuttal or a status change, not simply disappear.
+- **A Ground is corrected, a status flips, or a Rebuttal is added** → update every sentence that depends on it.
 
-**Attribute precisely.** Distinguish three voices:
-- What a paper reports: "Smith et al. found that..." / `\cite{ground_N}`
-- What the evidence collectively shows: "The evidence suggests..."
-- What you conclude: "We argue..." / a Claim node
-
-Never let these blur. A citation is not your argument; it is your evidence.
-
-**No assertion without citation.** If a claim cannot be grounded in a cited paper, it belongs in a Claim node (your own synthesis, requiring a full argument chain) or it does not belong in the text. "Many studies have shown..." without a citation is not permitted.
-
-**No padding.** Delete: "It is worth noting that", "Interestingly,", "It is well-known that", "As mentioned above". Every sentence carries weight or is cut.
-
-**Acknowledge contradictions.** When evidence conflicts, report it directly. Conflicting Grounds become Rebuttals in the graph and are named explicitly in the text.
-
-**Tense discipline.** Present tense for established findings and general principles. Past tense for specific experimental actions ("trained on", "evaluated over").
-
-## Constraints
-
-**Attribution boundary**: information from papers — whether results, claims, or opinions — is always stored as a Ground, not a Claim. Only your independent synthesis conclusions are Claims.
-
-**Attachment is provenance**: `source="literature"` Grounds do not require a separate description document. The attached paper file is the provenance record.
-
-**Claim revision discipline**: revising a Claim is legitimate when the evidence genuinely does not support the original formulation. It is not legitimate to revise a Claim to avoid reporting contradicting evidence. When a Claim is revised, the revision must be motivated by the evidence; if conflicting Grounds exist, record them as Rebuttals and let the Claim status reflect the state of the evidence.
+The test: if something leaves the prose without reappearing in the graph — or changes in the graph without reaching the prose — that is concealment, not revision.

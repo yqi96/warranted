@@ -20,7 +20,7 @@ AI coding agents converge because compilers and tests fail loudly when the work 
 | Cites a paper it never read, or invents a plausible reference | a Ground is `verified` only with an attached source confirmed to support the finding | every citation traces to a document that was examined |
 | Moves the goalposts — rewrites the conclusion to match what it got | Claims are immutable in reproduction; a differing result becomes a Rebuttal | you always test the paper's actual claim |
 | Buries evidence that contradicts the conclusion | contradictions are recorded as Rebuttals, and can't be erased | the verdict reflects the real state of the evidence |
-| Quits early — "not available," "too complex" | `declare-barrier` interrogates the block before accepting it | the exit stays closed unless the barrier is genuinely real |
+| Quits early — "not available," "too complex" | a barrier audit interrogates the block before accepting it | the exit stays closed unless the barrier is genuinely real |
 | "Verifies" a result using the paper's own outputs | the independence rule rejects the paper's own artifacts as evidence | reproduction is actually independent |
 
 Read this way, none of the rules are bureaucratic — each is the answer to a specific failure you'd otherwise have to catch by hand.

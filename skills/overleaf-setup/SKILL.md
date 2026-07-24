@@ -1,6 +1,6 @@
 ---
 name: overleaf-setup
-description: One-time setup skill. Configures automatic Overleaf push for a LaTeX directory.
+description: Use once when a LaTeX project needs Overleaf synchronization with Warranted citation enforcement. Installs/authenticates leaf, binds a local LaTeX directory to an Overleaf project, and writes the Stop hook that pushes staged source with ground_N citations expanded.
 ---
 
 ## Goal

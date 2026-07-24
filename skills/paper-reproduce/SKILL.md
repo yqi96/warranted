@@ -1,58 +1,80 @@
 ---
 name: paper-reproduce
-description: Build and verify an independent argument graph to assess whether a paper's claims hold. Use for reproducing published experimental results, validating paper claims, or building argument graphs from academic literature.
+description: Use for reproducing published papers or validating whether a paper's Claims and stated results hold under independent reproduction. Preserve the paper's Claims, map stated results to hypothesis Grounds, enforce verification independence, delegate experiment work to code-experimenter, and route mismatches and claimed blockers to discrepancy-auditor before any Rebuttal or barrier verdict.
 ---
 
-## Goal
+## Graph Mapping
 
-Verify whether the paper's claims are correct. Maintain strict neutrality throughout: supported and disputed are equally valid scientific outcomes.
+The paper's argument is the object under test. Extract it into the graph first; reproduction then tests whether those Grounds hold under independent execution.
 
-**Done means**: every Claim has a clear conclusion — supported, disputed, refuted, or proposed. `proposed` is the conclusion of last resort when a verdict genuinely cannot be reached; it requires `declare-barrier` skill to have been invoked and is not an exit ramp.
+```
+paper conclusion                           -> Claim
+paper stated result                        -> hypothesis Ground, verification=pending
+paper inference from result to conclusion  -> Warrant
+paper method/standard behind the inference -> Backing
+paper acknowledged exception               -> Rebuttal
+```
 
-## How to use the Toulmin graph
+Granularity:
 
-### Extract the argument structure
+- extract the Claims whose verdicts matter; do not force the whole paper into one giant Claim
+- attach each stated result to the specific Claim it bears on
+- distinct results, conditions, populations, or scopes are separate hypothesis Grounds
+- a paper sub-Claim used as evidence for another Claim -> `create_ground(ref_claim_id=sub_claim_id)`
 
-Read the paper and extract its argument structure. Every node starts as a hypothesis.
+## Obligations
 
-- `create_claim` — the paper's conclusion; initializes as `proposed`, updated to `supported`, `disputed`, or `refuted` via `update_node` based on verification results
-- `create_ground(source="hypothesis", verification="pending")` — the paper's stated experimental result, written as a declarative finding; initializes as a hypothesis, updated via `update_node` as verification proceeds
-- `create_warrant` — the inference principle connecting Ground to Claim
-- `create_backing` (if any) — what supports the Warrant's authority
-- `create_rebuttal` (if any) — exceptions the paper acknowledges
+Object-layer work in this channel — implementation, data download, computation, analysis, debugging — is valid only when it extracts, tests, audits, or reconciles a node or Claim status in the reproduction graph. A run not tied to a Ground it verifies or contests is loose work.
 
-> **Chained reasoning**: when a sub-Claim serves as evidence for another Claim, use `create_ground(ref_claim_id=sub-Claim.id)`.
+| Graph state | Required action |
+|---|---|
+| A paper conclusion whose verdict matters has no Claim | `create_claim`, status `proposed` |
+| A paper-stated result must be tested | `create_ground(source="hypothesis", verification="pending")` |
+| A Claim's Grounds have no inference principle | `create_warrant` |
+| A Warrant needs authority | `create_backing` from the paper's method or standard |
+| The paper acknowledges an exception or limitation | `create_rebuttal` |
+| The initial Claim-Ground-Warrant structure exists | `compile_arguments` — coherence to test, not proof |
+| A hypothesis Ground needs an independent test | delegate execution to `code-experimenter` |
+| Reproduction output mismatches a Ground | route to `discrepancy-auditor` before any Rebuttal |
+| A claimed blocker would halt an obligation | route to `discrepancy-auditor` before accepting it |
+| A result supports its Ground | `update_node(verification="verified", attachments=[...])`, reassess the Claim after compile |
+| Reproduction differs but audit finds a setup issue | keep the Ground `pending`; fix and rerun |
+| Audit confirms a real contradiction | `create_rebuttal`; move the Claim to `disputed`/`refuted` only after compile and evidence assessment |
+| A result reveals something the paper never claimed | new observed Ground or Claim; never rewrite the paper Claim |
+| Only a narrower scope can be tested | record scoped evidence; do not let scoped success make the broader Claim `supported` |
 
-Once extracted, run `compile_arguments` to verify the reasoning structure is logically coherent. Re-run it any time you modify the argument structure.
+## Fidelity
 
-### Drive action from Claims
+The graph represents the paper's argument, not an improved version that happens to reproduce.
 
-For each Claim, ask: what is preventing it from being marked supported, disputed, or refuted? Act independently to remove that blocker, update the graph, and re-examine. Repeat until every Claim has a clear conclusion.
+- Claims are fixed: do not change conclusion, scope, or qualifier to fit your results.
+- Hypothesis Grounds are fixed in logical assertion: do not rewrite what the paper claimed was found. A minor numerical correction is allowed only when it preserves the same assertion and is documented.
+- Warrants reflect the paper's reasoning; do not swap them merely to make reproduction easier.
+- If the paper's formulation is ambiguous, record the ambiguity — do not silently pick the interpretation most convenient to your implementation.
+- A confirmed contradiction stays visible as a Rebuttal or status change; it is never erased by rewriting the Claim or Ground.
 
-## Constraints
+## Independence
 
-**Fidelity to the paper**
+Verification evidence must be independent of the paper's produced artifacts.
 
-The argument graph represents the paper's argument, not a new one. Claims and Grounds are extracted from the paper and the overall reasoning structure is fixed.
+Do not verify a Ground with paper-produced outputs: precomputed results, processed outputs, supplementary result tables, generated datasets, trained weights, cached model outputs, or any artifact the authors created to support the claim.
 
-- **Claim**: extracted verbatim from the paper. Do not modify the conclusion, scope, or qualifier to match your findings — that would change what you are verifying.
-- **Ground**: extracted from the paper as a hypothesis. After reproduction, minor numerical corrections are permitted (e.g., 42.3 → 42.1 due to random seed or implementation variance). The logical assertion — what the Ground claims to show — must remain unchanged.
-- **Reasoning structure**: the Ground → Warrant → Claim chain reflects the paper's logic. Do not restructure it to make verification easier.
+Author-published code, scripts, and weights may be used only when they are part of the described method rather than the produced result under test. The test:
 
-If your reproduction yields a result that contradicts the paper, record it as a Rebuttal, then update the Claim status accordingly. Do not rewrite the Claim or Ground to absorb the contradiction.
+> Did the paper produce this artifact as its result, or use it as an input/tool?
 
-**Independence**
+If the paper produced it, it cannot verify the Ground. It may still serve sanity checks, debugging, or a narrower sub-step — but that narrower check must not be reported as independent verification of the original Ground.
 
-Do not use the paper's produced artifacts — supplementary data, pre-computed outputs, GitHub artifacts — as verification evidence. That is circular reasoning.
+## Delegation
 
-Author-published tools (code, scripts, model weights) may be reused as long as they match the paper's described methodology.
+Reproduction is long-running and demands isolated context, so delegate substantial object-layer work by default. Both workers report evidence only; neither sets Claim status nor creates Rebuttals — you own those graph decisions.
 
-The test: *did this paper produce this artifact, or did the paper use it as external input?* If the paper produced it, do not use it — reproduce it independently.
+Delegate experiment execution to `code-experimenter`, briefing it with the target hypothesis Ground, the expected paper result, the method to implement, the paper-produced artifacts it must not use as verification (see Independence), and the raw artifacts to return.
 
-**declare-barrier**
+Route to `discrepancy-auditor` before the graph accepts any negative verdict: it decides whether a mismatch is a real contradiction or an incidental artifact, and whether a claimed blocker is genuine or a premature stop with a defensible narrower test still available.
 
-Any time during execution you encounter: cannot / not available / too complex / not feasible / not reproduced — you must invoke the **declare-barrier** skill before proceeding. A Claim may not be left as `proposed` without declare-barrier having been called.
+A Claim may stay `proposed` only after its unresolved obligation has passed audit and no defensible narrower verification remains — never as a way to avoid a verdict.
 
-**Description document**
+## Documentation
 
-Every Ground gets a description document, placed near the reproduction code. It should explain what was done, what was found, and why you reached your judgment — well enough for someone else (or future you) to follow the reasoning.
+Every tested Ground needs a reproduction report near its code or artifacts, recording: target Ground and paper result; method implemented; data and preprocessing; commands and environment; result artifacts; comparison to the paper; discrepancy/barrier audit outcome if any; and the recommended graph consequence.

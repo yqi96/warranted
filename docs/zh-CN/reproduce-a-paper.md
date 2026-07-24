@@ -4,7 +4,7 @@
 
 ## 目标
 
-通过构建一张**独立的**论证图，验证一篇论文的主张是否成立。运行 `/paper-reproduce` 开始。**完成**意味着每个 Claim 都有一个判定——`supported`、`disputed` 或 `refuted`。只有在调用过 `declare-barrier` 并确认存在真实阻塞时，`proposed` 才可接受。
+通过构建一张**独立的**论证图，验证一篇论文的主张是否成立。运行 `/paper-reproduce` 开始。**完成**意味着每个 Claim 都有一个判定——`supported`、`disputed` 或 `refuted`。只有在做过一次阻塞审计并确认存在真实阻塞时，`proposed` 才可接受。
 
 ---
 
@@ -28,17 +28,17 @@
 
 ---
 
-## declare-barrier
+## 阻塞审计
 
-Agent 太容易放弃了——碰上"数据拿不到""这太复杂"就停下来。`declare-barrier` 正是围绕这一本能设计的：它把自己包装成宣告任务受阻的官方、正规入口，而这恰恰是 Agent 会去够它的原因。但它不会放行出口，而是拿声称的阻塞去比对八种反复出现的假性阻塞模式来盘问它。唯一的"出路"是证明阻塞确实为真——而更多时候，是发现它并不成立。
+Agent 太容易放弃了——碰上"数据拿不到""这太复杂"就停下来。所以声称的阻塞绝不被照单全收：Agent 把它路由给 `discrepancy-auditor`，后者拿这个声称去比对八种反复出现的假性阻塞模式来盘问并分类。唯一的"出路"是证明阻塞确实为真——而更多时候，是发现它并不成立。
 
-每当 Agent 遇到"做不到 / 拿不到 / 太复杂 / 不可行"，它必须先调用 `/declare-barrier` 再接受阻塞。这个 skill 给出一个分类：
+每当 Agent 遇到"做不到 / 拿不到 / 太复杂 / 不可行"，这个阻塞在被接受之前都要先过一次阻塞审计。审计返回一个分类：
 
-- **Class A**——假性阻塞，路是通的，立即继续
-- **Class B**——缩小范围：定义更窄的子任务并执行它（光声明不算交付）
-- **Class C**——真实阻塞，只有在四个硬性条件全部满足后才成立
+- **FALSE_BARRIER**——假性阻塞，路是通的，立即继续
+- **SCOPE_REDUCTION**——缩小范围：定义更窄的子任务并执行它（光有分类不算交付）
+- **REAL_BARRIER**——真实阻塞，只有在四个硬性条件全部满足后才成立
 
-没有调用过 `declare-barrier`，Claim 不得停留在 `proposed`。如果其他都做完了、某个 Claim 还是 `proposed`，你可以自己调用 `/declare-barrier` 来强制它做这项评估。
+没有做过阻塞审计，Claim 不得停留在 `proposed`。如果其他都做完了、某个 Claim 还是 `proposed`，就让 Agent 对它做一次阻塞审计。
 
 ---
 
@@ -50,7 +50,7 @@ Agent 太容易放弃了——碰上"数据拿不到""这太复杂"就停下来�
 |------|------|
 | 某个 `Ground` 是 `verification='pending'`，而它的 Claim 却是 `supported` | 结论建立在未经验证的证据上 |
 | 某个 `Ground` 没有说明文档 | 无论验证状态如何，复现都不完整 |
-| 某个 `Claim` 是 `proposed` 且已无进行中的工作 | `declare-barrier` 还没被调用 |
+| 某个 `Claim` 是 `proposed` 且已无进行中的工作 | 还没做过阻塞审计 |
 | 某个 `Claim` 的 compile 是 `stale` | 论证链里有东西被改过——重新运行 `compile_arguments` |
 | 存在 `Rebuttal`，但 `Claim` 却是 `supported` | 已记录一条矛盾；判定可能需要重新评估 |
 
@@ -60,7 +60,7 @@ Agent 太容易放弃了——碰上"数据拿不到""这太复杂"就停下来�
 
 下面这些是你真会遇到的失败，以及点名每种失败最直接的说法。描述图的状态，比描述症状更快触及根因。
 
-**Agent 没调用 `declare-barrier` 就放弃了。** 它把某个 Claim 留在 `proposed`，或说某一步"不可行"，可你从没见到一次阻塞评估。自己调用它：`/declare-barrier`。多数时候评估会发现阻塞是假的，工作得以继续。
+**Agent 没做阻塞审计就放弃了。** 它把某个 Claim 留在 `proposed`，或说某一步"不可行"，可你从没见到一次阻塞评估。让它把这个阻塞路由给 `discrepancy-auditor`。多数时候审计会发现阻塞是假的，工作得以继续。
 
 **Agent 报告的结论跟论文对不上。** 过程中某处，它悄悄把 Claim 改写成了自己能复现出来的样子。就说：*"复现场景下 Claim 必须与论文逐字一致。如果你的结果不同，那是 Rebuttal——别改 Claim。"* 这是最常见的漂移，而且除非你拿 Claim 节点去对论文的原话，否则根本看不出来。
 
@@ -70,4 +70,4 @@ Agent 太容易放弃了——碰上"数据拿不到""这太复杂"就停下来�
 
 **Agent 把某个 Claim 称作 `supported`，但它的 compile 是 `stale`。** 它改了链条里的某样东西——一个 Ground、那个 Warrant——这会把 Claim 退回 `proposed` 并把 compile 标为 stale，然后它还是照样报告成功了。就说：*"compile 是 stale 的——先重新运行 `compile_arguments` 并重新评估证据，再谈 supported。"*
 
-**Agent 声明了一个 Class B 阻塞就停下了。** Class B 是范围*缩小*，不是出口——那个更窄的子任务仍然要定义并执行。就说：*"Class B 意味着去做缩小后的任务，而不是光声明。更窄的版本是什么，它的结果在哪？"*
+**Agent 得到一个 `SCOPE_REDUCTION` 判定就停下了。** 缩小范围不是出口——那个更窄的子任务仍然要定义并执行。就说：*"`SCOPE_REDUCTION` 意味着去做缩小后的任务，而不是光声明。更窄的版本是什么，它的结果在哪？"*

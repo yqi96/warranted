@@ -2,7 +2,15 @@
 
 Make AI research agents accountable — give every conclusion a traceable argument graph.
 
+[![Release](https://img.shields.io/github/v/release/yqi96/warranted?color=green)](https://github.com/yqi96/warranted/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+![MCP Server](https://img.shields.io/badge/MCP-server-blue)
+![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2)
+[![Stars](https://img.shields.io/github/stars/yqi96/warranted?style=flat&color=orange)](https://github.com/yqi96/warranted/stargazers)
+
 > [English](README.md) | [简体中文](README.zh-CN.md)
+
+> **Coding agents have compilers and tests. Research agents have Warranted.**
 
 ---
 

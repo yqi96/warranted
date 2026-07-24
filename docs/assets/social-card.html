@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    font-family: -apple-system, "SF Pro Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: radial-gradient(1200px 700px at 78% 18%, #1b2b4d 0%, #0b1120 55%, #070b16 100%);
+    color: #e8edf7;
+    position: relative;
+  }
+  /* faint argument-graph motif, top-right */
+  .graph { position: absolute; inset: 0; opacity: 0.5; }
+  .wrap { position: absolute; left: 84px; top: 0; height: 640px; display: flex; flex-direction: column; justify-content: center; width: 780px; }
+  .brand { display: flex; align-items: center; gap: 16px; margin-bottom: 26px; }
+  .dot { width: 20px; height: 20px; border-radius: 50%; background: #4f8cff; box-shadow: 0 0 22px 4px rgba(79,140,255,.7); }
+  .brand h1 { font-size: 58px; font-weight: 800; letter-spacing: -1.5px; }
+  .brand h1 span { color: #4f8cff; }
+  .slogan { font-size: 40px; font-weight: 700; line-height: 1.22; letter-spacing: -0.8px; margin-bottom: 26px; }
+  .slogan .hl { color: #7fd1ae; }
+  .sub { font-size: 23px; line-height: 1.5; color: #a9b6cf; font-weight: 400; max-width: 700px; }
+  .pills { display: flex; gap: 12px; margin-top: 34px; }
+  .pill { font-size: 18px; font-weight: 600; padding: 9px 18px; border-radius: 999px; border: 1px solid rgba(255,255,255,.16); color: #cdd8ee; background: rgba(255,255,255,.04); }
+  .foot { position: absolute; left: 84px; bottom: 42px; font-size: 20px; color: #6f7d99; font-weight: 500; }
+</style>
+</head>
+<body>
+  <svg class="graph" viewBox="0 0 1280 640" preserveAspectRatio="xMidYMid slice">
+    <defs>
+      <marker id="arw" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L6,3 L0,6 Z" fill="#3a4c78"/>
+      </marker>
+    </defs>
+    <g stroke="#3a4c78" stroke-width="2" fill="none" marker-end="url(#arw)" opacity="0.9">
+      <line x1="1035" y1="150" x2="960" y2="250"/>
+      <line x1="1150" y1="150" x2="1000" y2="250"/>
+      <line x1="980" y1="300" x2="1010" y2="420"/>
+      <line x1="1120" y1="300" x2="1040" y2="420"/>
+    </g>
+    <g fill="#16233f" stroke="#4f8cff" stroke-width="2.5">
+      <rect x="985" y="110" width="100" height="44" rx="10"/>
+      <rect x="1105" y="110" width="100" height="44" rx="10"/>
+      <rect x="930" y="256" width="120" height="48" rx="10" stroke="#7fd1ae"/>
+      <rect x="1075" y="256" width="120" height="48" rx="10" stroke="#7fd1ae"/>
+      <rect x="990" y="426" width="120" height="50" rx="10" stroke="#e8b04f"/>
+    </g>
+    <g fill="#8fa2c8" font-family="monospace" font-size="15" text-anchor="middle">
+      <text x="1035" y="138">Ground</text>
+      <text x="1155" y="138">Ground</text>
+      <text x="990" y="285">Warrant</text>
+      <text x="1135" y="285">Warrant</text>
+      <text x="1050" y="456">Claim ✓</text>
+    </g>
+  </svg>
+
+  <div class="wrap">
+    <div class="brand"><span class="dot"></span><h1>Warranted</h1></div>
+    <div class="slogan">Coding agents have compilers and&nbsp;tests.<br/>Research agents have <span class="hl">Warranted</span>.</div>
+    <div class="sub">A traceable Toulmin argument graph for AI research agents — every conclusion earned, every contradiction recorded.</div>
+    <div class="pills">
+      <div class="pill">MCP Server</div>
+      <div class="pill">Claude Code Plugin</div>
+      <div class="pill">Open Source · MIT</div>
+    </div>
+  </div>
+  <div class="foot">github.com/yqi96/warranted</div>
+</body>
+</html>

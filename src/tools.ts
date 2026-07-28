@@ -587,9 +587,9 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           remove: z.array(z.number()).optional(),
         }).optional().describe("Warrant backing statement IDs incremental update"),
         rebuttal_ids: z.object({
-          add: z.array(z.object({ id: z.number(), target_type: z.enum(["claim", "warrant"]) })).optional(),
+          add: z.array(z.number()).optional(),
           remove: z.array(z.number()).optional(),
-        }).optional().describe("Rebuttal target IDs incremental update for Claim or Warrant nodes"),
+        }).optional().describe("Rebuttal statement IDs incremental update for Claim or Warrant nodes. target_type is inferred from the updated node's type."),
         qualifier: z.string().optional().describe("Claim qualifier: degree of certainty ('probably', 'presumably', 'certainly')"),
       },
     },

@@ -15,6 +15,7 @@ import type {
   CompileVerdict,
   ElementReviewResult,
   AutoVerifyResult,
+  NodeRow,
 } from "./types.ts";
 import * as repo from "./repo.ts";
 import { runChainReview, loadArgumentContext } from "./compile-reviewers.ts";
@@ -28,7 +29,6 @@ import { callAndParse } from "./review-llm.ts";
 import {
   buildClaimReviewPrompt,
   buildWarrantReviewPrompt,
-  buildGroundReviewPrompt,
 } from "./compile-prompts.ts";
 
 // =============================================================================
@@ -58,7 +58,7 @@ function saveChainReviewFile(
 /** 将节点定义审查结果保存为独立 JSON 文件到 reviews/ 目录 */
 function saveNodeReviewFile(
   config: ReviewConfig,
-  elementType: "claim" | "warrant" | "ground",
+  elementType: "claim" | "warrant",
   content: string,
   result: { errors: string[]; warnings: string[] },
   reviewedAt: string
@@ -89,7 +89,7 @@ function saveNodeReviewFile(
  */
 export async function reviewNodeDefinition(
   config: ReviewConfig,
-  elementType: "claim" | "warrant" | "ground",
+  elementType: "claim" | "warrant",
   content: string,
   qualifier?: string | null
 ): Promise<{ errors: string[]; warnings: string[] }> {
@@ -103,10 +103,8 @@ export async function reviewNodeDefinition(
       content,
       qualifier: qualifier ?? null,
     });
-  } else if (elementType === "warrant") {
-    prompt = buildWarrantReviewPrompt({ id: 0, content });
   } else {
-    prompt = buildGroundReviewPrompt({ id: 0, content });
+    prompt = buildWarrantReviewPrompt({ id: 0, content });
   }
 
   let result: { errors: string[]; warnings: string[] };
@@ -163,7 +161,7 @@ export function structuralPreCheck(db: Database, claimId: number): string[] {
       const gRow = repo.getNodeById(db, gid);
       if (!gRow) {
         errors.push(`Ground #${gid} (referenced by Warrant #${w.id}) not found.`);
-      } else if (gRow.type !== "ground") {
+      } else if (gRow.type !== "statement" && gRow.type !== "claim") {
         errors.push(`Node #${gid} (referenced by Warrant #${w.id}) is not a Ground (type: ${gRow.type}).`);
       }
     }
@@ -203,34 +201,19 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
     }
   }
 
-  // --- Category A: Referential Integrity (ref_claim_id) ---
-  for (const gr of ctx.groundRows) {
-    const gData = JSON.parse(gr.data) as { ref_claim_id?: number | null; [k: string]: unknown };
-    const refId = gData.ref_claim_id;
-    if (refId != null) {
-      const refRow = repo.getNodeById(db, refId);
-      if (!refRow) {
-        errors.push(`Ground #${gr.id}: ref_claim_id=${refId} points to non-existent node`);
-      } else if (refRow.type !== "claim") {
-        errors.push(`Ground #${gr.id}: ref_claim_id=${refId} points to a ${refRow.type}, not a Claim`);
-      }
-    }
-  }
-
   // --- Category B: Individual Quality (per ground and warrant) ---
   // B6 dedup: when ground is BOTH hypothesis AND pending → emit B6 only, not B1+B2
   for (const gr of ctx.groundRows) {
+    if (gr.type === "claim") continue; // claim-type grounds skip quality checks
     const gData = JSON.parse(gr.data) as {
       source?: string;
       verification?: string;
-      ref_claim_id?: number | null;
       [k: string]: unknown;
     };
     const isPending = gData.verification === "pending";
     const isHypothesis = gData.source === "hypothesis";
-    const hasRefClaim = gData.ref_claim_id != null;
 
-    if (isHypothesis && isPending && !hasRefClaim) {
+    if (isHypothesis && isPending) {
       // B6: compound weakness (replaces B1+B2 to reduce noise)
       warnings.push(`Ground #${gr.id} is both hypothesis and unverified (compound weakness: future unverified result)`);
     } else {
@@ -238,9 +221,9 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
         // B1
         warnings.push(`Ground #${gr.id} has verification=pending`);
       }
-      if (isHypothesis && !hasRefClaim) {
+      if (isHypothesis) {
         // B2
-        warnings.push(`Ground #${gr.id} has source=hypothesis without chain reasoning (ref_claim_id is null)`);
+        warnings.push(`Ground #${gr.id} has source=hypothesis`);
       }
     }
   }
@@ -275,6 +258,7 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
     return gIds.every(gid => {
       const gr = ctx!.groundRows.find(g => g.id === gid);
       if (!gr) return false;
+      if (gr.type === "claim") return true; // claim-type grounds count as verified
       const gData = JSON.parse(gr.data) as { verification?: string };
       return gData.verification === "verified";
     });
@@ -294,13 +278,14 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
     const groundsForWarrant = gIds.map(gid => {
       const gr = ctx.groundRows.find(g => g.id === gid);
       if (!gr) return null;
-      return JSON.parse(gr.data) as { source?: string; verification?: string; ref_claim_id?: number | null };
-    }).filter(Boolean) as Array<{ source?: string; verification?: string; ref_claim_id?: number | null }>;
+      if (gr.type === "claim") return null; // skip claim-type grounds for aggregate checks
+      return JSON.parse(gr.data) as { source?: string; verification?: string };
+    }).filter(Boolean) as Array<{ source?: string; verification?: string }>;
 
     const allPending = groundsForWarrant.every(g => g.verification === "pending");
-    const allHypothesisNoRef = groundsForWarrant.every(g => g.source === "hypothesis" && g.ref_claim_id == null);
+    const allHypothesisNoRef = groundsForWarrant.every(g => g.source === "hypothesis");
     const allHypothesisPendingNoRef = groundsForWarrant.every(
-      g => g.source === "hypothesis" && g.verification === "pending" && g.ref_claim_id == null
+      g => g.source === "hypothesis" && g.verification === "pending"
     );
 
     if (allHypothesisPendingNoRef) {
@@ -335,47 +320,6 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
   // C5: high rebuttal load
   if (totalRebuttals >= HIGH_REBUTTAL_THRESHOLD) {
     infos.push(`Claim #${claimId} has ${totalRebuttals} total rebuttal(s) across claim and warrants (threshold: ${HIGH_REBUTTAL_THRESHOLD})`);
-  }
-
-  // C6: associated orphan grounds (ref_claim_id=claimId but not in any warrant)
-  const associatedGrounds = repo.findGroundsByRefClaim(db, claimId);
-  for (const ag of associatedGrounds) {
-    if (!usedGroundIds.has(ag.id)) {
-      warnings.push(`Ground #${ag.id} references Claim #${claimId} (ref_claim_id) but is not attached to any warrant for this claim`);
-    }
-  }
-
-  // --- Category D: Cross-Node Consistency (1-hop chain reasoning only) ---
-  for (const gr of ctx.groundRows) {
-    const gData = JSON.parse(gr.data) as { ref_claim_id?: number | null };
-    const refId = gData.ref_claim_id;
-    if (refId == null) continue;
-
-    const refRow = repo.getNodeById(db, refId);
-    if (!refRow || refRow.type !== "claim") continue; // A1/A2 already catches this
-
-    const refData = JSON.parse(refRow.data) as {
-      compile_status?: "passed" | "stale" | null;
-      status?: string;
-    };
-    const refState = repo.getCompileState(db, refId);
-
-    if (refData.compile_status === "stale") {
-      // D1
-      infos.push(`Ground #${gr.id} references Claim #${refId} which is stale`);
-    }
-    if (refData.status === "disputed") {
-      // D2
-      infos.push(`Ground #${gr.id} references Claim #${refId} with status=disputed`);
-    }
-    if (refData.status === "refuted") {
-      // D3
-      warnings.push(`Ground #${gr.id} references Claim #${refId} with status=refuted — evidence foundation has been invalidated`);
-    }
-    if (!refState && refData.compile_status !== "passed") {
-      // D4
-      infos.push(`Ground #${gr.id} references Claim #${refId} which has never been compiled`);
-    }
   }
 
   return { reviewer: "structure", errors, warnings, infos };
@@ -503,42 +447,32 @@ function findAffectedClaimIdsDirect(db: Database, nodeId: number): number[] {
   switch (row.type) {
     case "claim":
       claimIds.add(nodeId);
+      // Also find warrants that use this claim as a ground (chain reasoning)
+      {
+        const groundWarrantsForClaim = db.prepare("SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.warrant_id WHERE wg.ground_id = ?").all(nodeId) as NodeRow[];
+        for (const w of groundWarrantsForClaim) { const d = JSON.parse(w.data); if (d.claim_id) claimIds.add(d.claim_id); }
+      }
       break;
 
     case "warrant":
       if (data.claim_id) claimIds.add(data.claim_id);
       break;
 
-    case "ground":
-      const allWarrants = repo.listNodesByType(db, "warrant");
-      for (const w of allWarrants) {
-        const wData = JSON.parse(w.data);
-        if ((wData.ground_ids || []).includes(nodeId) && wData.claim_id) {
-          claimIds.add(wData.claim_id);
-        }
-      }
-      break;
-
-    case "backing": {
-      const wRow = repo.getNodeById(db, data.warrant_id);
-      if (wRow) {
-        const wData = JSON.parse(wRow.data);
-        if (wData.claim_id) claimIds.add(wData.claim_id);
+    case "statement": {
+      // As ground for warrants
+      const groundWarrants = db.prepare("SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.warrant_id WHERE wg.ground_id = ?").all(nodeId) as NodeRow[];
+      for (const w of groundWarrants) { const d = JSON.parse(w.data); if (d.claim_id) claimIds.add(d.claim_id); }
+      // As backing for warrants
+      const backingWarrants = db.prepare("SELECT n.* FROM nodes n JOIN warrant_backings wb ON n.id = wb.warrant_id WHERE wb.statement_id = ?").all(nodeId) as NodeRow[];
+      for (const w of backingWarrants) { const d = JSON.parse(w.data); if (d.claim_id) claimIds.add(d.claim_id); }
+      // As rebuttal
+      const targets = db.prepare("SELECT * FROM rebuttal_targets WHERE statement_id = ?").all(nodeId) as Array<{target_id:number, target_type:string}>;
+      for (const t of targets) {
+        if (t.target_type === "claim") claimIds.add(t.target_id);
+        else { const w = repo.getNodeById(db, t.target_id); if (w) { const d=JSON.parse(w.data); if(d.claim_id) claimIds.add(d.claim_id); } }
       }
       break;
     }
-
-    case "rebuttal":
-      if (data.target_type === "claim") {
-        claimIds.add(data.target_id);
-      } else if (data.target_type === "warrant") {
-        const wRow = repo.getNodeById(db, data.target_id);
-        if (wRow) {
-          const wData = JSON.parse(wRow.data);
-          if (wData.claim_id) claimIds.add(wData.claim_id);
-        }
-      }
-      break;
   }
 
   return [...claimIds];
@@ -554,15 +488,15 @@ export function findAffectedClaimIds(db: Database, nodeId: number): number[] {
 
   while (queue.length > 0) {
     const claimId = queue.shift()!;
-    const refGrounds = repo.findGroundsByRefClaim(db, claimId);
-    for (const g of refGrounds) {
-      const usingWarrants = findWarrantsUsingGround(db, g.id);
-      for (const w of usingWarrants) {
-        const wData = JSON.parse(w.data);
-        if (wData.claim_id && !allAffected.has(wData.claim_id)) {
-          allAffected.add(wData.claim_id);
-          queue.push(wData.claim_id);
-        }
+    // Find warrants that use this claim directly as a ground (claim nodes in warrant_grounds)
+    const usingWarrants = db.prepare(
+      "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.warrant_id WHERE wg.ground_id = ?"
+    ).all(claimId) as NodeRow[];
+    for (const w of usingWarrants) {
+      const wData = JSON.parse(w.data);
+      if (wData.claim_id && !allAffected.has(wData.claim_id)) {
+        allAffected.add(wData.claim_id);
+        queue.push(wData.claim_id);
       }
     }
   }

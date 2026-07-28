@@ -96,37 +96,29 @@ export function findWarrantsByClaim(db: Database, claimId: number): NodeRow[] {
   return stmt.all(claimId) as NodeRow[];
 }
 
-/** 查找绑定到指定 Warrant 的所有 Backing */
+/** 查找绑定到指定 Warrant 的所有 Backing（via warrant_backings 关系表） */
 export function findBackingsByWarrant(db: Database, warrantId: number): NodeRow[] {
   const stmt = db.prepare(
-    "SELECT * FROM nodes WHERE type = 'backing' AND CAST(json_extract(data, '$.warrant_id') AS INTEGER) = ? ORDER BY id"
+    "SELECT n.* FROM nodes n JOIN warrant_backings wb ON n.id = wb.statement_id WHERE wb.warrant_id = ? ORDER BY n.id"
   );
   return stmt.all(warrantId) as NodeRow[];
 }
 
-/** 查找指向指定 target 的所有 Rebuttal */
+/** 查找指向指定 target 的所有 Rebuttal（via rebuttal_targets 关系表） */
 export function findRebuttalsByTarget(
   db: Database,
   targetId: number,
   targetType?: string
 ): NodeRow[] {
-  let sql = "SELECT * FROM nodes WHERE type = 'rebuttal' AND CAST(json_extract(data, '$.target_id') AS INTEGER) = ?";
+  let sql = "SELECT n.* FROM nodes n JOIN rebuttal_targets rt ON n.id = rt.statement_id WHERE rt.target_id = ?";
   const params: (string | number)[] = [targetId];
   if (targetType) {
-    sql += " AND json_extract(data, '$.target_type') = ?";
+    sql += " AND rt.target_type = ?";
     params.push(targetType);
   }
-  sql += " ORDER BY id";
+  sql += " ORDER BY n.id";
   const stmt = db.prepare(sql);
   return stmt.all(...params) as NodeRow[];
-}
-
-/** 查找引用指定 Claim 作为证据的 Ground（链式推理） */
-export function findGroundsByRefClaim(db: Database, claimId: number): NodeRow[] {
-  const stmt = db.prepare(
-    "SELECT * FROM nodes WHERE type = 'ground' AND CAST(json_extract(data, '$.ref_claim_id') AS INTEGER) = ? ORDER BY id"
-  );
-  return stmt.all(claimId) as NodeRow[];
 }
 
 /** 搜索节点（LIKE 模糊匹配） */
@@ -152,10 +144,8 @@ export function countNodesByType(db: Database): Record<string, number> {
   const rows = stmt.all() as Array<{ type: string; count: number }>;
   const result: Record<string, number> = {
     claim: 0,
-    ground: 0,
+    statement: 0,
     warrant: 0,
-    backing: 0,
-    rebuttal: 0,
   };
   for (const row of rows) {
     result[row.type] = row.count;
@@ -167,7 +157,7 @@ export function countNodesByType(db: Database): Record<string, number> {
 // JSON 数组操作（ground_ids）
 // =============================================================================
 
-/** 向 Warrant 的 ground_ids 追加 ID */
+/** 向 Warrant 的 ground_ids 追加 ID，并同步 warrant_grounds 关系表 */
 export function addGroundIds(db: Database, warrantId: number, ids: number[]): NodeRow | null {
   const row = getNodeById(db, warrantId);
   if (!row || row.type !== "warrant") return null;
@@ -177,10 +167,15 @@ export function addGroundIds(db: Database, warrantId: number, ids: number[]): No
   const newIds = [...new Set([...existing, ...ids])];
   data.ground_ids = newIds;
 
+  // Also insert into warrant_grounds
+  for (const id of ids) {
+    db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(warrantId, id);
+  }
+
   return updateNodeFields(db, warrantId, { data });
 }
 
-/** 从 Warrant 的 ground_ids 移除 ID */
+/** 从 Warrant 的 ground_ids 移除 ID，并同步 warrant_grounds 关系表 */
 export function removeGroundIds(db: Database, warrantId: number, ids: number[]): NodeRow | null {
   const row = getNodeById(db, warrantId);
   if (!row || row.type !== "warrant") return null;
@@ -189,11 +184,19 @@ export function removeGroundIds(db: Database, warrantId: number, ids: number[]):
   const existing: number[] = data.ground_ids || [];
   data.ground_ids = existing.filter((id: number) => !ids.includes(id));
 
+  // Also remove from warrant_grounds
+  for (const id of ids) {
+    db.prepare("DELETE FROM warrant_grounds WHERE warrant_id = ? AND ground_id = ?").run(warrantId, id);
+  }
+
   return updateNodeFields(db, warrantId, { data });
 }
 
-/** 从所有 Warrant 的 ground_ids 中移除指定 Ground */
+/** 从所有 Warrant 的 ground_ids 中移除指定 Ground，并从 warrant_grounds 关系表删除 */
 export function removeGroundFromAllWarrants(db: Database, groundId: number): void {
+  // Remove from relationship table
+  db.prepare("DELETE FROM warrant_grounds WHERE ground_id = ?").run(groundId);
+  // Also update JSON ground_ids for any warrant that still references this ground
   const stmt = db.prepare("SELECT * FROM nodes WHERE type = 'warrant'");
   const warrants = stmt.all() as NodeRow[];
 
@@ -204,6 +207,70 @@ export function removeGroundFromAllWarrants(db: Database, groundId: number): voi
       data.ground_ids = ids.filter((id: number) => id !== groundId);
       updateNodeFields(db, w.id, { data });
     }
+  }
+}
+
+// =============================================================================
+// 关系表操作
+// =============================================================================
+
+/** 查找 Warrant 的所有 Ground（via warrant_grounds 关系表） */
+export function findGroundsByWarrant(db: Database, warrantId: number): NodeRow[] {
+  const stmt = db.prepare(
+    "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.ground_id WHERE wg.warrant_id = ? ORDER BY n.id"
+  );
+  return stmt.all(warrantId) as NodeRow[];
+}
+
+/** 插入 warrant_grounds 关系 */
+export function insertWarrantGround(db: Database, warrantId: number, groundId: number): void {
+  db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(warrantId, groundId);
+}
+
+/** 插入 warrant_backings 关系 */
+export function insertWarrantBacking(db: Database, warrantId: number, statementId: number): void {
+  db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(warrantId, statementId);
+}
+
+/** 插入 rebuttal_targets 关系 */
+export function insertRebuttalTarget(db: Database, statementId: number, targetId: number, targetType: string): void {
+  db.prepare("INSERT OR IGNORE INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, ?)").run(statementId, targetId, targetType);
+}
+
+/** 删除 rebuttal_targets 关系 */
+export function deleteRebuttalTarget(db: Database, statementId: number, targetId?: number): void {
+  if (targetId !== undefined) {
+    db.prepare("DELETE FROM rebuttal_targets WHERE statement_id = ? AND target_id = ?").run(statementId, targetId);
+  } else {
+    db.prepare("DELETE FROM rebuttal_targets WHERE statement_id = ?").run(statementId);
+  }
+}
+
+/** 批量向 warrant_backings 添加关系 */
+export function addWarrantBackings(db: Database, warrantId: number, ids: number[]): void {
+  for (const id of ids) {
+    db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(warrantId, id);
+  }
+}
+
+/** 批量从 warrant_backings 移除关系 */
+export function removeWarrantBackings(db: Database, warrantId: number, ids: number[]): void {
+  for (const id of ids) {
+    db.prepare("DELETE FROM warrant_backings WHERE warrant_id = ? AND statement_id = ?").run(warrantId, id);
+  }
+}
+
+/** 批量向 rebuttal_targets 添加关系 */
+export function addRebuttalTargets(db: Database, nodeId: number, ids: number[], targetType: string): void {
+  for (const id of ids) {
+    db.prepare("INSERT OR IGNORE INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, ?)").run(nodeId, id, targetType);
+  }
+}
+
+/** 批量从 rebuttal_targets 移除关系 */
+export function removeRebuttalTargets(db: Database, nodeId: number, ids: number[]): void {
+  for (const id of ids) {
+    db.prepare("DELETE FROM rebuttal_targets WHERE statement_id = ? AND target_id = ?").run(nodeId, id);
   }
 }
 

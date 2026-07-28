@@ -7,7 +7,7 @@
  *
  * 只哈希 content 不哈希 data 的原因：
  * - data 中的状态字段（status、verification 等）不影响逻辑链
- * - 结构字段（ground_ids、ref_claim_id 等）由 computeArgumentHash 从 DB 实时读取遍历
+ * - 结构字段（ground_ids 等）由 computeArgumentHash 从 DB 实时读取遍历
  * - compile_status 在 data 中，不入哈希则无需剥离，避免自我触发
  */
 
@@ -34,7 +34,7 @@ const COMPUTING_SENTINEL = "__computing__";
 
 /**
  * 计算 Claim 的 argument 哈希（Merkle Root）。
- * 递归包含所有组成节点 + ref_claim_id 指向的 subclaim 的 argument 哈希。
+ * 递归包含所有组成节点 + claim-type grounds 的 subclaim argument 哈希。
  *
  * @param db   数据库
  * @param claimId  Claim 节点 ID
@@ -78,21 +78,18 @@ export function computeArgumentHash(
     // 5. Grounds（递归关键点）
     const groundHashes = groundIds.map(gid => {
       const gRow = repo.getNodeById(db, gid);
-      if (!gRow || gRow.type !== "ground") return "";
+      if (!gRow) return "";
 
-      const groundNodeHash = computeNodeHash(gRow);
-      const gData = JSON.parse(gRow.data);
-      const refClaimId = gData.ref_claim_id;
-
-      if (refClaimId !== null && refClaimId !== undefined) {
-        // 递归：Ground 的哈希包含 subclaim 的 argument 哈希
-        const refArgHash = computeArgumentHash(db, refClaimId, memo);
+      if (gRow.type === "claim") {
+        // 递归：Claim-type ground 的哈希包含该 subclaim 的 argument 哈希
+        const refArgHash = computeArgumentHash(db, gid, memo);
         return createHash("sha256").update(
-          JSON.stringify({ node: groundNodeHash, refArg: refArgHash })
+          JSON.stringify({ node: computeNodeHash(gRow), refArg: refArgHash })
         ).digest("hex");
       }
 
-      return groundNodeHash;
+      if (gRow.type !== "statement") return "";
+      return computeNodeHash(gRow);
     }).sort(); // 排序确保顺序无关
 
     // 6. Backings

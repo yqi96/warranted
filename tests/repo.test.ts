@@ -34,14 +34,13 @@ describe("insertNode", () => {
   });
 
   test("插入 Ground 节点", () => {
-    const row = repo.insertNode(db, "ground", "测试证据", {
+    const row = repo.insertNode(db, "statement", "测试证据", {
       source: "observed",
       verification: "verified",
       attachments: ["/file.csv"],
-      ref_claim_id: null,
     });
     expect(row.id).toBe(1);
-    expect(row.type).toBe("ground");
+    expect(row.type).toBe("statement");
     const data = JSON.parse(row.data);
     expect(data.source).toBe("observed");
     expect(data.attachments).toEqual(["/file.csv"]);
@@ -58,23 +57,19 @@ describe("insertNode", () => {
   });
 
   test("插入 Backing 节点", () => {
-    const row = repo.insertNode(db, "backing", "支撑内容", {
+    const row = repo.insertNode(db, "statement", "支撑内容", {
       attachments: ["/ref.pdf"],
-      warrant_id: 1,
     });
     const data = JSON.parse(row.data);
-    expect(data.warrant_id).toBe(1);
+    expect(data.attachments).toEqual(["/ref.pdf"]);
   });
 
   test("插入 Rebuttal 节点", () => {
-    const row = repo.insertNode(db, "rebuttal", "反驳条件", {
+    const row = repo.insertNode(db, "statement", "反驳条件", {
       attachments: [],
-      target_id: 1,
-      target_type: "claim",
     });
     const data = JSON.parse(row.data);
-    expect(data.target_id).toBe(1);
-    expect(data.target_type).toBe("claim");
+    expect(data.attachments).toEqual([]);
   });
 
   test("自增 ID", () => {
@@ -162,12 +157,12 @@ describe("listNodesByType", () => {
   test("按类型过滤", () => {
     repo.insertNode(db, "claim", "C1", { status: "proposed" });
     repo.insertNode(db, "claim", "C2", { status: "supported" });
-    repo.insertNode(db, "ground", "G1", { source: "observed", verification: "verified", attachments: [], ref_claim_id: null });
+    repo.insertNode(db, "statement", "G1", { source: "observed", verification: "verified", attachments: [] });
 
     const claims = repo.listNodesByType(db, "claim");
     expect(claims.length).toBe(2);
 
-    const grounds = repo.listNodesByType(db, "ground");
+    const grounds = repo.listNodesByType(db, "statement");
     expect(grounds.length).toBe(1);
 
     const warrants = repo.listNodesByType(db, "warrant");
@@ -195,8 +190,10 @@ describe("关联查询", () => {
 
   test("findBackingsByWarrant 返回正确的 Backing", () => {
     repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [] });
-    repo.insertNode(db, "backing", "B1", { attachments: [], warrant_id: 1 });
-    repo.insertNode(db, "backing", "B2", { attachments: [], warrant_id: 1 });
+    const b1 = repo.insertNode(db, "statement", "B1", { attachments: [] });
+    const b2 = repo.insertNode(db, "statement", "B2", { attachments: [] });
+    db.prepare("INSERT INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(1, b1.id);
+    db.prepare("INSERT INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(1, b2.id);
 
     const b = repo.findBackingsByWarrant(db, 1);
     expect(b.length).toBe(2);
@@ -205,26 +202,18 @@ describe("关联查询", () => {
   test("findRebuttalsByTarget 按 target 过滤", () => {
     repo.insertNode(db, "claim", "C1", { status: "proposed" });
     repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [] });
-    repo.insertNode(db, "rebuttal", "R1", { attachments: [], target_id: 1, target_type: "claim" });
-    repo.insertNode(db, "rebuttal", "R2", { attachments: [], target_id: 2, target_type: "warrant" });
+    const r1 = repo.insertNode(db, "statement", "R1", { attachments: [] });
+    const r2 = repo.insertNode(db, "statement", "R2", { attachments: [] });
+    db.prepare("INSERT INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, ?)").run(r1.id, 1, "claim");
+    db.prepare("INSERT INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, ?)").run(r2.id, 2, "warrant");
 
-    const r1 = repo.findRebuttalsByTarget(db, 1);
-    expect(r1.length).toBe(1);
-    expect(r1[0].content).toBe("R1");
+    const r1Found = repo.findRebuttalsByTarget(db, 1);
+    expect(r1Found.length).toBe(1);
+    expect(r1Found[0].content).toBe("R1");
 
-    const r2 = repo.findRebuttalsByTarget(db, 2, "warrant");
-    expect(r2.length).toBe(1);
-    expect(r2[0].content).toBe("R2");
-  });
-
-  test("findGroundsByRefClaim 返回链式推理 Ground", () => {
-    repo.insertNode(db, "claim", "C1", { status: "proposed" });
-    repo.insertNode(db, "ground", "G1", { source: "observed", verification: "verified", attachments: [], ref_claim_id: null });
-    repo.insertNode(db, "ground", "G2", { source: "hypothesis", verification: "pending", attachments: [], ref_claim_id: 1 });
-
-    const g = repo.findGroundsByRefClaim(db, 1);
-    expect(g.length).toBe(1);
-    expect(g[0].content).toBe("G2");
+    const r2Found = repo.findRebuttalsByTarget(db, 2, "warrant");
+    expect(r2Found.length).toBe(1);
+    expect(r2Found[0].content).toBe("R2");
   });
 });
 
@@ -235,7 +224,7 @@ describe("关联查询", () => {
 describe("searchNodes", () => {
   test("LIKE 模糊匹配", () => {
     repo.insertNode(db, "claim", "ScaleOpt 收敛速度是 Adam 的两倍");
-    repo.insertNode(db, "ground", "实验数据支持", { source: "observed", verification: "verified", attachments: [], ref_claim_id: null });
+    repo.insertNode(db, "statement", "实验数据支持", { source: "observed", verification: "verified", attachments: [] });
 
     const results = repo.searchNodes(db, "ScaleOpt");
     expect(results.length).toBe(1);
@@ -244,7 +233,7 @@ describe("searchNodes", () => {
 
   test("类型过滤", () => {
     repo.insertNode(db, "claim", "Adam 优化器");
-    repo.insertNode(db, "ground", "Adam 实验结果", { source: "observed", verification: "verified", attachments: [], ref_claim_id: null });
+    repo.insertNode(db, "statement", "Adam 实验结果", { source: "observed", verification: "verified", attachments: [] });
 
     const claims = repo.searchNodes(db, "Adam", "claim");
     expect(claims.length).toBe(1);
@@ -266,18 +255,18 @@ describe("countNodesByType", () => {
   test("正确统计各类型数量", () => {
     repo.insertNode(db, "claim", "C1", { status: "proposed" });
     repo.insertNode(db, "claim", "C2", { status: "proposed" });
-    repo.insertNode(db, "ground", "G1", { source: "observed", verification: "verified", attachments: [], ref_claim_id: null });
+    repo.insertNode(db, "statement", "G1", { source: "observed", verification: "verified", attachments: [] });
 
     const counts = repo.countNodesByType(db);
     expect(counts.claim).toBe(2);
-    expect(counts.ground).toBe(1);
+    expect(counts.statement).toBe(1);
     expect(counts.warrant).toBe(0);
   });
 
   test("空数据库返回全零", () => {
     const counts = repo.countNodesByType(db);
     expect(counts.claim).toBe(0);
-    expect(counts.ground).toBe(0);
+    expect(counts.statement).toBe(0);
   });
 });
 
@@ -287,43 +276,62 @@ describe("countNodesByType", () => {
 
 describe("ground_ids 操作", () => {
   test("addGroundIds 追加 ID", () => {
-    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [1] });
-    repo.addGroundIds(db, 1, [2, 3]);
-    const row = repo.getNodeById(db, 1)!;
+    const g1 = repo.insertNode(db, "statement", "G1", { source: "observed", verification: "verified", attachments: [] });
+    const g2 = repo.insertNode(db, "statement", "G2", { source: "observed", verification: "verified", attachments: [] });
+    const g3 = repo.insertNode(db, "statement", "G3", { source: "observed", verification: "verified", attachments: [] });
+    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [g1.id] });
+    repo.addGroundIds(db, 4, [g2.id, g3.id]);
+    const row = repo.getNodeById(db, 4)!;
     const data = JSON.parse(row.data);
-    expect(data.ground_ids).toEqual([1, 2, 3]);
+    expect(data.ground_ids).toEqual([g1.id, g2.id, g3.id]);
   });
 
   test("addGroundIds 跳过重复 ID", () => {
-    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [1, 2] });
-    repo.addGroundIds(db, 1, [2, 3]);
-    const row = repo.getNodeById(db, 1)!;
+    const g1 = repo.insertNode(db, "statement", "G1", { source: "observed", verification: "verified", attachments: [] });
+    const g2 = repo.insertNode(db, "statement", "G2", { source: "observed", verification: "verified", attachments: [] });
+    const g3 = repo.insertNode(db, "statement", "G3", { source: "observed", verification: "verified", attachments: [] });
+    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [g1.id, g2.id] });
+    repo.addGroundIds(db, 4, [g2.id, g3.id]);
+    const row = repo.getNodeById(db, 4)!;
     const data = JSON.parse(row.data);
-    expect(data.ground_ids).toEqual([1, 2, 3]);
+    expect(data.ground_ids).toEqual([g1.id, g2.id, g3.id]);
   });
 
   test("removeGroundIds 移除指定 ID", () => {
-    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [1, 2, 3] });
-    repo.removeGroundIds(db, 1, [2]);
-    const row = repo.getNodeById(db, 1)!;
+    const g1 = repo.insertNode(db, "statement", "G1", { source: "observed", verification: "verified", attachments: [] });
+    const g2 = repo.insertNode(db, "statement", "G2", { source: "observed", verification: "verified", attachments: [] });
+    const g3 = repo.insertNode(db, "statement", "G3", { source: "observed", verification: "verified", attachments: [] });
+    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [g1.id, g2.id, g3.id] });
+    repo.removeGroundIds(db, 4, [g2.id]);
+    const row = repo.getNodeById(db, 4)!;
     const data = JSON.parse(row.data);
-    expect(data.ground_ids).toEqual([1, 3]);
+    expect(data.ground_ids).toEqual([g1.id, g3.id]);
   });
 
   test("removeGroundFromAllWarrants 清理所有引用", () => {
-    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [1, 2] });
-    repo.insertNode(db, "warrant", "W2", { claim_id: 2, ground_ids: [2, 3] });
-    repo.insertNode(db, "warrant", "W3", { claim_id: 1, ground_ids: [4] });
+    const g1 = repo.insertNode(db, "statement", "G1", { attachments: [] });
+    const g2 = repo.insertNode(db, "statement", "G2", { attachments: [] });
+    const g3 = repo.insertNode(db, "statement", "G3", { attachments: [] });
+    const g4 = repo.insertNode(db, "statement", "G4", { attachments: [] });
+    const w1 = repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [g1.id, g2.id] });
+    const w2 = repo.insertNode(db, "warrant", "W2", { claim_id: 2, ground_ids: [g2.id, g3.id] });
+    const w3 = repo.insertNode(db, "warrant", "W3", { claim_id: 1, ground_ids: [g4.id] });
+    // Populate warrant_grounds
+    db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w1.id, g1.id);
+    db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w1.id, g2.id);
+    db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w2.id, g2.id);
+    db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w2.id, g3.id);
+    db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w3.id, g4.id);
 
-    repo.removeGroundFromAllWarrants(db, 2);
+    repo.removeGroundFromAllWarrants(db, g2.id);
 
-    const w1 = JSON.parse(repo.getNodeById(db, 1)!.data);
-    const w2 = JSON.parse(repo.getNodeById(db, 2)!.data);
-    const w3 = JSON.parse(repo.getNodeById(db, 3)!.data);
+    const wd1 = JSON.parse(repo.getNodeById(db, w1.id)!.data);
+    const wd2 = JSON.parse(repo.getNodeById(db, w2.id)!.data);
+    const wd3 = JSON.parse(repo.getNodeById(db, w3.id)!.data);
 
-    expect(w1.ground_ids).toEqual([1]);
-    expect(w2.ground_ids).toEqual([3]);
-    expect(w3.ground_ids).toEqual([4]); // 不含 2，不变
+    expect(wd1.ground_ids).toEqual([g1.id]);
+    expect(wd2.ground_ids).toEqual([g3.id]);
+    expect(wd3.ground_ids).toEqual([g4.id]); // 不含 g2，不变
   });
 });
 

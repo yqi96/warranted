@@ -53,7 +53,7 @@ export function loadArgumentContext(db: Database, claimId: number): ArgumentCont
   const groundDatas: Array<Record<string, unknown>> = [];
   for (const gid of groundIdSet) {
     const gRow = repo.getNodeById(db, gid);
-    if (gRow && gRow.type === "ground") {
+    if (gRow && (gRow.type === "statement" || gRow.type === "claim")) {
       groundRows.push(gRow);
       groundDatas.push(JSON.parse(gRow.data));
     }
@@ -106,24 +106,12 @@ async function reviewChain(
         grounds: groundIds.map(gid => {
           const gIdx = ctx.groundRows.findIndex(g => g.id === gid);
           if (gIdx === -1) return { id: gid, content: "(not found)" };
-          const gData = ctx.groundDatas[gIdx];
-          const refClaimId = gData.ref_claim_id as number | null | undefined;
-          if (refClaimId != null) {
-            const refRow = repo.getNodeById(db, refClaimId);
-            if (refRow?.type === "claim") {
-              return { id: gid, content: refRow.content };
-            }
-          }
           return {
             id: gid,
             content: ctx.groundRows[gIdx].content,
           };
         }),
-        backings: ctx.backingRows
-          .filter(b => {
-            const bData = JSON.parse(b.data);
-            return bData.warrant_id === w.id;
-          })
+        backings: repo.findBackingsByWarrant(db, w.id)
           .map(b => ({ id: b.id, content: b.content })),
       };
     }),

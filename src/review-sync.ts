@@ -39,13 +39,11 @@ export async function executeArgumentReview(
   warrantId: number,
   groundIds: number[]
 ): Promise<ReviewResult | null> {
-  // 1. 从数据库读取节点数据
   const claimRow = repo.getNodeById(db, claimId);
   const warrantRow = repo.getNodeById(db, warrantId);
   if (!claimRow || !warrantRow) return null;
 
   const claimData = JSON.parse(claimRow.data);
-  const warrantData = JSON.parse(warrantRow.data);
 
   const grounds = groundIds.map(gid => {
     const gRow = repo.getNodeById(db, gid);
@@ -53,45 +51,41 @@ export async function executeArgumentReview(
     const gData = JSON.parse(gRow.data);
     return {
       id: gid,
-      content: gRow.content,  // content 是独立字段
+      content: gRow.content,
       source: gData.source || "unknown",
       verification: gData.verification || "pending",
       attachments: gData.attachments || [],
     };
-  }).filter(Boolean) as any[];
+  }).filter((g): g is NonNullable<typeof g> => g !== null);
 
   if (grounds.length === 0) return null;
 
-  // 2. 构建 Prompt
   const prompt = buildArgumentReviewPrompt({
     claim: {
       id: claimId,
-      content: claimRow.content,  // content 是独立字段
+      content: claimRow.content,
       status: claimData.status || "proposed",
       qualifier: claimData.qualifier,
     },
     warrant: {
       id: warrantId,
-      content: warrantRow.content,  // content 是独立字段
+      content: warrantRow.content,
     },
     grounds,
   });
 
-  // 3. 调用 LLM
   try {
     const cwd = dirname(dirname(config.dbPath));  // .toulmin 的父目录（项目根目录）
     const response = await callAgent(config, prompt, [], cwd);
     const result = parseLLMResponse(response, "concerns") as unknown as ReviewResult;
 
-    // 4. 保存结果到 review 目录
     saveReviewResult(config, "argument", { claimId, warrantId, groundIds }, result);
 
-    // 5. 如果 verdict 不是 sound，返回结果
     if (result.verdict !== "sound") {
       return result;
     }
 
-    return null; // sound 时静默
+    return null;
   } catch (error) {
     console.error(`[Warranted] Argument review failed: ${error}`);
     return null;
@@ -154,7 +148,6 @@ export async function executeGroundReview(
   db: Database,
   groundId: number
 ): Promise<GroundReviewResult> {
-  // 1. 从数据库读取 Ground 数据
   const groundRow = repo.getNodeById(db, groundId);
   if (!groundRow) {
     return { errors: [`Ground #${groundId} not found.`], warnings: [] };
@@ -162,16 +155,6 @@ export async function executeGroundReview(
 
   const groundData = JSON.parse(groundRow.data);
 
-  // 2. 链式推理 Ground（有 ref_claim_id）跳过证据审查
-  if (groundData.ref_claim_id !== null && groundData.ref_claim_id !== undefined) {
-    log("ground_review", "OK", 0,
-      `START ground_reviewer: ground=#${groundId} (chain reasoning → skip)`);
-    log("ground_review", "OK", 0,
-      `END ground_reviewer: ground=#${groundId} → skipped (chain reasoning, ref_claim_id=${groundData.ref_claim_id})`);
-    return { errors: [], warnings: [] };
-  }
-
-  // 3. 构建 Prompt
   const prompt = buildGroundEvidencePrompt({
     ground: {
       id: groundId,
@@ -182,7 +165,6 @@ export async function executeGroundReview(
     },
   });
 
-  // 4. 调用 LLM
   try {
     const cwd = dirname(dirname(config.dbPath));
     log("ground_review", "OK", 0,
@@ -202,7 +184,6 @@ export async function executeGroundReview(
     log("ground_review", "OK", elapsed,
       `END ground_reviewer: ground=#${groundId} → ${errors.length} error(s), ${warnings.length} warning(s)`);
 
-    // 5. 保存结果到 review 目录
     saveGroundReviewFile(config, groundId, { errors, warnings });
 
     return { errors, warnings };

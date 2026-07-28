@@ -31,7 +31,7 @@ export class CascadeRequiredError extends ToulminError {
   constructor() {
     super(
       "Deleting a Claim requires cascade=true. " +
-      "This prevents orphaned Warrants, Backings, Qualifiers, and Rebuttals."
+      "This prevents orphaned Warrants and Statements."
     );
     this.name = "CascadeRequiredError";
   }
@@ -44,18 +44,6 @@ export class TypeMismatchError extends ToulminError {
       `Node ${id} is type "${actualType}", expected "${expectedType}"`
     );
     this.name = "TypeMismatchError";
-  }
-}
-
-/** create_ground 互斥模式冲突 */
-export class MutuallyExclusiveModeError extends ToulminError {
-  constructor() {
-    super(
-      "create_ground: 'ref_claim_id' and 'source/verification' are mutually exclusive. " +
-      "Use Mode A (source + verification) for normal evidence, " +
-      "or Mode B (ref_claim_id) for chain reasoning."
-    );
-    this.name = "MutuallyExclusiveModeError";
   }
 }
 

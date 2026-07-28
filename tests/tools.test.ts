@@ -41,14 +41,13 @@ afterEach(() => {
 // =============================================================================
 
 describe("工具注册", () => {
-  test("注册了 14 个工具", () => {
-    expect(Object.keys(tools).length).toBe(14);
+  test("注册了 12 个工具", () => {
+    expect(Object.keys(tools).length).toBe(12);
   });
 
   test("所有必需工具已注册", () => {
     const expected = [
-      "create_claim", "create_ground", "create_warrant",
-      "create_backing", "create_rebuttal",
+      "create_claim", "create_statement", "create_warrant",
       "list_claims", "list_grounds", "get_argument", "get_node", "search_nodes",
       "get_stats", "update_node", "delete_node",
       "compile_arguments",
@@ -76,37 +75,17 @@ describe("create_claim 工具", () => {
 });
 
 // =============================================================================
-// create_ground 工具
+// create_statement 工具
 // =============================================================================
 
-describe("create_ground 工具", () => {
+describe("create_statement 工具", () => {
   test("Mode A 成功创建", async () => {
-    const result = await tools.create_ground.handler({
+    const result = await tools.create_statement.handler({
       content: "实验数据",
       source: "observed",
       verification: "verified",
     });
-    expect(result.content[0].text).toContain("Created ground #1");
-  });
-
-  test("Mode B 成功创建", async () => {
-    const claim = makeClaim(db);
-    const result = await tools.create_ground.handler({
-      ref_claim_id: claim.id,
-    });
-    expect(result.content[0].text).toContain("Created ground");
-  });
-
-  test("互斥模式返回错误", async () => {
-    const claim = makeClaim(db);
-    const result = await tools.create_ground.handler({
-      content: "x",
-      source: "observed",
-      verification: "verified",
-      ref_claim_id: claim.id,
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("mutually exclusive");
+    expect(result.content[0].text).toContain("Created statement #1");
   });
 });
 
@@ -535,30 +514,6 @@ describe("list_grounds 工具", () => {
     const result = await tools.list_grounds.handler({ source: "invalid_source" });
     expect(result.content[0].text).toBe("No grounds found.");
   });
-
-  test("ref_claim ground 显示下游 claim content 和前缀", async () => {
-    const claim = makeClaim(db, "下游主张内容");
-    makeGround(db, { content: "Reference to Claim #1", refClaimId: claim.id });
-    const result = await tools.list_grounds.handler({});
-    const text = result.content[0].text;
-    expect(text).toContain(`[ref_claim #${claim.id}]`);
-    expect(text).toContain("下游主张内容");
-    // 原始占位 content 不应出现（被替换为 claim content）
-    expect(text).not.toContain("Reference to Claim #1");
-  });
-
-  test("ref_claim_id 不存在时退化为 'Claim #N'", async () => {
-    // 直接写入一个 ref_claim_id 指向不存在节点的 ground（跳过 service 校验）
-    const now = new Date().toISOString().slice(0, 19);
-    const data = JSON.stringify({ source: "hypothesis", verification: "pending", attachments: [], ref_claim_id: 999 });
-    db.prepare("INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(
-      "ground", "dangling ref", data, now, now
-    );
-    const result = await tools.list_grounds.handler({});
-    const text = result.content[0].text;
-    expect(text).toContain("[ref_claim #999]");
-    expect(text).toContain("Claim #999");
-  });
 });
 
 // =============================================================================
@@ -622,14 +577,6 @@ describe("get_node 工具", () => {
     expect(text).toContain("/data/exp2.csv");
   });
 
-  test("ground ref_claim_id 非 null 时输出 ref_claim_id 行", async () => {
-    const refClaim = makeClaim(db, "前置主张");
-    const ground = makeGround(db, { content: `Reference to Claim #${refClaim.id}`, refClaimId: refClaim.id });
-    const result = await tools.get_node.handler({ node_id: ground.id });
-    const text = result.content[0].text;
-    expect(text).toContain(`ref_claim_id: ${refClaim.id}`);
-  });
-
   test("ground ref_claim_id 为 null 时不输出 ref_claim_id 行", async () => {
     const ground = makeGround(db, { content: "普通证据" });
     const result = await tools.get_node.handler({ node_id: ground.id });
@@ -672,10 +619,10 @@ describe("get_node 工具", () => {
 });
 
 // =============================================================================
-// create_ground — literature 跳过定义审查
+// create_statement — literature 跳过定义审查
 // =============================================================================
 
-describe("create_ground — literature 跳过定义审查", () => {
+describe("create_statement — literature 跳过定义审查", () => {
   const fakeConfig: ReviewConfig = {
     enabled: true,
     provider: "anthropic",
@@ -688,27 +635,27 @@ describe("create_ground — literature 跳过定义审查", () => {
     dbPath: ":memory:",
   };
 
-  test("literature ground 跳过定义审查，直接创建成功", async () => {
+  test("literature statement 跳过定义审查，直接创建成功", async () => {
     const db2 = createTestDb();
     const server2 = createMockServer();
     registerTools(server2, db2, fakeConfig);
-    const result = await server2._tools.create_ground.handler({
+    const result = await server2._tools.create_statement.handler({
       content: "Smith et al. (2023) report method A achieves 95% accuracy on benchmark B.",
       source: "literature",
       verification: "pending",
     });
     expect(result.isError).toBeFalsy();
-    expect(result.content[0].text).toContain("Created ground");
+    expect(result.content[0].text).toContain("Created statement");
     cleanupDb(db2);
   });
 
-  test("update_node — literature ground 更新 content 跳过定义审查", async () => {
+  test("update_node — literature statement 更新 content 跳过定义审查", async () => {
     // create without reviewConfig, then update with fakeConfig
     // if review were called during update, sk-fake would hang; success proves skip fired
     const db2 = createTestDb();
     const server2 = createMockServer();
     registerTools(server2, db2); // no reviewConfig for create
-    const createResult = await server2._tools.create_ground.handler({
+    const createResult = await server2._tools.create_statement.handler({
       content: "Smith et al. (2020) baseline results.",
       source: "literature",
       verification: "pending",
@@ -726,18 +673,18 @@ describe("create_ground — literature 跳过定义审查", () => {
     cleanupDb(db2);
   });
 
-  test("observed ground 无 reviewConfig 时直接创建成功（对照组）", async () => {
+  test("observed statement 无 reviewConfig 时直接创建成功（对照组）", async () => {
     // without reviewConfig both sources succeed; proves skip is source-conditional, not path-conditional
     const db2 = createTestDb();
     const server2 = createMockServer();
     registerTools(server2, db2); // no reviewConfig
-    const result = await server2._tools.create_ground.handler({
+    const result = await server2._tools.create_statement.handler({
       content: "观测数据：实验组准确率95%",
       source: "observed",
       verification: "pending",
     });
     expect(result.isError).toBeFalsy();
-    expect(result.content[0].text).toContain("Created ground");
+    expect(result.content[0].text).toContain("Created statement");
     cleanupDb(db2);
   });
 });

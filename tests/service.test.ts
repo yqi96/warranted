@@ -12,7 +12,6 @@ import {
   ValidationError,
   CascadeRequiredError,
   TypeMismatchError,
-  MutuallyExclusiveModeError,
   StatusTransitionError,
 } from "../src/errors.ts";
 
@@ -51,85 +50,67 @@ describe("createClaim", () => {
 });
 
 // =============================================================================
-// createGround
+// createStatement (formerly createGround)
 // =============================================================================
 
-describe("createGround", () => {
+describe("createStatement", () => {
   test("Mode A: 普通证据", () => {
-    const ground = service.createGround(db, {
+    const ground = service.createStatement(db, {
       content: "实验数据",
       source: "observed",
       verification: "verified",
       attachments: ["/data.csv"],
     });
-    expect(ground.type).toBe("ground");
+    expect(ground.type).toBe("statement");
     expect(ground.source).toBe("observed");
     expect(ground.verification).toBe("verified");
     expect(ground.attachments).toEqual(["/data.csv"]);
-    expect(ground.refClaimId).toBeNull();
-  });
-
-  test("Mode B: 链式推理", () => {
-    const claim = makeClaim(db, "前置 Claim");
-    const ground = service.createGround(db, { refClaimId: claim.id });
-    expect(ground.type).toBe("ground");
-    expect(ground.refClaimId).toBe(claim.id);
-    expect(ground.source).toBe("hypothesis");
-    expect(ground.verification).toBe("pending");
-  });
-
-  test("互斥模式：同时提供 refClaimId 和 source 抛出错误", () => {
-    const claim = makeClaim(db);
-    expect(() =>
-      service.createGround(db, {
-        content: "x",
-        source: "observed",
-        verification: "verified",
-        refClaimId: claim.id,
-      })
-    ).toThrow(MutuallyExclusiveModeError);
-  });
-
-  test("Mode B: refClaimId 引用不存在的节点", () => {
-    expect(() => service.createGround(db, { refClaimId: 999 })).toThrow(NotFoundError);
-  });
-
-  test("Mode B: refClaimId 引用非 Claim 节点", () => {
-    const ground = makeGround(db, { content: "G1" });
-    expect(() => service.createGround(db, { refClaimId: ground.id })).toThrow(TypeMismatchError);
   });
 
   test("Mode A: 缺少 source", () => {
     expect(() =>
-      service.createGround(db, { content: "x", verification: "verified" })
+      service.createStatement(db, { content: "x", source: undefined as any, verification: "verified" })
     ).toThrow(ValidationError);
   });
 
   test("Mode A: 缺少 verification", () => {
     expect(() =>
-      service.createGround(db, { content: "x", source: "observed" })
+      service.createStatement(db, { content: "x", source: "observed", verification: undefined as any })
     ).toThrow(ValidationError);
   });
 
   test("Mode A: 无效 source", () => {
     expect(() =>
-      service.createGround(db, { content: "x", source: "invalid" as any, verification: "verified" })
+      service.createStatement(db, { content: "x", source: "invalid" as any, verification: "verified" })
     ).toThrow(ValidationError);
   });
 
   test("Mode A: 无效 verification", () => {
     expect(() =>
-      service.createGround(db, { content: "x", source: "observed", verification: "invalid" as any })
+      service.createStatement(db, { content: "x", source: "observed", verification: "invalid" as any })
     ).toThrow(ValidationError);
   });
 
   test("默认 attachments 为空数组", () => {
-    const ground = service.createGround(db, {
+    const ground = service.createStatement(db, {
       content: "x",
       source: "observed",
       verification: "verified",
     });
     expect(ground.attachments).toEqual([]);
+  });
+
+  test("rebuttal_for 一步创建并挂载", () => {
+    const claim = makeClaim(db);
+    const stmt = service.createStatement(db, {
+      content: "反驳内容",
+      source: "observed",
+      verification: "pending",
+      rebuttal_for: { target_id: claim.id, target_type: "claim" },
+    });
+    const rt = (db as any).prepare("SELECT * FROM rebuttal_targets WHERE statement_id = ?").get(stmt.id) as { target_id: number; target_type: string } | null;
+    expect(rt).toBeTruthy();
+    expect(rt!.target_id).toBe(claim.id);
   });
 });
 
@@ -178,11 +159,12 @@ describe("createWarrant", () => {
     ).toThrow(NotFoundError);
   });
 
-  test("groundIds 包含非 Ground 节点", () => {
+  test("groundIds 包含非 Ground/Claim 节点（Warrant）抛出 TypeMismatchError", () => {
     const claim = makeClaim(db);
-    const claim2 = makeClaim(db, "C2");
+    const ground = makeGround(db);
+    const warrant = makeWarrant(db, claim.id, [ground.id]);
     expect(() =>
-      service.createWarrant(db, { content: "规则", claimId: claim.id, groundIds: [claim2.id] })
+      service.createWarrant(db, { content: "规则", claimId: claim.id, groundIds: [warrant.id] })
     ).toThrow(TypeMismatchError);
   });
 
@@ -191,80 +173,6 @@ describe("createWarrant", () => {
     expect(() =>
       service.createWarrant(db, { content: "", claimId: claim.id })
     ).toThrow(ValidationError);
-  });
-});
-
-// =============================================================================
-// createBacking
-// =============================================================================
-
-describe("createBacking", () => {
-  test("happy path", () => {
-    const claim = makeClaim(db);
-    const warrant = makeWarrant(db, claim.id);
-    const backing = service.createBacking(db, {
-      content: "支撑内容",
-      warrantId: warrant.id,
-      attachments: ["/ref.pdf"],
-    });
-    expect(backing.type).toBe("backing");
-    expect(backing.warrantId).toBe(warrant.id);
-    expect(backing.attachments).toEqual(["/ref.pdf"]);
-  });
-
-  test("warrantId 引用不存在的节点", () => {
-    expect(() =>
-      service.createBacking(db, { content: "支撑", warrantId: 999 })
-    ).toThrow(NotFoundError);
-  });
-
-  test("warrantId 引用非 Warrant 节点", () => {
-    const claim = makeClaim(db);
-    expect(() =>
-      service.createBacking(db, { content: "支撑", warrantId: claim.id })
-    ).toThrow(TypeMismatchError);
-  });
-});
-
-// =============================================================================
-// createRebuttal
-// =============================================================================
-
-describe("createRebuttal", () => {
-  test("针对 Claim 创建 Rebuttal", () => {
-    const claim = makeClaim(db);
-    const rebuttal = service.createRebuttal(db, {
-      content: "反驳条件",
-      targetId: claim.id,
-      targetType: "claim",
-    });
-    expect(rebuttal.type).toBe("rebuttal");
-    expect(rebuttal.targetId).toBe(claim.id);
-    expect(rebuttal.targetType).toBe("claim");
-  });
-
-  test("针对 Warrant 创建 Rebuttal", () => {
-    const claim = makeClaim(db);
-    const warrant = makeWarrant(db, claim.id);
-    const rebuttal = service.createRebuttal(db, {
-      content: "反驳推理",
-      targetId: warrant.id,
-      targetType: "warrant",
-    });
-    expect(rebuttal.targetType).toBe("warrant");
-  });
-
-  test("targetId 不存在", () => {
-    expect(() =>
-      service.createRebuttal(db, { content: "反驳", targetId: 999, targetType: "claim" })
-    ).toThrow(NotFoundError);
-  });
-
-  test("targetType 与实际类型不匹配", () => {
-    const claim = makeClaim(db);
-    expect(() =>
-      service.createRebuttal(db, { content: "反驳", targetId: claim.id, targetType: "warrant" })
-    ).toThrow(TypeMismatchError);
   });
 });
 
@@ -367,12 +275,23 @@ describe("updateNode", () => {
     ).toThrow(NotFoundError);
   });
 
-  test("add 非 ground 类型的节点抛出 TypeMismatchError", () => {
+  test("add claim 类型节点作为 ground 成功", () => {
     const claim = makeClaim(db);
     const claim2 = makeClaim(db, "C2");
-    const warrant = makeWarrant(db, claim.id);
+    const ground = makeGround(db);
+    const warrant = makeWarrant(db, claim.id, [ground.id]);
     expect(() =>
       service.updateNode(db, warrant.id, { ground_ids: { add: [claim2.id] } })
+    ).not.toThrow();
+  });
+
+  test("add warrant 类型节点抛出 TypeMismatchError", () => {
+    const claim = makeClaim(db);
+    const ground = makeGround(db);
+    const warrant = makeWarrant(db, claim.id, [ground.id]);
+    const warrant2 = makeWarrant(db, claim.id, [ground.id]);
+    expect(() =>
+      service.updateNode(db, warrant.id, { ground_ids: { add: [warrant2.id] } })
     ).toThrow(TypeMismatchError);
   });
 });
@@ -594,7 +513,7 @@ describe("listGrounds", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     const grounds = service.listGrounds(db);
     expect(grounds.length).toBe(1);
-    expect(grounds[0].type).toBe("ground");
+    expect(grounds[0].type).toBe("statement");
   });
 
   test("无过滤器返回所有 ground", () => {
@@ -649,14 +568,6 @@ describe("listGrounds", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     const grounds = service.listGrounds(db, undefined, "invalid");
     expect(grounds).toEqual([]);
-  });
-
-  test("ref_claim ground 包含 refClaimId", () => {
-    const claim = makeClaim(db, "下游主张");
-    makeGround(db, { content: "Reference to Claim #1", refClaimId: claim.id });
-    const grounds = service.listGrounds(db);
-    expect(grounds.length).toBe(1);
-    expect(grounds[0].refClaimId).toBe(claim.id);
   });
 });
 
@@ -903,21 +814,6 @@ describe("审查规则: Warrant 完整性", () => {
 });
 
 describe("审查规则: 删除引用完整性", () => {
-  test("D2: 删除被 Ground 链式引用的 Claim 无 cascade 抛出 CascadeRequiredError", () => {
-    const claim = makeClaim(db, "前置 Claim");
-    makeGround(db, { content: "G", refClaimId: claim.id });  // Mode B ground
-    // Claim 删除仍需 cascade=true
-    expect(() => service.deleteNode(db, claim.id)).toThrow(CascadeRequiredError);
-  });
-
-  test("D2: cascade 删除被 Ground 链式引用的 Claim 返回警告", () => {
-    const claim = makeClaim(db, "前置 Claim");
-    makeGround(db, { content: "G", refClaimId: claim.id });
-    const warnings = service.deleteNode(db, claim.id, true);
-    expect(warnings.length).toBe(1);
-    expect(warnings[0]).toContain("chain reasoning evidence");
-  });
-
   test("D3: 删除支撑非 proposed Claim 的 Warrant 返回警告", () => {
     const claim = makeClaim(db, "C", "supported");
     const ground = makeGround(db);
@@ -936,77 +832,78 @@ describe("审查规则: 删除引用完整性", () => {
     expect(warnings.length).toBe(0);
   });
 
-  test("D4: cascade 删除 Claim 时清理链式引用 Grounds", () => {
+  test("D4: cascade 删除 Claim 时清理关联 Warrants", () => {
     const claim = makeClaim(db, "前置 Claim");
-    const chainGround = makeGround(db, { content: "链式证据", refClaimId: claim.id });
+    const ground = makeGround(db);
+    const warrant = makeWarrant(db, claim.id, [ground.id]);
     service.deleteNode(db, claim.id, true);
-    // 链式引用的 Ground 应被删除
-    expect(() => service.getArgument(db, chainGround.id)).toThrow(NotFoundError);
+    // Warrant 应被删除
+    expect(() => service.getArgument(db, warrant.id)).toThrow(NotFoundError);
   });
 });
 
 describe("审查规则: 循环引用", () => {
-  test("E1: 直接循环链式推理被拒绝（在 createWarrant 时检测）", () => {
-    // 设置: Claim A, Claim B, Ground(ref A) 已存在
-    // 当创建 Warrant(claimId=A, groundIds=[Ground(ref B)]) 且 B 的链能回到 A 时，应报错
+  test("E1: 直接循环引用被拒绝（Claim 作为 ground 形成环）", () => {
     const claimA = makeClaim(db, "A");
     const claimB = makeClaim(db, "B");
-    // B 有一个引用 A 的 ground
-    const groundBtoA = makeGround(db, { content: "ref A from B", refClaimId: claimA.id });
-    makeWarrant(db, claimB.id, [groundBtoA.id]);
-    // A 有一个引用 B 的 ground
-    const groundAtoB = makeGround(db, { content: "ref B from A", refClaimId: claimB.id });
-    // 现在创建 Warrant(claimId=A, groundIds=[groundAtoB])
-    // 这会形成 A → ground(ref B) → B → Warrant → ground(ref A) → A 的环
+    // B has a warrant with A as ground
+    makeWarrant(db, claimB.id, [claimA.id]);
+    // Now try to create warrant for A with B as ground (would create A→B→A cycle)
     expect(() =>
-      service.createWarrant(db, { content: "循环推理", claimId: claimA.id, groundIds: [groundAtoB.id] })
+      service.createWarrant(db, { content: "循环推理", claimId: claimA.id, groundIds: [claimB.id] })
     ).toThrow(ValidationError);
   });
 
-  test("E1: 非循环链式推理可以成功", () => {
+  test("E1: 非循环引用可以成功", () => {
     const claimA = makeClaim(db, "A");
     const claimB = makeClaim(db, "B");
-    const groundAtoB = makeGround(db, { content: "ref B from A", refClaimId: claimB.id });
-    // A 引用 B，但 B 没有引用 A，不成环
+    // A uses B as ground directly (no cycle back)
     expect(() =>
-      service.createWarrant(db, { content: "推理规则", claimId: claimA.id, groundIds: [groundAtoB.id] })
+      service.createWarrant(db, { content: "推理规则", claimId: claimA.id, groundIds: [claimB.id] })
     ).not.toThrow();
   });
 });
 
-describe("审查规则: Rebuttal 约束", () => {
-  test("F1: 不能 rebut 已 refuted 的 Claim", () => {
+describe("審查規則: Rebuttal 約束", () => {
+  test("可以 rebut 任意 Claim 状态", () => {
     const claim = makeClaim(db, "C", "refuted");
-    expect(() =>
-      service.createRebuttal(db, { content: "反驳", targetId: claim.id, targetType: "claim" })
-    ).toThrow(ValidationError);
-  });
-
-  test("F1: 可以 rebut 非 refuted 的 Claim", () => {
-    const claim = makeClaim(db, "C", "proposed");
-    expect(() =>
-      service.createRebuttal(db, { content: "反驳", targetId: claim.id, targetType: "claim" })
-    ).not.toThrow();
+    // F1 removed: no restriction on rebutting refuted claims
+    const stmt = service.createStatement(db, {
+      content: "反驳内容",
+      source: "observed",
+      verification: "pending",
+      rebuttal_for: { target_id: claim.id, target_type: "claim" },
+    });
+    expect(stmt.type).toBe("statement");
   });
 });
 
 describe("审查规则: 结构约束", () => {
-  test("G2: 不能为 refuted Claim 的 Warrant 创建 Backing", () => {
+  test("G2: 可以为任意状态 Claim 的 Warrant 创建 Backing", () => {
     const claim = makeClaim(db, "C", "refuted");
     const ground = makeGround(db);
     const warrant = makeWarrant(db, claim.id, [ground.id]);
-    expect(() =>
-      service.createBacking(db, { content: "支撑", warrantId: warrant.id })
-    ).toThrow(ValidationError);
+    // G2 removed: no restriction based on claim status
+    const backing = service.createStatement(db, {
+      content: "支撑内容",
+      source: "literature",
+      verification: "verified",
+    });
+    repo.addWarrantBackings(db, warrant.id, [backing.id]);
+    expect(backing.type).toBe("statement");
   });
 
   test("G2: 可以为非 refuted Claim 的 Warrant 创建 Backing", () => {
     const claim = makeClaim(db, "C", "proposed");
     const ground = makeGround(db);
     const warrant = makeWarrant(db, claim.id, [ground.id]);
-    expect(() =>
-      service.createBacking(db, { content: "支撑", warrantId: warrant.id })
-    ).not.toThrow();
+    const backing = service.createStatement(db, {
+      content: "支撑内容",
+      source: "literature",
+      verification: "verified",
+    });
+    repo.addWarrantBackings(db, warrant.id, [backing.id]);
+    expect(backing.type).toBe("statement");
   });
 });
 

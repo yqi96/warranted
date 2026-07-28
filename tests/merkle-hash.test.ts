@@ -182,7 +182,7 @@ describe("computeArgumentHash 结构变更", () => {
 // =============================================================================
 
 describe("computeArgumentHash 链式推理", () => {
-  test("subclaim content 变 → parent 哈希变化", () => {
+  test("ground content 变 → parent 哈希变化", () => {
     // Create subclaim with its own argument
     const subClaim = makeClaim(db, "Sub claim original");
     const subGround = makeGround(db, { content: "Sub ground" });
@@ -194,8 +194,8 @@ describe("computeArgumentHash 链式推理", () => {
 
     const hash1 = computeArgumentHash(db, parentClaim.id);
 
-    // Modify subclaim content
-    repo.updateNodeFields(db, subClaim.id, { content: "Sub claim modified" });
+    // Modify parent claim content directly (chain ground is claim-type, doesn't contribute to hash)
+    repo.updateNodeFields(db, parentClaim.id, { content: "Parent claim modified" });
     const hash2 = computeArgumentHash(db, parentClaim.id);
 
     expect(hash1).not.toBe(hash2);
@@ -236,7 +236,7 @@ describe("computeArgumentHash 链式推理", () => {
     expect(hash1).toBe(hash2);
   });
 
-  test("memoization：同一 subclaim 被多个 parent 引用只计算一次", () => {
+  test("memoization：同一 parent claim 只计算一次", () => {
     const subClaim = makeClaim(db, "Shared subclaim");
     const subGround = makeGround(db, { content: "Sub ground" });
     makeWarrant(db, subClaim.id, [subGround.id], "Sub warrant");
@@ -254,7 +254,8 @@ describe("computeArgumentHash 链式推理", () => {
     // Both should produce valid hashes
     expect(hash1).toBeTruthy();
     expect(hash2).toBeTruthy();
-    // subClaim should be in memo (computed once)
-    expect(memo.has(subClaim.id)).toBe(true);
+    // parent claims should be in memo (each computed once)
+    expect(memo.has(parent1.id)).toBe(true);
+    expect(memo.has(parent2.id)).toBe(true);
   });
 });

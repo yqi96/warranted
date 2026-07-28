@@ -109,36 +109,29 @@ function buildGraph(db: Database, typeFilter?: string[]): { nodes: GraphNode[]; 
         if (claimId && filteredIds.has(claimId)) {
           edges.push({ id: `e_${claimId}_${row.id}_supports`, source: claimId, target: row.id, type: "supports" });
         }
-        // Ground → Warrant (based_on): 证据支撑推理规则
-        const groundIds = (data.ground_ids || []) as number[];
-        for (const gid of groundIds) {
+        // Ground/Claim → Warrant (based_on): 证据支撑推理规则 (via warrant_grounds)
+        const groundLinks = db.prepare("SELECT ground_id FROM warrant_grounds WHERE warrant_id = ?").all(row.id) as Array<{ground_id: number}>;
+        for (const { ground_id: gid } of groundLinks) {
           if (filteredIds.has(gid)) {
             edges.push({ id: `e_${gid}_${row.id}_based_on`, source: gid, target: row.id, type: "based_on" });
           }
         }
         break;
       }
-      case "backing": {
-        // Warrant → Backing (reinforces): 支撑推理规则
-        const warrantId = data.warrant_id as number;
-        if (warrantId && filteredIds.has(warrantId)) {
-          edges.push({ id: `e_${warrantId}_${row.id}_reinforces`, source: warrantId, target: row.id, type: "reinforces" });
+      case "statement": {
+        // Warrant → Statement (reinforces): backing role via warrant_backings
+        const backingLinks = db.prepare("SELECT warrant_id FROM warrant_backings WHERE statement_id = ?").all(row.id) as Array<{warrant_id: number}>;
+        for (const { warrant_id: wid } of backingLinks) {
+          if (filteredIds.has(wid)) {
+            edges.push({ id: `e_${wid}_${row.id}_reinforces`, source: wid, target: row.id, type: "reinforces" });
+          }
         }
-        break;
-      }
-      case "rebuttal": {
-        // Claim/Warrant → Rebuttal (challenges): 挑战主张或推理
-        const targetId = data.target_id as number;
-        if (targetId && filteredIds.has(targetId)) {
-          edges.push({ id: `e_${targetId}_${row.id}_challenges`, source: targetId, target: row.id, type: "challenges" });
-        }
-        break;
-      }
-      case "ground": {
-        // Warrant → Ground (derives_from, 链式推理): 上游 Claim 支撑下游 Ground
-        const refClaimId = data.ref_claim_id as number | null;
-        if (refClaimId && filteredIds.has(refClaimId)) {
-          edges.push({ id: `e_${refClaimId}_${row.id}_derives`, source: refClaimId, target: row.id, type: "derives_from" });
+        // Target → Statement (challenges): rebuttal role via rebuttal_targets
+        const rebuttalLinks = db.prepare("SELECT target_id FROM rebuttal_targets WHERE statement_id = ?").all(row.id) as Array<{target_id: number}>;
+        for (const { target_id: tid } of rebuttalLinks) {
+          if (filteredIds.has(tid)) {
+            edges.push({ id: `e_${tid}_${row.id}_challenges`, source: tid, target: row.id, type: "challenges" });
+          }
         }
         break;
       }

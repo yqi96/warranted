@@ -282,24 +282,24 @@ describe("invalidateCompiledClaims", () => {
     expect(JSON.parse(repo.getNodeById(db, claim.id)!.data).compile_status).toBe("stale");
   });
 
-  test("【回归】已通过 compile 后移除 refclaim ground，compile_state 正确清除", () => {
-    // 构造带 refclaim ground 的参数
+  test("【回归】已通过 compile 后移除 ground，compile_state 正确清除", () => {
+    // 构造带 ground 的参数
     const subClaim = makeClaim(db, "Sub claim");
     const subGround = makeGround(db, { content: "Sub ground evidence" });
     makeWarrant(db, subClaim.id, [subGround.id], "Sub warrant");
 
     const parentClaim = makeClaim(db, "Parent claim");
-    // refclaim ground：ground 的 ref_claim_id 指向 subClaim
-    const refGround = makeGround(db, { content: "Chain reasoning", refClaimId: subClaim.id });
-    makeWarrant(db, parentClaim.id, [refGround.id], "Parent warrant");
+    // 直接使用 subClaim 作为 ground（链式推理）
+    const chainGround = makeGround(db, { content: "Chain reasoning evidence" });
+    makeWarrant(db, parentClaim.id, [chainGround.id], "Parent warrant");
 
     // 标记 parentClaim 为已 compiled
     const argHash = computeArgumentHash(db, parentClaim.id);
     repo.setCompileStatus(db, parentClaim.id, "passed");
     repo.saveCompileState(db, parentClaim.id, "passed", "ok", argHash);
 
-    // 移除 refclaim ground
-    invalidateCompiledClaims(db, refGround.id);
+    // 移除 chain ground
+    invalidateCompiledClaims(db, chainGround.id);
 
     // compile_state 应被清除，compile_status 应变为 stale
     expect(repo.getCompileState(db, parentClaim.id)).toBeNull();

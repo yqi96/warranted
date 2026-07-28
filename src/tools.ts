@@ -15,7 +15,6 @@ import {
   ValidationError,
   CascadeRequiredError,
   TypeMismatchError,
-  MutuallyExclusiveModeError,
   StatusTransitionError,
 } from "./errors.ts";
 import type { ArgumentResult, Stats, ToulminNode, AutoVerifyResult, NodeRow } from "./types.ts";
@@ -55,7 +54,7 @@ function formatNode(node: ToulminNode): string {
   switch (node.type) {
     case "claim":
       return `${base} (status: ${node.status})`;
-    case "ground":
+    case "statement":
       return `${base} (source: ${node.source}, verification: ${node.verification})`;
     case "warrant":
       return `${base} (claim_id: ${node.claimId}, ground_ids: [${node.groundIds.join(", ")}])`;
@@ -70,7 +69,7 @@ function formatNodeLine(node: ToulminNode, displayContent?: string): string {
   switch (node.type) {
     case "claim":
       return `#${node.id} [${node.status}] ${content}`;
-    case "ground":
+    case "statement":
       return `#${node.id} [${node.source}/${node.verification}] ${content}`;
     default:
       return `#${node.id} ${content}`;
@@ -78,7 +77,7 @@ function formatNodeLine(node: ToulminNode, displayContent?: string): string {
 }
 
 /** 单节点完整字段格式，供 get_node 使用 */
-function formatNodeDetail(row: NodeRow): string {
+function formatNodeDetail(row: NodeRow, db: Database): string {
   const data = JSON.parse(row.data);
   const lines: string[] = [`[${row.type} #${row.id}]`];
   lines.push(`content: ${row.content}`);
@@ -88,26 +87,29 @@ function formatNodeDetail(row: NodeRow): string {
       if (data.qualifier != null && data.qualifier !== "") lines.push(`qualifier: ${data.qualifier}`);
       lines.push(`compile_status: ${data.compile_status ?? null}`);
       break;
-    case "ground": {
+    case "statement": {
       lines.push(`source: ${data.source}`);
       lines.push(`verification: ${data.verification}`);
       const atts: string[] = data.attachments ?? [];
       lines.push(`attachments: [${atts.join(", ")}]`);
-      if (data.ref_claim_id != null) lines.push(`ref_claim_id: ${data.ref_claim_id}`);
+      // backing: check warrant_backings
+      const backingRow = db.prepare(
+        "SELECT warrant_id FROM warrant_backings WHERE statement_id = ? LIMIT 1"
+      ).get(row.id) as { warrant_id: number } | null;
+      if (backingRow) lines.push(`warrant_id: ${backingRow.warrant_id}`);
+      // rebuttal: check rebuttal_targets
+      const rebuttalRow = db.prepare(
+        "SELECT target_id, target_type FROM rebuttal_targets WHERE statement_id = ? LIMIT 1"
+      ).get(row.id) as { target_id: number; target_type: string } | null;
+      if (rebuttalRow) {
+        lines.push(`target_type: ${rebuttalRow.target_type}`);
+        lines.push(`target_id: ${rebuttalRow.target_id}`);
+      }
       break;
     }
     case "warrant":
       lines.push(`claim_id: ${data.claim_id}`);
       lines.push(`ground_ids: [${(data.ground_ids ?? []).join(", ")}]`);
-      break;
-    case "backing":
-      lines.push(`warrant_id: ${data.warrant_id}`);
-      lines.push(`attachments: [${(data.attachments ?? []).join(", ")}]`);
-      break;
-    case "rebuttal":
-      lines.push(`target_type: ${data.target_type}`);
-      lines.push(`target_id: ${data.target_id}`);
-      lines.push(`attachments: [${(data.attachments ?? []).join(", ")}]`);
       break;
   }
   return lines.join("\n");
@@ -119,7 +121,7 @@ function formatNodeBrief(node: ToulminNode): string {
   switch (node.type) {
     case "claim":
       return `${base} (status: ${node.status})`;
-    case "ground":
+    case "statement":
       return `${base} (source: ${node.source}, verification: ${node.verification})`;
     case "warrant":
       return `${base} (claim_id: ${node.claimId}, ground_ids: [${node.groundIds.join(", ")}])`;
@@ -334,31 +336,28 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 2. create_ground
+  // 2. create_statement
   // ===========================================================================
   server.registerTool(
-    "create_ground",
+    "create_statement",
     {
-      title: "Create Ground",
-      description: ELEMENTS.ground.description,
+      title: "Create Statement",
+      description: ELEMENTS.statement.description,
       inputSchema: {
-        content: z.string().optional().describe(ELEMENTS.ground.content),
-        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(ELEMENTS.ground.source),
-        verification: z.enum(["verified", "pending"]).optional().describe(ELEMENTS.ground.verification),
-        attachments: z.array(z.string()).optional().describe(ELEMENTS.ground.attachments),
-        ref_claim_id: z.number().optional().describe(ELEMENTS.ground.refClaimId),
+        content: z.string().describe(ELEMENTS.statement.content),
+        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(ELEMENTS.statement.source),
+        verification: z.enum(["verified", "pending"]).optional().describe(ELEMENTS.statement.verification),
+        attachments: z.array(z.string()).optional().describe(ELEMENTS.statement.attachments),
+        rebuttal_for: z.object({
+          target_id: z.number().describe(ELEMENTS.rebuttal.targetId),
+          target_type: z.enum(["claim", "warrant"]).describe(ELEMENTS.rebuttal.targetType),
+        }).optional().describe("If provided, the statement is recorded as a rebuttal for the given target."),
       },
     },
-    withLog("create_ground", async (opts: any) => {
+    withLog("create_statement", async (opts: any) => {
       try {
-        // 链式推理 Ground（ref_claim_id）跳过定义审查：content 是自动生成的占位文本
-        // literature Ground 跳过定义审查：内容是引用文献的陈述，合法性由证据审查保证
-        if (reviewConfig && !opts.ref_claim_id && opts.source !== "literature") {
-          const review = await compileService.reviewNodeDefinition(reviewConfig, "ground", opts.content || "");
-          if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
-        }
         let preCreateReviewResult: { errors: string[]; warnings: string[] } | null = null;
-        if (reviewConfig && opts.verification === "verified" && !opts.ref_claim_id) {
+        if (reviewConfig && opts.verification === "verified") {
           const reviewResult = await reviewGroundEvidencePreCreate(reviewConfig, {
             content: opts.content || "",
             source: opts.source || "unknown",
@@ -367,20 +366,19 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           if (reviewResult.errors.length > 0) return fail(formatReviewIssues(reviewResult.errors, reviewResult.warnings));
           preCreateReviewResult = reviewResult;
         }
-        const ground = service.createGround(db, {
+        const stmt = service.createStatement(db, {
           content: opts.content,
-          source: opts.source,
-          verification: opts.verification,
+          source: opts.source ?? "observed",
+          verification: opts.verification ?? "pending",
           attachments: opts.attachments,
-          refClaimId: opts.ref_claim_id,
+          rebuttal_for: opts.rebuttal_for,
         });
-        // 审查通过后落盘，留存审查报告
         if (reviewConfig && preCreateReviewResult) {
-          saveGroundReviewFile(reviewConfig, ground.id, preCreateReviewResult);
+          saveGroundReviewFile(reviewConfig, stmt.id, preCreateReviewResult);
         }
-        const lines = [`Created ground #${ground.id}`];
-        if (opts.verification === "pending") {
-          const src = opts.source ?? "hypothesis";
+        const lines = [`Created statement #${stmt.id}`];
+        if ((opts.verification ?? "pending") === "pending") {
+          const src = opts.source ?? "observed";
           if (src === "literature") lines.push("", HINTS.groundPendingLiterature);
           else if (src === "observed") lines.push("", HINTS.groundPendingObserved);
           else lines.push("", HINTS.groundPendingHypothesis);
@@ -423,63 +421,9 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     })
   );
 
-  // ===========================================================================
-  // 4. create_backing
-  // ===========================================================================
-  server.registerTool(
-    "create_backing",
-    {
-      title: "Create Backing",
-      description: ELEMENTS.backing.description,
-      inputSchema: {
-        warrant_id: z.number().describe(ELEMENTS.backing.warrantId),
-        content: z.string().describe(ELEMENTS.backing.content),
-        attachments: z.array(z.string()).optional().describe("Attachment file paths"),
-      },
-    },
-    withLog("create_backing", async ({ warrant_id, content, attachments }: { warrant_id: number; content: string; attachments?: string[] }) => {
-      try {
-        const backing = service.createBacking(db, { content, warrantId: warrant_id, attachments });
-        return ok(appendInvalidateHint(
-          `Created backing #${backing.id}`,
-          compileService.invalidateCompiledClaims(db, backing.id)
-        ));
-      } catch (e) {
-        return fail(formatError(e));
-      }
-    })
-  );
 
   // ===========================================================================
-  // 5. create_rebuttal
-  // ===========================================================================
-  server.registerTool(
-    "create_rebuttal",
-    {
-      title: "Create Rebuttal",
-      description: ELEMENTS.rebuttal.description,
-      inputSchema: {
-        target_id: z.number().describe(ELEMENTS.rebuttal.targetId),
-        target_type: z.enum(["claim", "warrant"]).describe(ELEMENTS.rebuttal.targetType),
-        content: z.string().describe(ELEMENTS.rebuttal.content),
-        attachments: z.array(z.string()).optional().describe("Attachment file paths"),
-      },
-    },
-    withLog("create_rebuttal", async ({ target_id, target_type, content, attachments }: { target_id: number; target_type: "claim" | "warrant"; content: string; attachments?: string[] }) => {
-      try {
-        const rebuttal = service.createRebuttal(db, { content, targetId: target_id, targetType: target_type, attachments });
-        return ok(appendInvalidateHint(
-          `Created rebuttal #${rebuttal.id}`,
-          compileService.invalidateCompiledClaims(db, rebuttal.id)
-        ));
-      } catch (e) {
-        return fail(formatError(e));
-      }
-    })
-  );
-
-  // ===========================================================================
-  // 6. list_claims
+  // 4. list_claims
   // ===========================================================================
   server.registerTool(
     "list_claims",
@@ -520,11 +464,6 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         const grounds = service.listGrounds(db, source, verification);
         if (grounds.length === 0) return ok("No grounds found.");
         const lines = grounds.map(g => {
-          if (g.refClaimId != null) {
-            const refRow = repo.getNodeById(db, g.refClaimId);
-            const refContent = refRow ? refRow.content : `Claim #${g.refClaimId}`;
-            return formatNodeLine(g, `[ref_claim #${g.refClaimId}] ${refContent}`);
-          }
           return formatNodeLine(g);
         });
         return ok(lines.join("\n"));
@@ -572,7 +511,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
       try {
         const row = repo.getNodeById(db, node_id);
         if (!row) return fail(`Node not found: ${node_id}`);
-        return ok(formatNodeDetail(row));
+        return ok(formatNodeDetail(row, db));
       } catch (e) {
         return fail(formatError(e));
       }
@@ -589,7 +528,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
       description: "Search nodes by keyword, optionally filtered by type.",
       inputSchema: {
         keyword: z.string().describe("Search keyword"),
-        node_type: z.enum(["claim", "ground", "warrant", "backing", "rebuttal"]).optional().describe("Filter by node type"),
+        node_type: z.enum(["claim", "statement", "warrant", "ground", "backing", "rebuttal"]).optional().describe("Filter by node type. 'ground', 'backing', 'rebuttal' are virtual filters that query by relationship role; 'statement' returns all statements regardless of role."),
       },
     },
     withLog("search_nodes", async ({ keyword, node_type }: { keyword: string; node_type?: string }) => {
@@ -637,12 +576,20 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         content: z.string().optional().describe("New content"),
         attachments: z.array(z.string()).optional().describe("New attachment file paths"),
         status: z.enum(["proposed", "supported", "disputed", "refuted"]).optional().describe(ELEMENTS.claim.status),
-        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(ELEMENTS.ground.source),
-        verification: z.enum(["verified", "pending"]).optional().describe(ELEMENTS.ground.verification),
+        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(ELEMENTS.statement.source),
+        verification: z.enum(["verified", "pending"]).optional().describe(ELEMENTS.statement.verification),
         ground_ids: z.object({
           add: z.array(z.number()).optional(),
           remove: z.array(z.number()).optional(),
         }).optional().describe("Warrant ground_ids incremental update"),
+        backing_ids: z.object({
+          add: z.array(z.number()).optional(),
+          remove: z.array(z.number()).optional(),
+        }).optional().describe("Warrant backing statement IDs incremental update"),
+        rebuttal_ids: z.object({
+          add: z.array(z.object({ id: z.number(), target_type: z.enum(["claim", "warrant"]) })).optional(),
+          remove: z.array(z.number()).optional(),
+        }).optional().describe("Rebuttal target IDs incremental update for Claim or Warrant nodes"),
         qualifier: z.string().optional().describe("Claim qualifier: degree of certainty ('probably', 'presumably', 'certainly')"),
       },
     },
@@ -652,24 +599,14 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         // literature Ground 跳过：内容是文献引用，合法性由证据审查保证
         if (reviewConfig && opts.content !== undefined) {
           const existingNode = repo.getNodeById(db, opts.node_id);
-          if (existingNode && (existingNode.type === "claim" || existingNode.type === "warrant" || existingNode.type === "ground")) {
-            let effectiveSource: string | null = null;
-            if (existingNode.type === "ground") {
-              try {
-                effectiveSource = opts.source ?? (JSON.parse(existingNode.data).source as string);
-              } catch {
-                // malformed data → reviewNodeDefinition runs (safe default)
-              }
-            }
-            if (effectiveSource !== "literature") {
-              const review = await compileService.reviewNodeDefinition(
-                reviewConfig,
-                existingNode.type as "claim" | "warrant" | "ground",
-                opts.content,
-                opts.qualifier
-              );
-              if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
-            }
+          if (existingNode && (existingNode.type === "claim" || existingNode.type === "warrant")) {
+            const review = await compileService.reviewNodeDefinition(
+              reviewConfig,
+              existingNode.type as "claim" | "warrant",
+              opts.content,
+              opts.qualifier
+            );
+            if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
           }
         }
 
@@ -680,11 +617,13 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           source: opts.source,
           verification: opts.verification,
           ground_ids: opts.ground_ids,
+          backing_ids: opts.backing_ids,
+          rebuttal_ids: opts.rebuttal_ids,
           qualifier: opts.qualifier,
         });
 
         // Ground 证据审查（阻断式：失败则回退 verification）
-        if (reviewConfig && node.type === "ground" && opts.verification === "verified") {
+        if (reviewConfig && node.type === "statement" && opts.verification === "verified") {
           try {
             const reviewResult = await executeGroundReview(reviewConfig, db, node.id);
             if (reviewResult.errors.length > 0) {
@@ -699,7 +638,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           : [];
         let text = `Updated ${formatNodeBrief(node)}`;
         if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
-        if (node.type === "ground" && opts.verification === "pending") {
+        if (node.type === "statement" && opts.verification === "pending") {
           const src = node.source ?? "hypothesis";
           if (src === "literature") text += "\n\n" + HINTS.groundPendingLiterature;
           else if (src === "observed") text += "\n\n" + HINTS.groundPendingObserved;

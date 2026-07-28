@@ -8,10 +8,8 @@ import { Database } from "bun:sqlite";
 import { openDatabase } from "../src/db.ts";
 import type {
   ClaimNode,
-  GroundNode,
+  StatementNode,
   WarrantNode,
-  BackingNode,
-  RebuttalNode,
   ClaimStatus,
   GroundSource,
   VerificationStatus,
@@ -70,7 +68,7 @@ export function makeClaim(
   };
 }
 
-/** 创建 Ground 节点 */
+/** 创建 Ground/Statement 节点 */
 export function makeGround(
   db: Database,
   opts: {
@@ -78,15 +76,13 @@ export function makeGround(
     source?: GroundSource;
     verification?: VerificationStatus;
     attachments?: string[];
-    refClaimId?: number | null;
   } = {}
-): GroundNode {
+): StatementNode {
   const {
     content = "Test ground",
     source = "observed",
     verification = "verified",
     attachments = [],
-    refClaimId = null,
   } = opts;
 
   const now = new Date().toISOString().slice(0, 19);
@@ -94,21 +90,19 @@ export function makeGround(
     source,
     verification,
     attachments,
-    ref_claim_id: refClaimId,
   });
   const stmt = db.prepare(
-    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('ground', ?, ?, ?, ?)"
+    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('statement', ?, ?, ?, ?)"
   );
   const result = stmt.run(content, data, now, now);
   const id = result.lastInsertRowid as number;
   return {
     id,
-    type: "ground",
+    type: "statement",
     content,
     source,
     verification,
     attachments,
-    refClaimId,
     createdAt: now,
     updatedAt: now,
   };
@@ -128,6 +122,10 @@ export function makeWarrant(
   );
   const result = stmt.run(content, data, now, now);
   const id = result.lastInsertRowid as number;
+  // Also populate warrant_grounds relationship table
+  for (const gid of groundIds) {
+    db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(id, gid);
+  }
   return {
     id,
     type: "warrant",
@@ -139,53 +137,54 @@ export function makeWarrant(
   };
 }
 
-/** 创建 Backing 节点 */
+/** 创建 Backing/Statement 节点 */
 export function makeBacking(
   db: Database,
   warrantId: number,
   content: string = "Test backing",
   attachments: string[] = []
-): BackingNode {
+): StatementNode {
   const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({ attachments, warrant_id: warrantId });
+  const data = JSON.stringify({ attachments });
   const stmt = db.prepare(
-    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('backing', ?, ?, ?, ?)"
+    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('statement', ?, ?, ?, ?)"
   );
   const result = stmt.run(content, data, now, now);
   const id = result.lastInsertRowid as number;
+  // Link as backing via relationship table
+  db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(warrantId, id);
   return {
     id,
-    type: "backing",
+    type: "statement",
     content,
     attachments,
-    warrantId,
     createdAt: now,
     updatedAt: now,
   };
 }
 
-/** 创建 Rebuttal 节点 */
+/** 创建 Rebuttal/Statement 节点 */
 export function makeRebuttal(
   db: Database,
   targetId: number,
   targetType: TargetType = "claim",
   content: string = "Test rebuttal",
   attachments: string[] = []
-): RebuttalNode {
+): StatementNode {
   const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({ attachments, target_id: targetId, target_type: targetType });
+  const data = JSON.stringify({ attachments });
   const stmt = db.prepare(
-    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('rebuttal', ?, ?, ?, ?)"
+    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('statement', ?, ?, ?, ?)"
   );
   const result = stmt.run(content, data, now, now);
   const id = result.lastInsertRowid as number;
+  // Link as rebuttal via relationship table
+  db.prepare("INSERT OR IGNORE INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, ?)").run(id, targetId, targetType);
   return {
     id,
-    type: "rebuttal",
+    type: "statement",
     content,
     attachments,
-    targetId,
-    targetType,
     createdAt: now,
     updatedAt: now,
   };
@@ -197,10 +196,10 @@ export function makeRebuttal(
 
 export interface SeedResult {
   claim: ClaimNode;
-  ground1: GroundNode;
-  ground2: GroundNode;
+  ground1: StatementNode;
+  ground2: StatementNode;
   warrant: WarrantNode;
-  backing: BackingNode;
+  backing: StatementNode;
 }
 
 /**
@@ -268,24 +267,20 @@ export function makeCompiledClaim(
 }
 
 /**
- * 创建链式推理结构：parentClaim ← Warrant ← Ground(ref_claim_id = subClaimId)
- * 返回创建的 Ground 和 Warrant。
+ * 创建链式推理结构：parentClaim ← Warrant ← Claim(subClaimId) 直接挂入 warrant_grounds
+ * 返回创建的 Warrant。
  */
 export function makeChainReasoning(
   db: Database,
   parentClaimId: number,
   subClaimId: number,
   warrantContent: string = "Chain reasoning warrant"
-): { ground: GroundNode; warrant: WarrantNode } {
-  const ground = makeGround(db, {
-    content: `Reference to Claim #${subClaimId}`,
-    refClaimId: subClaimId,
-  });
+): { warrant: WarrantNode } {
   const warrant = makeWarrant(
     db,
     parentClaimId,
-    [ground.id],
+    [subClaimId],
     warrantContent
   );
-  return { ground, warrant };
+  return { warrant };
 }

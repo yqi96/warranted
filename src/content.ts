@@ -29,10 +29,10 @@ export const ELEMENTS = {
       "'refuted' = compile passed, claim definitively disproven — evidence conclusively shows it is false, no reasonable interpretation supports it.",
   },
 
-  ground: {
+  statement: {
     description:
-      "Record a ground — a fact, evidence, or data appealed to as foundation for the claim. " +
-      "A ground must be independent of the claim. " +
+      "Record a statement — a fact, evidence, or data appealed to as foundation for the claim. " +
+      "A statement used as ground must be independent of the claim. " +
       "Example: 'I was born in Bermuda.'",
     content: [
       "A Ground must be a research RESULT — what was found, observed, produced, or discovered.",
@@ -55,8 +55,7 @@ export const ELEMENTS = {
       "'pending' = not yet independently verified; " +
       "'verified' = triggers automatic evidence review — only succeeds if review passes, otherwise reverts to pending. " +
       "Verification evidence must match the Ground's scope: scoped or pilot analysis cannot verify an unscoped Ground.",
-    attachments: "File paths supporting this ground. Grounds with ref_claim_id (chain reasoning) do not need attachments. Grounds with source='literature' must provide the reference files (e.g., paper PDF, reference document) as attachments; the reference files themselves serve as the description document — no separate markdown description file is required. Other grounds MUST have a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this ground — explaining: what the ground states, how the evidence was produced, and where the files come from. Files alone without explanation are not enough — the document is the ground's provenance record.",
-    refClaimId: "Use an existing Claim as a Ground for chain reasoning (Claim A's conclusion becomes Claim B's evidence). Mutually exclusive with content/source/verification/attachments — the Ground's content is auto-derived from the referenced Claim. Do not manually verify a ref-claim Ground; its verification status follows the referenced Claim's status automatically.",
+    attachments: "File paths supporting this statement. Statements with source='literature' must provide the reference files (e.g., paper PDF, reference document) as attachments; the reference files themselves serve as the description document — no separate markdown description file is required. Other statements MUST have a description document (e.g., `ground-<topic>.md`) — an independent narrative specific to this statement — explaining: what the statement asserts, how the evidence was produced, and where the files come from. Files alone without explanation are not enough — the document is the statement's provenance record.",
   },
 
   warrant: {
@@ -103,9 +102,9 @@ export const ELEMENTS = {
 
   compile: {
     description:
-      "Compile a claim — trigger a two-stage review of the argument chain. " +
-      "Stage 1: check each element (Claim/Warrant/Ground) follows Toulmin definitions. " +
-      "Stage 2: if Stage 1 passes, check overall logical chain coherence. " +
+      "Compile a claim — review the argument chain for logical soundness. " +
+      "Checks whether Grounds support the Claim, whether the Warrant correctly authorizes " +
+      "the inference from those Grounds to the Claim, and whether the chain is free of circularity. " +
       "If review passes, the claim gets 'compiled' status. " +
       "If any node in the argument is later modified, compiled status is auto-cleared.",
     claimId: "The claim ID to compile.",
@@ -119,9 +118,9 @@ export const ELEMENTS = {
 export const HINTS = {
   claimNoWarrants: [
     "Hint: This claim has no warrants yet. To build the reasoning chain:",
-    "  1. create_ground — provide evidence (or derive from existing claims via ref_claim_id)",
+    "  1. create_statement — provide evidence (a research result, observation, or literature finding)",
     "  2. create_warrant — link the claim to its grounds with an inference rule",
-    "  3. create_backing (optional) — support the warrant's credibility",
+    "  3. update_node (backing_ids.add) — add a statement supporting the warrant's credibility",
   ].join("\n"),
 
   groundPendingHypothesis:

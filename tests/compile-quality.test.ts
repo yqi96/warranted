@@ -1,7 +1,7 @@
 /**
  * structuralQualityCheck 综合测试
  *
- * 覆盖18条规则：A1-A2, B1-B6, C1-C6, D1-D4
+ * 覆盖规则：B1-B6, C1-C5
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
@@ -40,13 +40,6 @@ function setClaimStatus(db: Database, claimId: number, status: string) {
   repo.updateNodeFields(db, claimId, { data });
 }
 
-function setClaimData(db: Database, claimId: number, patch: Record<string, unknown>) {
-  const row = repo.getNodeById(db, claimId)!;
-  const data = JSON.parse(row.data);
-  Object.assign(data, patch);
-  repo.updateNodeFields(db, claimId, { data });
-}
-
 // =============================================================================
 // Baseline: clean argument produces empty structure result
 // =============================================================================
@@ -68,41 +61,6 @@ describe("baseline", () => {
 });
 
 // =============================================================================
-// Category A: Referential Integrity
-// =============================================================================
-
-describe("Category A — Referential Integrity", () => {
-  test("A1: ref_claim_id points to non-existent node → error", () => {
-    const claim = makeClaim(db, "Claim");
-    const ground = makeGround(db, { refClaimId: 9999 });
-    makeWarrant(db, claim.id, [ground.id]);
-
-    const result = structuralQualityCheck(db, claim.id);
-    expect(result.errors.some(e => e.includes("non-existent") && e.includes(`${ground.id}`))).toBe(true);
-  });
-
-  test("A2: ref_claim_id points to non-Claim node → error", () => {
-    const claim = makeClaim(db, "Claim");
-    const otherWarrant = makeWarrant(db, claim.id, []);
-    const ground = makeGround(db, { refClaimId: otherWarrant.id });
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-
-    const result = structuralQualityCheck(db, claim.id);
-    expect(result.errors.some(e => e.includes("not a Claim") && e.includes(`${ground.id}`))).toBe(true);
-  });
-
-  test("A: valid ref_claim_id to actual Claim → no A error", () => {
-    const claim = makeClaim(db, "Parent claim");
-    const subClaim = makeClaim(db, "Sub claim");
-    const ground = makeGround(db, { refClaimId: subClaim.id });
-    makeWarrant(db, claim.id, [ground.id]);
-
-    const result = structuralQualityCheck(db, claim.id);
-    expect(result.errors.filter(e => e.includes("ref_claim_id"))).toHaveLength(0);
-  });
-});
-
-// =============================================================================
 // Category B: Individual Quality
 // =============================================================================
 
@@ -118,24 +76,24 @@ describe("Category B — Individual Quality", () => {
     expect(result.warnings.some(w => w.includes("both hypothesis") && w.includes(`${ground.id}`))).toBe(false);
   });
 
-  test("B2: ground source=hypothesis, ref_claim_id=null → warning", () => {
+  test("B2: ground source=hypothesis → warning", () => {
     const claim = makeClaim(db, "Claim");
-    const ground = makeGround(db, { source: "hypothesis", verification: "verified", refClaimId: null });
+    const ground = makeGround(db, { source: "hypothesis", verification: "verified" });
     makeWarrant(db, claim.id, [ground.id]);
 
     const result = structuralQualityCheck(db, claim.id);
     expect(result.warnings.some(w => w.includes("hypothesis") && w.includes(`${ground.id}`))).toBe(true);
   });
 
-  test("B2: suppressed when ref_claim_id is non-null (chain reasoning)", () => {
+  test("B2: suppressed when claim used directly as ground (chain reasoning)", () => {
     const claim = makeClaim(db, "Parent claim");
     const subClaim = makeClaim(db, "Sub claim");
-    const ground = makeGround(db, { source: "hypothesis", verification: "verified", refClaimId: subClaim.id });
-    makeWarrant(db, claim.id, [ground.id]);
+    // Use subClaim directly as a ground in the warrant (chain reasoning)
+    makeWarrant(db, claim.id, [subClaim.id]);
 
     const result = structuralQualityCheck(db, claim.id);
-    // No B2 warning for chain-reasoning ground with ref_claim_id set
-    expect(result.warnings.filter(w => w.includes("hypothesis") && w.includes(`${ground.id}`))).toHaveLength(0);
+    // subClaim as ground is a claim node — no B2 warning for it
+    expect(result.warnings.filter(w => w.includes("hypothesis") && w.includes(`${subClaim.id}`))).toHaveLength(0);
   });
 
   test("B3: warrant without backing → warning", () => {
@@ -177,7 +135,7 @@ describe("Category B — Individual Quality", () => {
 
   test("B6: hypothesis+pending ground → B6 emitted, NOT B1+B2 separately", () => {
     const claim = makeClaim(db, "Claim");
-    const ground = makeGround(db, { source: "hypothesis", verification: "pending", refClaimId: null });
+    const ground = makeGround(db, { source: "hypothesis", verification: "pending" });
     makeWarrant(db, claim.id, [ground.id]);
 
     const result = structuralQualityCheck(db, claim.id);
@@ -195,20 +153,17 @@ describe("Category B — Individual Quality", () => {
     expect(b2Warnings).toHaveLength(0);
   });
 
-  test("B6 suppressed by ref_claim_id (chain-reasoning hypothesis+pending)", () => {
+  test("B6 suppressed when claim used directly as ground (chain-reasoning hypothesis+pending)", () => {
     const parentClaim = makeClaim(db, "Parent");
     const subClaim = makeClaim(db, "Sub");
-    // hypothesis+pending but has ref_claim_id → chain reasoning, neither B6 nor B2 fires
-    const ground = makeGround(db, { source: "hypothesis", verification: "pending", refClaimId: subClaim.id });
-    makeWarrant(db, parentClaim.id, [ground.id]);
+    // Use subClaim directly as ground — chain reasoning, neither B6 nor B2 fires
+    makeWarrant(db, parentClaim.id, [subClaim.id]);
 
     const result = structuralQualityCheck(db, parentClaim.id);
-    // No B6 warning
-    expect(result.warnings.filter(w => w.includes("both hypothesis") && w.includes(`${ground.id}`))).toHaveLength(0);
+    // No B6 warning for subClaim used as ground
+    expect(result.warnings.filter(w => w.includes("both hypothesis") && w.includes(`${subClaim.id}`))).toHaveLength(0);
     // No B2 warning
-    expect(result.warnings.filter(w => w.includes("hypothesis without chain") && w.includes(`${ground.id}`))).toHaveLength(0);
-    // B1 (pending) still fires — ref_claim_id doesn't suppress verification check
-    expect(result.warnings.some(w => w.includes("pending") && w.includes(`${ground.id}`))).toBe(true);
+    expect(result.warnings.filter(w => w.includes("hypothesis without chain") && w.includes(`${subClaim.id}`))).toHaveLength(0);
   });
 });
 
@@ -230,8 +185,8 @@ describe("Category C — Aggregate Quality", () => {
 
   test("C2: all grounds in warrant are hypothesis (no ref) → warning", () => {
     const claim = makeClaim(db, "Claim");
-    const g1 = makeGround(db, { source: "hypothesis", verification: "verified", refClaimId: null });
-    const g2 = makeGround(db, { source: "hypothesis", verification: "verified", refClaimId: null });
+    const g1 = makeGround(db, { source: "hypothesis", verification: "verified" });
+    const g2 = makeGround(db, { source: "hypothesis", verification: "verified" });
     const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
     makeBacking(db, warrant.id);
 
@@ -241,8 +196,8 @@ describe("Category C — Aggregate Quality", () => {
 
   test("C3: all grounds hypothesis+pending → only C3, not C1+C2", () => {
     const claim = makeClaim(db, "Claim");
-    const g1 = makeGround(db, { source: "hypothesis", verification: "pending", refClaimId: null });
-    const g2 = makeGround(db, { source: "hypothesis", verification: "pending", refClaimId: null });
+    const g1 = makeGround(db, { source: "hypothesis", verification: "pending" });
+    const g2 = makeGround(db, { source: "hypothesis", verification: "pending" });
     const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
     makeBacking(db, warrant.id);
 
@@ -327,96 +282,6 @@ describe("Category C — Aggregate Quality", () => {
     expect(result.infos?.filter(i => i.includes("rebuttal") && i.includes("3"))).toHaveLength(0);
   });
 
-  test("C6: associated orphan ground (ref_claim_id=claimId but not in warrant) → warning", () => {
-    const claim = makeClaim(db, "Claim");
-    const ground1 = makeGround(db, { verification: "verified" });
-    makeWarrant(db, claim.id, [ground1.id]);
-
-    // Ground that references the claim but is NOT in any warrant
-    const orphanGround = makeGround(db, { refClaimId: claim.id, content: "Orphan associated ground" });
-
-    const result = structuralQualityCheck(db, claim.id);
-    expect(result.warnings.some(w => w.includes(`Ground #${orphanGround.id}`) && w.includes("not attached to any warrant"))).toBe(true);
-  });
-
-  test("C6: associated ground that IS in a warrant → no C6 warning", () => {
-    const claim = makeClaim(db, "Claim");
-    const subClaim = makeClaim(db, "Sub claim");
-    const ground = makeGround(db, { refClaimId: subClaim.id });
-    makeWarrant(db, claim.id, [ground.id]);
-
-    // ground references subClaim (not claimId), no orphan issue
-    const result = structuralQualityCheck(db, claim.id);
-    expect(result.warnings.filter(w => w.includes("not attached to any warrant") && w.includes(`Ground #${ground.id}`))).toHaveLength(0);
-  });
-});
-
-// =============================================================================
-// Category D: Cross-Node Consistency
-// =============================================================================
-
-describe("Category D — Cross-Node Consistency", () => {
-  test("D1: chain target is stale → info", () => {
-    const parentClaim = makeClaim(db, "Parent");
-    const subClaim = makeClaim(db, "Sub");
-    setClaimData(db, subClaim.id, { compile_status: "stale" });
-
-    const ground = makeGround(db, { refClaimId: subClaim.id });
-    makeWarrant(db, parentClaim.id, [ground.id]);
-
-    const result = structuralQualityCheck(db, parentClaim.id);
-    expect(result.infos?.some(i => i.includes("stale") && i.includes(`${subClaim.id}`))).toBe(true);
-  });
-
-  test("D2: chain target has status=disputed → info", () => {
-    const parentClaim = makeClaim(db, "Parent");
-    const subClaim = makeClaim(db, "Sub", "disputed");
-
-    const ground = makeGround(db, { refClaimId: subClaim.id });
-    makeWarrant(db, parentClaim.id, [ground.id]);
-
-    const result = structuralQualityCheck(db, parentClaim.id);
-    expect(result.infos?.some(i => i.includes("disputed") && i.includes(`${subClaim.id}`))).toBe(true);
-  });
-
-  test("D3: chain target has status=refuted → warning", () => {
-    const parentClaim = makeClaim(db, "Parent");
-    const subClaim = makeClaim(db, "Sub", "refuted");
-
-    const ground = makeGround(db, { refClaimId: subClaim.id });
-    makeWarrant(db, parentClaim.id, [ground.id]);
-
-    const result = structuralQualityCheck(db, parentClaim.id);
-    expect(result.warnings.some(w => w.includes("refuted") && w.includes(`${subClaim.id}`))).toBe(true);
-    // refuted is WARNING not INFO
-    expect(result.infos?.filter(i => i.includes("refuted"))).toHaveLength(0);
-  });
-
-  test("D4: chain target has never been compiled → info", () => {
-    const parentClaim = makeClaim(db, "Parent");
-    const subClaim = makeClaim(db, "Sub", "proposed");
-    // No compile_state and compile_status != "passed" (default)
-
-    const ground = makeGround(db, { refClaimId: subClaim.id });
-    makeWarrant(db, parentClaim.id, [ground.id]);
-
-    const result = structuralQualityCheck(db, parentClaim.id);
-    expect(result.infos?.some(i => i.includes("never been compiled") && i.includes(`${subClaim.id}`))).toBe(true);
-  });
-
-  test("D4: compiled chain target → no D4 info", () => {
-    const parentClaim = makeClaim(db, "Parent");
-    const subClaim = makeClaim(db, "Sub", "supported");
-    // Mark as compile_status = "passed"
-    setClaimData(db, subClaim.id, { compile_status: "passed" });
-    repo.saveCompileState(db, subClaim.id, "passed", "OK");
-
-    const ground = makeGround(db, { refClaimId: subClaim.id });
-    makeWarrant(db, parentClaim.id, [ground.id]);
-
-    const result = structuralQualityCheck(db, parentClaim.id);
-    expect(result.infos?.filter(i => i.includes("never been compiled") && i.includes(`${subClaim.id}`))).toHaveLength(0);
-  });
 });
 
 // =============================================================================
@@ -476,7 +341,7 @@ describe("accumulation", () => {
   test("multiple conditions → multiple warnings", () => {
     const claim = makeClaim(db, "Claim");
     const g1 = makeGround(db, { source: "observed", verification: "pending" }); // B1
-    const g2 = makeGround(db, { source: "hypothesis", verification: "verified", refClaimId: null }); // B2
+    const g2 = makeGround(db, { source: "hypothesis", verification: "verified" }); // B2
     const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]); // B3 (no backing)
     makeRebuttal(db, claim.id, "claim", "Counter"); // B4
 

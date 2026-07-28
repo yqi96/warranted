@@ -83,8 +83,6 @@ Evaluate the following, assuming all Grounds are factually true:
 
 4. **Element definitions**: Is each element used correctly per the definitions above?
 
-5. **Qualifier appropriateness**: If a qualifier is present, does it correctly reflect the strength of the argument?
-
 ## Output Format
 
 Respond in JSON:

@@ -144,51 +144,6 @@ ${OUTPUT_FORMAT}`;
 }
 
 // =============================================================================
-// Ground 定义审查
-// =============================================================================
-
-export interface GroundReviewData {
-  id: number;
-  content: string;
-}
-
-export function buildGroundReviewPrompt(data: GroundReviewData): string {
-  return `You are a rigorous scientific argumentation reviewer. Your task is to evaluate whether a Ground element correctly follows the Toulmin definition of a Ground.
-
-## Toulmin Ground Definition
-
-**Ground**: Independent evidence/facts that support the Claim. Must be a research RESULT — what was found, observed, produced, or discovered.
-- Example: "Method A yields result X" (an observed/computed finding)
-- Example: "The experiment produced output value Y" (a computed result)
-
-## Common Confusions (Ground vs other elements)
-
-- **Ground vs Backing**: A Ground is a research RESULT (what was found/produced — the OUTPUT); a Backing is methodology (how it was done — the INPUT). Key test: does this describe what was FOUND, or what was USED?
-  - Ground (output): "Method A produces result X with accuracy Y"
-  - Backing (input): "We applied method A with parameters B and C on dataset D"
-
-- **Ground vs data availability**: "The database contains N records" describes what data EXISTS, not what was FOUND. Data availability is not a research result.
-  - Data availability (NOT a Ground): "The database contains N records from period X"
-  - Ground (valid): "M out of N records show pattern X"
-
-- **Ground vs hypothesis**: A hypothesis is a prediction, not a finding. If the statement predicts what might be found rather than stating what was found, it is a hypothesis, not a valid Ground.
-
-## Ground to Review
-
-**Ground** (#${data.id}): ${data.content}
-
-## Review Checklist
-
-1. **Is it a research result?** Does this statement describe what was found, observed, produced, or discovered?
-2. **Is it NOT a data availability statement?** It should not merely state what data is available.
-3. **Is it NOT a methodology description?** It should not describe what methods were used (that belongs in Backing).
-4. **Is it NOT a hypothesis?** It should state what was found, not predict what might be found.
-5. **Is it atomic?** Does it contain only one independent measurement or observation? Report an error if it bundles multiple independent measurements that should each be a separate Ground. Common patterns: (a) before/after or comparison ("reduces from 42.3 to 38.7" bundles baseline and result), (b) multiple metrics ("achieves 85% accuracy AND 12ms latency"), (c) multiple conditions ("performs well on clean AND noisy inputs"). Test: how many independent measurements does verifying this require? If more than one, it is not atomic.
-
-${OUTPUT_FORMAT}`;
-}
-
-// =============================================================================
 // 逻辑链审查（整体连贯性）
 // =============================================================================
 
@@ -242,13 +197,7 @@ Evaluate the following, assuming all Grounds are factually true:
 
 3. **Ground-Claim circularity**: Does any Ground merely restate the Claim in different words? Circular Grounds provide no independent support.
 
-4. **Evidence sufficiency**: Are the Grounds SUFFICIENT to support the Claim? Is there enough evidence to convince a reasonable skeptic? A single weak Ground for a strong Claim is a concern.
-
-5. **Warrant-Backing completeness**: If a Warrant relies on a specific methodology or authority, is there a corresponding Backing? An unsupported Warrant is a structural gap.
-
-6. **Qualifier appropriateness**: If a qualifier is present, does it correctly reflect the overall strength of the argument? Is the argument strong enough to support the qualifier's degree of certainty?
-
-7. **Rebuttal coverage**: Are there obvious counter-arguments or limitations that are NOT captured by existing Rebuttals? If the Claim is unqualified, are Rebuttals especially necessary?
+4. **Warrant-Backing completeness**: If a Warrant relies on a specific methodology or authority, is there a corresponding Backing? An unsupported Warrant is a structural gap.
 
 ${CHAIN_OUTPUT_FORMAT}`;
 }

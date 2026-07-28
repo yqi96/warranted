@@ -45,11 +45,4 @@ describe("reviewNodeDefinition — --no-persist (reviewDir=null)", () => {
       reviewNodeDefinition(config, "warrant", "Test warrant content")
     ).resolves.toMatchObject({ errors: [], warnings: [] });
   });
-
-  test("ground 审查不抛出路径错误", async () => {
-    const config = makeNoPersistConfig();
-    await expect(
-      reviewNodeDefinition(config, "ground", "Test ground content")
-    ).resolves.toMatchObject({ errors: [], warnings: [] });
-  });
 });

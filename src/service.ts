@@ -10,10 +10,8 @@ import * as repo from "./repo.ts";
 import type {
   NodeRow,
   ClaimNode,
-  GroundNode,
   WarrantNode,
-  BackingNode,
-  RebuttalNode,
+  StatementNode,
   ClaimData,
   ClaimStatus,
   GroundSource,
@@ -36,7 +34,6 @@ import {
   ValidationError,
   CascadeRequiredError,
   TypeMismatchError,
-  MutuallyExclusiveModeError,
   StatusTransitionError,
 } from "./errors.ts";
 import { WARNINGS, HINTS } from "./content.ts";
@@ -58,21 +55,6 @@ function toClaimNode(row: NodeRow): ClaimNode {
   };
 }
 
-function toGroundNode(row: NodeRow): GroundNode {
-  const data = JSON.parse(row.data);
-  return {
-    id: row.id,
-    type: "ground",
-    content: row.content,
-    source: data.source,
-    verification: data.verification,
-    attachments: data.attachments || [],
-    refClaimId: data.ref_claim_id ?? null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
 function toWarrantNode(row: NodeRow): WarrantNode {
   const data = JSON.parse(row.data);
   return {
@@ -86,28 +68,15 @@ function toWarrantNode(row: NodeRow): WarrantNode {
   };
 }
 
-function toBackingNode(row: NodeRow): BackingNode {
+function toStatementNode(row: NodeRow): StatementNode {
   const data = JSON.parse(row.data);
   return {
     id: row.id,
-    type: "backing",
+    type: "statement",
     content: row.content,
+    source: data.source,
+    verification: data.verification,
     attachments: data.attachments || [],
-    warrantId: data.warrant_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function toRebuttalNode(row: NodeRow): RebuttalNode {
-  const data = JSON.parse(row.data);
-  return {
-    id: row.id,
-    type: "rebuttal",
-    content: row.content,
-    attachments: data.attachments || [],
-    targetId: data.target_id,
-    targetType: data.target_type,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -117,10 +86,8 @@ function toRebuttalNode(row: NodeRow): RebuttalNode {
 function toNode(row: NodeRow): ToulminNode {
   switch (row.type) {
     case "claim": return toClaimNode(row);
-    case "ground": return toGroundNode(row);
     case "warrant": return toWarrantNode(row);
-    case "backing": return toBackingNode(row);
-    case "rebuttal": return toRebuttalNode(row);
+    case "statement": return toStatementNode(row);
     default: throw new ValidationError(`Unknown node type: ${row.type}`);
   }
 }
@@ -142,20 +109,28 @@ function assertNodeType(row: NodeRow, expectedType: string): void {
 
 /** 查找引用某 Ground 的所有 Warrants */
 export function findWarrantsUsingGround(db: Database, groundId: number): NodeRow[] {
-  const allWarrants = repo.listNodesByType(db, "warrant");
-  return allWarrants.filter(w => {
-    const wData = JSON.parse(w.data);
-    return (wData.ground_ids || []).includes(groundId);
-  });
+  return db.prepare(
+    "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.warrant_id WHERE wg.ground_id = ?"
+  ).all(groundId) as NodeRow[];
+}
+
+/** 查找某 Warrant 的 Backings（via warrant_backings 关系表） */
+function findAllBackingsByWarrant(db: Database, warrantId: number): NodeRow[] {
+  return repo.findBackingsByWarrant(db, warrantId);
+}
+
+/** 查找指向目标的 Rebuttals（via rebuttal_targets 关系表） */
+function findAllRebuttalsByTarget(db: Database, targetId: number, targetType?: string): NodeRow[] {
+  return repo.findRebuttalsByTarget(db, targetId, targetType);
 }
 
 /** 检查 Claim 或其 Warrants 是否有 Rebuttal */
 function hasRebuttals(db: Database, claimId: number): boolean {
-  const claimRebuttals = repo.findRebuttalsByTarget(db, claimId, "claim");
+  const claimRebuttals = findAllRebuttalsByTarget(db, claimId, "claim");
   if (claimRebuttals.length > 0) return true;
   const warrantRows = repo.findWarrantsByClaim(db, claimId);
   for (const w of warrantRows) {
-    const warrantRebuttals = repo.findRebuttalsByTarget(db, w.id, "warrant");
+    const warrantRebuttals = findAllRebuttalsByTarget(db, w.id, "warrant");
     if (warrantRebuttals.length > 0) return true;
   }
   return false;
@@ -174,7 +149,10 @@ export function detectConnectedChain(
 
   const wData = JSON.parse(wRow.data);
   const claimId: number = wData.claim_id;
-  const groundIds: number[] = wData.ground_ids || [];
+
+  // Use relationship table for ground IDs
+  const groundRows = repo.findGroundsByWarrant(db, warrantId);
+  const groundIds = groundRows.map(g => g.id);
 
   // 链路不完整：无 Ground 或无 Claim
   if (groundIds.length === 0 || !claimId) return null;
@@ -185,33 +163,29 @@ export function detectConnectedChain(
   // 验证所有 Ground 存在
   for (const gid of groundIds) {
     const gRow = repo.getNodeById(db, gid);
-    if (!gRow || gRow.type !== "ground") return null;
+    if (!gRow || gRow.type !== "statement") return null;
   }
 
   return { claimId, warrantId, groundIds };
 }
 
-/** 检测链式推理循环：检查从 startId 出发沿现有链是否能到达 targetId */
-function canReachThroughChain(db: Database, startId: number, targetId: number): boolean {
+/** BFS cycle detection: check if adding claimId as ground of a warrant for targetClaimId creates a cycle */
+function wouldCreateCycle(db: Database, groundClaimId: number, targetClaimId: number): boolean {
   const visited = new Set<number>();
-  const queue = [startId];
+  const queue = [groundClaimId];
   while (queue.length > 0) {
-    const currentId = queue.shift()!;
-    if (visited.has(currentId)) continue;
-    visited.add(currentId);
-    if (currentId === targetId) return true;
-    const warrants = repo.findWarrantsByClaim(db, currentId);
+    const current = queue.shift()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    if (current === targetClaimId) return true;
+    // Find warrants for this claim, then find claim-type grounds of those warrants
+    const warrants = repo.findWarrantsByClaim(db, current);
     for (const w of warrants) {
-      const wData = JSON.parse(w.data);
-      const groundIds: number[] = wData.ground_ids || [];
-      for (const gid of groundIds) {
-        const gRow = repo.getNodeById(db, gid);
-        if (!gRow || gRow.type !== "ground") continue;
-        const gData = JSON.parse(gRow.data);
-        const refId = gData.ref_claim_id;
-        if (refId !== null && refId !== undefined && !visited.has(refId)) {
-          queue.push(refId);
-        }
+      const groundRows = db.prepare(
+        "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.ground_id WHERE wg.warrant_id = ? AND n.type = 'claim'"
+      ).all(w.id) as NodeRow[];
+      for (const gRow of groundRows) {
+        if (!visited.has(gRow.id)) queue.push(gRow.id);
       }
     }
   }
@@ -234,72 +208,49 @@ export function createClaim(db: Database, content: string, qualifier?: string | 
 }
 
 /**
- * 创建 Ground。两种模式互斥：
- * - Mode A（普通证据）：source + verification + attachments
- * - Mode B（链式推理）：refClaimId
+ * 创建 Statement 节点（通用）。可选立即挂载为 rebuttal。
  */
-export function createGround(
+export function createStatement(
   db: Database,
   opts: {
-    content?: string;
-    source?: GroundSource;
-    verification?: VerificationStatus;
+    content: string;
+    source: GroundSource;
+    verification: VerificationStatus;
     attachments?: string[];
-    refClaimId?: number | null;
+    rebuttal_for?: { target_id: number; target_type: TargetType };
   }
-): GroundNode {
-  const { content, source, verification, attachments, refClaimId } = opts;
+): StatementNode {
+  const { content, source, verification, attachments, rebuttal_for } = opts;
 
-  // 互斥模式检查
-  const hasModeB = refClaimId !== undefined && refClaimId !== null;
-  const hasModeA = source !== undefined || verification !== undefined;
-
-  if (hasModeB && hasModeA) {
-    throw new MutuallyExclusiveModeError();
+  if (!content || !content.trim()) {
+    throw new ValidationError("Statement content cannot be empty");
   }
-
-  if (hasModeB) {
-    // Mode B: 链式推理
-    const claimRow = assertNodeExists(repo.getNodeById(db, refClaimId!), refClaimId!);
-    assertNodeType(claimRow, "claim");
-
-    // 初始 verification 随被引用 Claim 的 status 自动决定
-    const refData = JSON.parse(claimRow.data) as { status?: string };
-    const initialVerification = refData.status === "supported" ? "verified" : "pending";
-
-    const row = repo.insertNode(db, "ground", `Reference to Claim #${refClaimId}`, {
-      source: "hypothesis",
-      verification: initialVerification,
-      attachments: [],
-      ref_claim_id: refClaimId,
-    });
-    return toGroundNode(row);
-  }
-
-  // Mode A: 普通证据
-  if (!source) {
-    throw new ValidationError("Ground source is required for Mode A");
-  }
-  if (!verification) {
-    throw new ValidationError("Ground verification is required for Mode A");
-  }
-  const validSources = ["literature", "observed", "hypothesis"];
+  const validSources: string[] = ["literature", "observed", "hypothesis"];
   if (!validSources.includes(source)) {
-    throw new ValidationError(`Invalid ground source: ${source}. Must be one of: ${validSources.join(", ")}`);
+    throw new ValidationError(`Invalid source: ${source}. Must be one of: ${validSources.join(", ")}`);
   }
-  const validVerifications = ["verified", "pending"];
+  const validVerifications: string[] = ["verified", "pending"];
   if (!validVerifications.includes(verification)) {
     throw new ValidationError(`Invalid verification: ${verification}. Must be one of: ${validVerifications.join(", ")}`);
   }
 
-  const row = repo.insertNode(db, "ground", content || "", {
+  const row = repo.insertNode(db, "statement", content.trim(), {
     source,
     verification,
     attachments: attachments || [],
-    ref_claim_id: null,
   });
-  return toGroundNode(row);
+
+  if (rebuttal_for) {
+    const targetRow = assertNodeExists(repo.getNodeById(db, rebuttal_for.target_id), rebuttal_for.target_id);
+    if (targetRow.type !== rebuttal_for.target_type) {
+      throw new TypeMismatchError(rebuttal_for.target_id, rebuttal_for.target_type, targetRow.type);
+    }
+    repo.insertRebuttalTarget(db, row.id, rebuttal_for.target_id, rebuttal_for.target_type);
+  }
+
+  return toStatementNode(row);
 }
+
 
 /** 创建 Warrant */
 export function createWarrant(
@@ -320,11 +271,13 @@ export function createWarrant(
   const claimRow = assertNodeExists(repo.getNodeById(db, claimId), claimId);
   assertNodeType(claimRow, "claim");
 
-  // 校验 groundIds
+  // 校验 groundIds：接受 statement 或 claim 类型
   const gIds = groundIds || [];
   for (const gid of gIds) {
     const groundRow = assertNodeExists(repo.getNodeById(db, gid), gid);
-    assertNodeType(groundRow, "ground");
+    if (groundRow.type !== "statement" && groundRow.type !== "claim") {
+      throw new TypeMismatchError(gid, "statement", groundRow.type);
+    }
   }
 
   // B1: Warrant 必须有至少一个 Ground
@@ -332,20 +285,14 @@ export function createWarrant(
     throw new ValidationError("A Warrant must link at least one Ground. Provide ground_ids.");
   }
 
-  // E1: 循环链式推理检测
-  // 检查 Warrant 的 Grounds 中是否有 ref_claim_id 能回到 claimId
+  // E1: 循环推理检测（仅对 claim-type grounds）
   for (const gid of gIds) {
     const gRow = repo.getNodeById(db, gid);
-    if (!gRow || gRow.type !== "ground") continue;
-    const gData = JSON.parse(gRow.data);
-    const refId = gData.ref_claim_id;
-    if (refId !== null && refId !== undefined) {
-      // 从 refId 出发沿链遍历，检查是否能回到 claimId
-      if (canReachThroughChain(db, refId, claimId)) {
-        throw new ValidationError(
-          `Circular chain reasoning detected: Claim #${claimId} would reference itself through Ground #${gid}.`
-        );
-      }
+    if (!gRow || gRow.type !== "claim") continue;
+    if (wouldCreateCycle(db, gRow.id, claimId)) {
+      throw new ValidationError(
+        `Circular chain reasoning detected: Claim #${claimId} would reference itself through Claim #${gid}.`
+      );
     }
   }
 
@@ -353,83 +300,11 @@ export function createWarrant(
     claim_id: claimId,
     ground_ids: gIds,
   });
+  // Also populate warrant_grounds relationship table
+  for (const gid of gIds) {
+    db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(row.id, gid);
+  }
   return toWarrantNode(row);
-}
-
-/** 创建 Backing */
-export function createBacking(
-  db: Database,
-  opts: {
-    content: string;
-    warrantId: number;
-    attachments?: string[];
-  }
-): BackingNode {
-  const { content, warrantId, attachments } = opts;
-
-  if (!content || !content.trim()) {
-    throw new ValidationError("Backing content cannot be empty");
-  }
-
-  const warrantRow = assertNodeExists(repo.getNodeById(db, warrantId), warrantId);
-  assertNodeType(warrantRow, "warrant");
-
-  // G2: 不能为 refuted Claim 的 Warrant 创建 Backing
-  const wData = JSON.parse(warrantRow.data);
-  const claimRow = repo.getNodeById(db, wData.claim_id);
-  if (claimRow) {
-    const claimData = JSON.parse(claimRow.data);
-    if (claimData.status === "refuted") {
-      throw new ValidationError(
-        `Cannot create Backing for Warrant #${warrantId}: its Claim #${wData.claim_id} is refuted. Adding support to a refuted argument is not meaningful.`
-      );
-    }
-  }
-
-  const row = repo.insertNode(db, "backing", content.trim(), {
-    attachments: attachments || [],
-    warrant_id: warrantId,
-  });
-  return toBackingNode(row);
-}
-
-/** 创建 Rebuttal */
-export function createRebuttal(
-  db: Database,
-  opts: {
-    content: string;
-    targetId: number;
-    targetType: TargetType;
-    attachments?: string[];
-  }
-): RebuttalNode {
-  const { content, targetId, targetType, attachments } = opts;
-
-  if (!content || !content.trim()) {
-    throw new ValidationError("Rebuttal content cannot be empty");
-  }
-
-  const targetRow = assertNodeExists(repo.getNodeById(db, targetId), targetId);
-  if (targetRow.type !== targetType) {
-    throw new TypeMismatchError(targetId, targetType, targetRow.type);
-  }
-
-  // F1: 不能 rebut 已 refuted 的 Claim
-  if (targetType === "claim") {
-    const targetData = JSON.parse(targetRow.data);
-    if (targetData.status === "refuted") {
-      throw new ValidationError(
-        `Cannot create Rebuttal targeting Claim #${targetId}: already refuted. No further rebuttal is needed.`
-      );
-    }
-  }
-
-  const row = repo.insertNode(db, "rebuttal", content.trim(), {
-    attachments: attachments || [],
-    target_id: targetId,
-    target_type: targetType,
-  });
-  return toRebuttalNode(row);
 }
 
 // =============================================================================
@@ -449,18 +324,18 @@ export function listClaims(db: Database, statusFilter?: string): ClaimNode[] {
   return claims;
 }
 
-/** 列出所有 Ground，可按 source 和/或 verification 过滤 */
-export function listGrounds(db: Database, sourceFilter?: string, verificationFilter?: string): GroundNode[] {
-  const rows = repo.listNodesByType(db, "ground");
-  let grounds = rows.map(toGroundNode);
+/** 列出所有 Ground (statement 类型节点)，可按 source 和/或 verification 过滤 */
+export function listGrounds(db: Database, sourceFilter?: string, verificationFilter?: string): StatementNode[] {
+  const rows = repo.listNodesByType(db, "statement");
+  let grounds = rows.map(toStatementNode);
 
   if (sourceFilter) {
     const sources = sourceFilter.split(",").map(s => s.trim());
-    grounds = grounds.filter(g => sources.includes(g.source));
+    grounds = grounds.filter(g => g.source !== undefined && sources.includes(g.source));
   }
   if (verificationFilter) {
     const statuses = verificationFilter.split(",").map(s => s.trim());
-    grounds = grounds.filter(g => statuses.includes(g.verification));
+    grounds = grounds.filter(g => g.verification !== undefined && statuses.includes(g.verification));
   }
 
   return grounds;
@@ -490,12 +365,10 @@ function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
   // Warrants + their Grounds and Backings
   const warrantRows = repo.findWarrantsByClaim(db, claim.id);
   const warrants: ArgumentWarrant[] = warrantRows.map(w => {
-    const wData = JSON.parse(w.data);
-    const groundIds: number[] = wData.ground_ids || [];
+    const groundRows = repo.findGroundsByWarrant(db, w.id);
 
-    const grounds: ArgumentGround[] = groundIds
-      .map(gid => repo.getNodeById(db, gid))
-      .filter((g): g is NodeRow => g !== null && g.type === "ground")
+    const grounds: ArgumentGround[] = groundRows
+      .filter((g): g is NodeRow => g !== null && (g.type === "statement" || g.type === "claim"))
       .map(g => {
         const gData = JSON.parse(g.data);
         return {
@@ -504,11 +377,10 @@ function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
           attachments: gData.attachments || [],
           source: gData.source,
           verification: gData.verification,
-          ref_claim_id: gData.ref_claim_id ?? null,
         };
       });
 
-    const backingRows = repo.findBackingsByWarrant(db, w.id);
+    const backingRows = findAllBackingsByWarrant(db, w.id);
     const backings: ArgumentBacking[] = backingRows.map(b => ({
       id: b.id,
       content: b.content,
@@ -519,16 +391,24 @@ function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
   });
 
   // Rebuttals targeting this claim or its warrants
-  const claimRebuttals = repo.findRebuttalsByTarget(db, claim.id, "claim");
+  const claimRebuttals = findAllRebuttalsByTarget(db, claim.id, "claim");
   const warrantIds = warrantRows.map(w => w.id);
-  const warrantRebuttals = warrantIds.flatMap(wid => repo.findRebuttalsByTarget(db, wid, "warrant"));
+  const warrantRebuttals = warrantIds.flatMap(wid => findAllRebuttalsByTarget(db, wid, "warrant"));
   const allRebuttals = [...claimRebuttals, ...warrantRebuttals];
 
   const rebuttals: ArgumentRebuttal[] = allRebuttals.map(r => {
     const rData = JSON.parse(r.data);
+    // For statement nodes, target_type is in rebuttal_targets table, not data JSON
+    let targetType = rData.target_type;
+    if (!targetType) {
+      const rtRow = db.prepare(
+        "SELECT target_type FROM rebuttal_targets WHERE statement_id = ?"
+      ).get(r.id) as { target_type: string } | null;
+      targetType = rtRow?.target_type;
+    }
     return {
       id: r.id,
-      target_type: rData.target_type,
+      target_type: targetType,
       content: r.content,
       attachments: rData.attachments || [],
     };
@@ -539,11 +419,10 @@ function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
 
 function getWarrantArgument(db: Database, warrantRow: NodeRow): WarrantArgument {
   const wData = JSON.parse(warrantRow.data);
-  const groundIds: number[] = wData.ground_ids || [];
+  const groundRows = repo.findGroundsByWarrant(db, warrantRow.id);
 
-  const grounds: ArgumentGround[] = groundIds
-    .map(gid => repo.getNodeById(db, gid))
-    .filter((g): g is NodeRow => g !== null && g.type === "ground")
+  const grounds: ArgumentGround[] = groundRows
+    .filter((g): g is NodeRow => g !== null && (g.type === "statement" || g.type === "claim"))
     .map(g => {
       const gData = JSON.parse(g.data);
       return {
@@ -552,24 +431,33 @@ function getWarrantArgument(db: Database, warrantRow: NodeRow): WarrantArgument 
         attachments: gData.attachments || [],
         source: gData.source,
         verification: gData.verification,
-        ref_claim_id: gData.ref_claim_id ?? null,
       };
     });
 
-  const backingRows = repo.findBackingsByWarrant(db, warrantRow.id);
+  const backingRows = findAllBackingsByWarrant(db, warrantRow.id);
   const backings: ArgumentBacking[] = backingRows.map(b => ({
     id: b.id,
     content: b.content,
     attachments: JSON.parse(b.data).attachments || [],
   }));
 
-  const rebuttalRows = repo.findRebuttalsByTarget(db, warrantRow.id, "warrant");
-  const rebuttals: ArgumentRebuttal[] = rebuttalRows.map(r => ({
-    id: r.id,
-    target_type: JSON.parse(r.data).target_type,
-    content: r.content,
-    attachments: JSON.parse(r.data).attachments || [],
-  }));
+  const rebuttalRows = findAllRebuttalsByTarget(db, warrantRow.id, "warrant");
+  const rebuttals: ArgumentRebuttal[] = rebuttalRows.map(r => {
+    const rData = JSON.parse(r.data);
+    let targetType = rData.target_type;
+    if (!targetType) {
+      const rtRow = db.prepare(
+        "SELECT target_type FROM rebuttal_targets WHERE statement_id = ?"
+      ).get(r.id) as { target_type: string } | null;
+      targetType = rtRow?.target_type;
+    }
+    return {
+      id: r.id,
+      target_type: targetType,
+      content: r.content,
+      attachments: rData.attachments || [],
+    };
+  });
 
   return {
     warrant: { id: warrantRow.id, content: warrantRow.content, claim_id: wData.claim_id },
@@ -591,20 +479,16 @@ function getNodeArgument(db: Database, row: NodeRow): NodeArgument {
   };
 
   // Add type-specific fields
-  if (row.type === "ground") {
+  if (row.type === "statement") {
     result.node.attachments = data.attachments || [];
     result.node.source = data.source;
     result.node.verification = data.verification;
-    result.node.ref_claim_id = data.ref_claim_id ?? null;
 
-    // Find warrants that use this ground
-    const allWarrants = repo.listNodesByType(db, "warrant");
-    result.used_in_warrants = allWarrants
-      .filter(w => {
-        const wData = JSON.parse(w.data);
-        return (wData.ground_ids || []).includes(row.id);
-      })
-      .map(w => {
+    // Find warrants that use this statement as a ground (via warrant_grounds)
+    const usingWarrantRows = db.prepare(
+      "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.warrant_id WHERE wg.ground_id = ?"
+    ).all(row.id) as NodeRow[];
+    result.used_in_warrants = usingWarrantRows.map(w => {
         const wData = JSON.parse(w.data);
         const claimRow = repo.getNodeById(db, wData.claim_id);
         return {
@@ -613,19 +497,27 @@ function getNodeArgument(db: Database, row: NodeRow): NodeArgument {
           claim_content: claimRow?.content || "",
         };
       });
-  } else if (row.type === "backing" || row.type === "rebuttal") {
-    result.node.attachments = data.attachments || [];
   }
 
   // Rebuttals targeting this node
-  const rebuttalRows = repo.findRebuttalsByTarget(db, row.id);
+  const rebuttalRows = findAllRebuttalsByTarget(db, row.id);
   if (rebuttalRows.length > 0) {
-    result.rebuttals = rebuttalRows.map(r => ({
-      id: r.id,
-      target_type: JSON.parse(r.data).target_type,
-      content: r.content,
-      attachments: JSON.parse(r.data).attachments || [],
-    }));
+    result.rebuttals = rebuttalRows.map(r => {
+      const rData = JSON.parse(r.data);
+      let targetType = rData.target_type;
+      if (!targetType) {
+        const rtRow = db.prepare(
+          "SELECT target_type FROM rebuttal_targets WHERE statement_id = ?"
+        ).get(r.id) as { target_type: string } | null;
+        targetType = rtRow?.target_type;
+      }
+      return {
+        id: r.id,
+        target_type: targetType,
+        content: r.content,
+        attachments: rData.attachments || [],
+      };
+    });
   }
 
   return result;
@@ -637,6 +529,28 @@ export function searchNodesService(
   keyword: string,
   typeFilter?: string
 ): ToulminNode[] {
+  const like = `%${keyword}%`;
+
+  // Virtual role filters: query relationship tables then intersect with keyword
+  if (typeFilter === "ground") {
+    const rows = db.prepare(
+      "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON wg.ground_id = n.id WHERE n.content LIKE ? ORDER BY n.id"
+    ).all(like) as NodeRow[];
+    return rows.map(toNode);
+  }
+  if (typeFilter === "backing") {
+    const rows = db.prepare(
+      "SELECT n.* FROM nodes n JOIN warrant_backings wb ON wb.statement_id = n.id WHERE n.content LIKE ? ORDER BY n.id"
+    ).all(like) as NodeRow[];
+    return rows.map(toNode);
+  }
+  if (typeFilter === "rebuttal") {
+    const rows = db.prepare(
+      "SELECT n.* FROM nodes n JOIN rebuttal_targets rt ON rt.statement_id = n.id WHERE n.content LIKE ? ORDER BY n.id"
+    ).all(like) as NodeRow[];
+    return rows.map(toNode);
+  }
+
   const rows = repo.searchNodes(db, keyword, typeFilter as any);
   return rows.map(toNode);
 }
@@ -656,11 +570,20 @@ export function getStats(db: Database): Stats {
     if (data.compile_status === "stale") staleCount++;
   }
 
-  // Grounds by source and verification
-  const groundRows = repo.listNodesByType(db, "ground");
+  // Grounds: all statement nodes that are used as grounds (in warrant_grounds) or have source field
+  const groundIds = new Set<number>(
+    (db.prepare("SELECT ground_id FROM warrant_grounds").all() as Array<{ ground_id: number }>)
+      .map(r => r.ground_id)
+  );
+  const statementRows = repo.listNodesByType(db, "statement");
+  const groundStatementRows = statementRows.filter(r => {
+    const d = JSON.parse(r.data);
+    return d.source !== undefined || groundIds.has(r.id);
+  });
+
   const bySource: Record<string, number> = {};
   const byVerification: Record<string, number> = {};
-  for (const row of groundRows) {
+  for (const row of groundStatementRows) {
     const data = JSON.parse(row.data);
     const source = data.source || "unknown";
     const verification = data.verification || "unknown";
@@ -668,22 +591,29 @@ export function getStats(db: Database): Stats {
     byVerification[verification] = (byVerification[verification] || 0) + 1;
   }
 
-  // Rebuttals by target_type
-  const rebuttalRows = repo.listNodesByType(db, "rebuttal");
+  // Rebuttals by target_type (via rebuttal_targets)
+  const rebuttalRows = (db.prepare(
+    "SELECT rt.target_type FROM rebuttal_targets rt"
+  ).all() as Array<{ target_type: string }>);
+
   const byTargetType: Record<string, number> = {};
   for (const row of rebuttalRows) {
-    const data = JSON.parse(row.data);
-    const targetType = data.target_type || "unknown";
+    const targetType = row.target_type || "unknown";
     byTargetType[targetType] = (byTargetType[targetType] || 0) + 1;
   }
 
+  // Backings: statement nodes in warrant_backings
+  const backingStatementCount = (db.prepare("SELECT COUNT(*) as cnt FROM warrant_backings").get() as { cnt: number }).cnt;
+  // Rebuttals: statement nodes in rebuttal_targets
+  const rebuttalStatementCount = (db.prepare("SELECT COUNT(*) as cnt FROM rebuttal_targets").get() as { cnt: number }).cnt;
+
   return {
     claims: { total: counts.claim, by_status: byStatus, stale_count: staleCount > 0 ? staleCount : undefined },
-    grounds: { total: counts.ground, by_source: bySource, by_verification: byVerification },
+    grounds: { total: groundStatementRows.length, by_source: bySource, by_verification: byVerification },
     warrants: { total: counts.warrant },
-    backings: { total: counts.backing },
+    backings: { total: backingStatementCount },
     qualifiers: { total: 0 },
-    rebuttals: { total: counts.rebuttal, by_target_type: byTargetType },
+    rebuttals: { total: rebuttalStatementCount, by_target_type: byTargetType },
   };
 }
 
@@ -705,7 +635,7 @@ export function updateNode(
   if (params.content !== undefined) {
     data.content = params.content;
     // G_CONTENT: verified ground 内容变更 → 退回 pending
-    if (row.type === "ground" && data.verification === "verified") {
+    if (row.type === "statement" && data.verification === "verified") {
       data.verification = "pending";
       warnings.push(HINTS.groundVerificationReverted(nodeId));
     }
@@ -748,12 +678,9 @@ export function updateNode(
       }
       let hasValidWarrant = false;
       for (const w of warrants) {
-        const wData = JSON.parse(w.data);
-        const gIds: number[] = wData.ground_ids || [];
-        if (gIds.length === 0) continue;
-        const allVerified = gIds.every(gid => {
-          const gRow = repo.getNodeById(db, gid);
-          if (!gRow) return false;
+        const groundRows = repo.findGroundsByWarrant(db, w.id);
+        if (groundRows.length === 0) continue;
+        const allVerified = groundRows.every(gRow => {
           const gData = JSON.parse(gRow.data);
           return gData.verification === "verified";
         });
@@ -785,38 +712,20 @@ export function updateNode(
     }
 
     data.status = params.status;
-
-    // 联动更新：所有 ref_claim_id 指向本 Claim 的 Ground，随 status 同步 verification
-    // supported → verified；其他 → pending
-    const refGrounds = repo.findGroundsByRefClaim(db, nodeId);
-    const syncedVerification = params.status === "supported" ? "verified" : "pending";
-    for (const rg of refGrounds) {
-      const rgData = JSON.parse(rg.data);
-      if (rgData.verification !== syncedVerification) {
-        rgData.verification = syncedVerification;
-        repo.updateNodeFields(db, rg.id, { data: rgData });
-      }
-    }
   }
 
-  // 更新 source（Ground only）
+  // 更新 source（Ground/Statement only）
   if (params.source !== undefined) {
-    if (row.type !== "ground") {
+    if (row.type !== "statement") {
       throw new ValidationError("Only Ground nodes have source");
     }
     data.source = params.source;
   }
 
-  // 更新 verification（Ground only）
+  // 更新 verification（Ground/Statement only）
   if (params.verification !== undefined) {
-    if (row.type !== "ground") {
+    if (row.type !== "statement") {
       throw new ValidationError("Only Ground nodes have verification");
-    }
-    // ref ground 的 verification 由被引用 Claim 的 status 自动决定，不允许手动修改
-    if (data.ref_claim_id != null) {
-      throw new ValidationError(
-        `Cannot manually set verification on ref Ground #${nodeId}: its verification is automatically synced with the referenced Claim #${data.ref_claim_id}'s status.`
-      );
     }
     const prevVerification = data.verification;
     data.verification = params.verification;
@@ -849,13 +758,17 @@ export function updateNode(
     const currentIds: number[] = data.ground_ids || [];
 
     if (params.ground_ids.add) {
-      // 校验要添加的 ground 存在且是 ground 类型
+      // 校验要添加的 ground 存在且是 statement 或 claim 类型
       for (const gid of params.ground_ids.add) {
         const gRow = repo.getNodeById(db, gid);
         if (!gRow) throw new NotFoundError(gid);
-        if (gRow.type !== "ground") throw new TypeMismatchError(gid, "ground", gRow.type);
+        if (gRow.type !== "statement" && gRow.type !== "claim") throw new TypeMismatchError(gid, "statement", gRow.type);
       }
       data.ground_ids = [...new Set([...currentIds, ...params.ground_ids.add])];
+      // Sync warrant_grounds
+      for (const gid of params.ground_ids.add) {
+        db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(nodeId, gid);
+      }
     }
 
     if (params.ground_ids.remove) {
@@ -868,6 +781,48 @@ export function updateNode(
         );
       }
       data.ground_ids = remaining;
+      // Sync warrant_grounds
+      for (const gid of removeIds) {
+        db.prepare("DELETE FROM warrant_grounds WHERE warrant_id = ? AND ground_id = ?").run(nodeId, gid);
+      }
+    }
+  }
+
+  // 更新 backing_ids（Warrant only）
+  if (params.backing_ids !== undefined) {
+    if (row.type !== "warrant") {
+      throw new ValidationError("Only Warrant nodes support backing_ids");
+    }
+    if (params.backing_ids.add) {
+      for (const bid of params.backing_ids.add) {
+        const bRow = repo.getNodeById(db, bid);
+        if (!bRow) throw new NotFoundError(bid);
+        if (bRow.type !== "statement") throw new TypeMismatchError(bid, "statement", bRow.type);
+      }
+      repo.addWarrantBackings(db, nodeId, params.backing_ids.add);
+    }
+    if (params.backing_ids.remove) {
+      repo.removeWarrantBackings(db, nodeId, params.backing_ids.remove);
+    }
+  }
+
+  // 更新 rebuttal_ids（Claim or Warrant）
+  if (params.rebuttal_ids !== undefined) {
+    if (row.type !== "claim" && row.type !== "warrant") {
+      throw new ValidationError("Only Claim and Warrant nodes support rebuttal_ids");
+    }
+    if (params.rebuttal_ids.add) {
+      for (const rid of params.rebuttal_ids.add) {
+        const rRow = repo.getNodeById(db, rid);
+        if (!rRow) throw new NotFoundError(rid);
+        if (rRow.type !== "statement") throw new TypeMismatchError(rid, "statement", rRow.type);
+        repo.insertRebuttalTarget(db, rid, nodeId, row.type);
+      }
+    }
+    if (params.rebuttal_ids.remove) {
+      for (const rid of params.rebuttal_ids.remove) {
+        repo.deleteRebuttalTarget(db, rid, nodeId);
+      }
     }
   }
 
@@ -904,45 +859,31 @@ export function deleteNode(
       if (!cascade) {
         throw new CascadeRequiredError();
       }
-      // D2 警告: 检查是否被 Ground(ref_claim_id) 链式引用
-      const refGrounds = repo.findGroundsByRefClaim(db, nodeId);
-      if (refGrounds.length > 0) {
-        const gids = refGrounds.map(g => g.id).join(", ");
-        warnings.push(WARNINGS.deleteClaimReferencedByGround(nodeId, gids));
-      }
       // 删除绑定的 Warrants（及其 Backings）
       const warrants = repo.findWarrantsByClaim(db, nodeId);
       for (const w of warrants) {
-        const backings = repo.findBackingsByWarrant(db, w.id);
+        const backings = findAllBackingsByWarrant(db, w.id);
         for (const b of backings) {
           repo.deleteNodeById(db, b.id);
         }
-        const rebuttals = repo.findRebuttalsByTarget(db, w.id, "warrant");
-        for (const r of rebuttals) {
+        const warrantRebuttals = findAllRebuttalsByTarget(db, w.id, "warrant");
+        for (const r of warrantRebuttals) {
           repo.deleteNodeById(db, r.id);
         }
         repo.deleteNodeById(db, w.id);
       }
       // 删除指向 Claim 的 Rebuttals
-      const rebuttals = repo.findRebuttalsByTarget(db, nodeId, "claim");
+      const rebuttals = findAllRebuttalsByTarget(db, nodeId, "claim");
       for (const r of rebuttals) {
         repo.deleteNodeById(db, r.id);
       }
-      // D4: 清理链式引用 Grounds
-      for (const g of refGrounds) {
-        repo.removeGroundFromAllWarrants(db, g.id);
-        const gRebuttals = repo.findRebuttalsByTarget(db, g.id);
-        for (const r of gRebuttals) {
-          repo.deleteNodeById(db, r.id);
-        }
-        repo.deleteNodeById(db, g.id);
-      }
-      // 删除 Claim 本身
+      // 删除 Claim 本身（ON DELETE CASCADE 会自动清理 warrant_grounds）
       repo.deleteNodeById(db, nodeId);
       break;
     }
 
-    case "ground": {
+    case "ground":
+    case "statement": {
       // D1 警告: 检查是否被 Warrant 引用
       const usingWarrants = findWarrantsUsingGround(db, nodeId);
       if (usingWarrants.length > 0) {
@@ -952,7 +893,7 @@ export function deleteNode(
       // 从所有 Warrant 的 ground_ids 中移除
       repo.removeGroundFromAllWarrants(db, nodeId);
       // 删除指向该 Ground 的 Rebuttals
-      const rebuttals = repo.findRebuttalsByTarget(db, nodeId);
+      const rebuttals = findAllRebuttalsByTarget(db, nodeId);
       for (const r of rebuttals) {
         repo.deleteNodeById(db, r.id);
       }
@@ -973,21 +914,15 @@ export function deleteNode(
         }
       }
       // 级联删除 Backings
-      const backings = repo.findBackingsByWarrant(db, nodeId);
+      const backings = findAllBackingsByWarrant(db, nodeId);
       for (const b of backings) {
         repo.deleteNodeById(db, b.id);
       }
       // 删除指向该 Warrant 的 Rebuttals
-      const rebuttals = repo.findRebuttalsByTarget(db, nodeId, "warrant");
-      for (const r of rebuttals) {
+      const warrantRebuttals = findAllRebuttalsByTarget(db, nodeId, "warrant");
+      for (const r of warrantRebuttals) {
         repo.deleteNodeById(db, r.id);
       }
-      repo.deleteNodeById(db, nodeId);
-      break;
-    }
-
-    case "backing":
-    case "rebuttal": {
       repo.deleteNodeById(db, nodeId);
       break;
     }

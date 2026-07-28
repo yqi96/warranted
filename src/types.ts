@@ -11,10 +11,8 @@
 
 export const NodeType = {
   Claim: "claim",
-  Ground: "ground",
   Warrant: "warrant",
-  Backing: "backing",
-  Rebuttal: "rebuttal",
+  Statement: "statement",
 } as const;
 
 export type NodeType = (typeof NodeType)[keyof typeof NodeType];
@@ -70,15 +68,6 @@ export interface ClaimNode extends BaseNode {
   status: ClaimStatus;
 }
 
-/** Ground 节点 */
-export interface GroundNode extends BaseNode {
-  type: "ground";
-  source: GroundSource;
-  verification: VerificationStatus;
-  attachments: string[];
-  refClaimId: number | null;
-}
-
 /** Warrant 节点 */
 export interface WarrantNode extends BaseNode {
   type: "warrant";
@@ -86,28 +75,19 @@ export interface WarrantNode extends BaseNode {
   groundIds: number[];
 }
 
-/** Backing 节点 */
-export interface BackingNode extends BaseNode {
-  type: "backing";
+/** Statement 节点（统一替代 Ground/Backing/Rebuttal） */
+export interface StatementNode extends BaseNode {
+  type: "statement";
+  source?: GroundSource;
+  verification?: VerificationStatus;
   attachments: string[];
-  warrantId: number;
-}
-
-/** Rebuttal 节点 */
-export interface RebuttalNode extends BaseNode {
-  type: "rebuttal";
-  attachments: string[];
-  targetId: number;
-  targetType: TargetType;
 }
 
 /** 所有节点类型的联合类型 */
 export type ToulminNode =
   | ClaimNode
-  | GroundNode
   | WarrantNode
-  | BackingNode
-  | RebuttalNode;
+  | StatementNode;
 
 // =============================================================================
 // data JSON 结构（与 SQLite data 列对应）
@@ -119,35 +99,21 @@ export interface ClaimData {
   compile_status?: "passed" | "stale" | null;
 }
 
-export interface GroundData {
-  source: GroundSource;
-  verification: VerificationStatus;
-  attachments: string[];
-  ref_claim_id: number | null;
-}
-
 export interface WarrantData {
   claim_id: number;
   ground_ids: number[];
 }
 
-export interface BackingData {
+export interface StatementData {
+  source?: GroundSource;
+  verification?: VerificationStatus;
   attachments: string[];
-  warrant_id: number;
-}
-
-export interface RebuttalData {
-  attachments: string[];
-  target_id: number;
-  target_type: TargetType;
 }
 
 export type NodeData =
   | ClaimData
-  | GroundData
   | WarrantData
-  | BackingData
-  | RebuttalData;
+  | StatementData;
 
 // =============================================================================
 // update_node 参数类型
@@ -165,6 +131,8 @@ export interface UpdateNodeParams {
   source?: GroundSource;
   verification?: VerificationStatus;
   ground_ids?: GroundIdsUpdate;
+  backing_ids?: { add?: number[]; remove?: number[] };
+  rebuttal_ids?: { add?: number[]; remove?: number[] };
   qualifier?: string | null;
 }
 
@@ -178,7 +146,6 @@ export interface ArgumentGround {
   attachments: string[];
   source: GroundSource;
   verification: VerificationStatus;
-  ref_claim_id?: number | null;
 }
 
 export interface ArgumentBacking {
@@ -228,7 +195,6 @@ export interface NodeArgument {
     attachments?: string[];
     source?: GroundSource;
     verification?: VerificationStatus;
-    ref_claim_id?: number | null;
   };
   rebuttals?: ArgumentRebuttal[];
   used_in_warrants?: Array<{
@@ -286,7 +252,7 @@ export interface CompileState {
 }
 
 export interface ElementReviewResult {
-  reviewer: "claim" | "warrant" | "ground" | "chain" | "structure";
+  reviewer: "claim" | "warrant" | "chain" | "structure";
   nodeId?: number;
   errors: string[];
   warnings: string[];

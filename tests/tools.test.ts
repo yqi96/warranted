@@ -48,7 +48,7 @@ describe("工具注册", () => {
   test("所有必需工具已注册", () => {
     const expected = [
       "create_claim", "create_statement", "create_warrant",
-      "list_claims", "list_grounds", "get_argument", "get_node", "search_nodes",
+      "list_claims", "list_statements", "get_argument", "get_node", "search_nodes",
       "get_stats", "update_node", "delete_node",
       "compile_arguments",
     ];
@@ -446,16 +446,16 @@ describe("invalidateCompiledClaims — status reversion", () => {
 // list_ground 工具
 // =============================================================================
 
-describe("list_grounds 工具", () => {
+describe("list_statements 工具", () => {
   test("空数据库返回 'No grounds found.'", async () => {
-    const result = await tools.list_grounds.handler({});
+    const result = await tools.list_statements.handler({});
     expect(result.content[0].text).toBe("No grounds found.");
   });
 
   test("无过滤返回所有 ground，格式含 [source/verification]", async () => {
     makeGround(db, { content: "实验数据", source: "observed", verification: "verified" });
     makeGround(db, { content: "文献引用", source: "literature", verification: "pending" });
-    const result = await tools.list_grounds.handler({});
+    const result = await tools.list_statements.handler({});
     const text = result.content[0].text;
     expect(text).toContain("[observed/verified]");
     expect(text).toContain("实验数据");
@@ -465,14 +465,14 @@ describe("list_grounds 工具", () => {
 
   test("输出行以 '#N ' 开头", async () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    const result = await tools.list_grounds.handler({});
+    const result = await tools.list_statements.handler({});
     expect(result.content[0].text).toMatch(/^#\d+ \[/);
   });
 
   test("source 过滤只返回匹配行", async () => {
     makeGround(db, { content: "G-obs", source: "observed", verification: "verified" });
     makeGround(db, { content: "G-lit", source: "literature", verification: "verified" });
-    const result = await tools.list_grounds.handler({ source: "literature" });
+    const result = await tools.list_statements.handler({ source: "literature" });
     const text = result.content[0].text;
     expect(text).toContain("G-lit");
     expect(text).not.toContain("G-obs");
@@ -482,7 +482,7 @@ describe("list_grounds 工具", () => {
     makeGround(db, { content: "G-obs", source: "observed", verification: "verified" });
     makeGround(db, { content: "G-lit", source: "literature", verification: "verified" });
     makeGround(db, { content: "G-hyp", source: "hypothesis", verification: "pending" });
-    const result = await tools.list_grounds.handler({ source: "observed,hypothesis" });
+    const result = await tools.list_statements.handler({ source: "observed,hypothesis" });
     const text = result.content[0].text;
     expect(text).toContain("G-obs");
     expect(text).toContain("G-hyp");
@@ -492,7 +492,7 @@ describe("list_grounds 工具", () => {
   test("verification 过滤", async () => {
     makeGround(db, { content: "G-v", source: "observed", verification: "verified" });
     makeGround(db, { content: "G-p", source: "observed", verification: "pending" });
-    const result = await tools.list_grounds.handler({ verification: "pending" });
+    const result = await tools.list_statements.handler({ verification: "pending" });
     const text = result.content[0].text;
     expect(text).toContain("G-p");
     expect(text).not.toContain("G-v");
@@ -502,7 +502,7 @@ describe("list_grounds 工具", () => {
     makeGround(db, { content: "G-lit-v", source: "literature", verification: "verified" });
     makeGround(db, { content: "G-lit-p", source: "literature", verification: "pending" });
     makeGround(db, { content: "G-obs-v", source: "observed", verification: "verified" });
-    const result = await tools.list_grounds.handler({ source: "literature", verification: "verified" });
+    const result = await tools.list_statements.handler({ source: "literature", verification: "verified" });
     const text = result.content[0].text;
     expect(text).toContain("G-lit-v");
     expect(text).not.toContain("G-lit-p");
@@ -511,7 +511,7 @@ describe("list_grounds 工具", () => {
 
   test("无效 source 值返回 'No grounds found.'", async () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    const result = await tools.list_grounds.handler({ source: "invalid_source" });
+    const result = await tools.list_statements.handler({ source: "invalid_source" });
     expect(result.content[0].text).toBe("No grounds found.");
   });
 });

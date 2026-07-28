@@ -325,7 +325,7 @@ export function listClaims(db: Database, statusFilter?: string): ClaimNode[] {
 }
 
 /** 列出所有 Ground (statement 类型节点)，可按 source 和/或 verification 过滤 */
-export function listGrounds(db: Database, sourceFilter?: string, verificationFilter?: string): StatementNode[] {
+export function listStatements(db: Database, sourceFilter?: string, verificationFilter?: string): StatementNode[] {
   const rows = repo.listNodesByType(db, "statement");
   let grounds = rows.map(toStatementNode);
 

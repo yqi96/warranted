@@ -499,19 +499,19 @@ describe("listClaims", () => {
 });
 
 // =============================================================================
-// listGrounds
+// listStatements
 // =============================================================================
 
-describe("listGrounds", () => {
+describe("listStatements", () => {
   test("空数据库返回空数组", () => {
-    const grounds = service.listGrounds(db);
+    const grounds = service.listStatements(db);
     expect(grounds).toEqual([]);
   });
 
   test("只返回 ground 类型节点", () => {
     makeClaim(db, "C1");
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    const grounds = service.listGrounds(db);
+    const grounds = service.listStatements(db);
     expect(grounds.length).toBe(1);
     expect(grounds[0].type).toBe("statement");
   });
@@ -520,14 +520,14 @@ describe("listGrounds", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     makeGround(db, { content: "G2", source: "literature", verification: "pending" });
     makeGround(db, { content: "G3", source: "hypothesis", verification: "pending" });
-    const grounds = service.listGrounds(db);
+    const grounds = service.listStatements(db);
     expect(grounds.length).toBe(3);
   });
 
   test("source 单值过滤", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     makeGround(db, { content: "G2", source: "literature", verification: "verified" });
-    const grounds = service.listGrounds(db, "literature");
+    const grounds = service.listStatements(db, "literature");
     expect(grounds.length).toBe(1);
     expect(grounds[0].content).toBe("G2");
   });
@@ -536,7 +536,7 @@ describe("listGrounds", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     makeGround(db, { content: "G2", source: "literature", verification: "verified" });
     makeGround(db, { content: "G3", source: "hypothesis", verification: "pending" });
-    const grounds = service.listGrounds(db, "literature,hypothesis");
+    const grounds = service.listStatements(db, "literature,hypothesis");
     expect(grounds.length).toBe(2);
     expect(grounds.map(g => g.content).sort()).toEqual(["G2", "G3"]);
   });
@@ -544,7 +544,7 @@ describe("listGrounds", () => {
   test("verification 过滤", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     makeGround(db, { content: "G2", source: "observed", verification: "pending" });
-    const verified = service.listGrounds(db, undefined, "verified");
+    const verified = service.listStatements(db, undefined, "verified");
     expect(verified.length).toBe(1);
     expect(verified[0].content).toBe("G1");
   });
@@ -553,20 +553,20 @@ describe("listGrounds", () => {
     makeGround(db, { content: "G1", source: "literature", verification: "verified" });
     makeGround(db, { content: "G2", source: "literature", verification: "pending" });
     makeGround(db, { content: "G3", source: "observed", verification: "verified" });
-    const grounds = service.listGrounds(db, "literature", "verified");
+    const grounds = service.listStatements(db, "literature", "verified");
     expect(grounds.length).toBe(1);
     expect(grounds[0].content).toBe("G1");
   });
 
   test("无效 source 值静默返回空列表", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    const grounds = service.listGrounds(db, "nonexistent");
+    const grounds = service.listStatements(db, "nonexistent");
     expect(grounds).toEqual([]);
   });
 
   test("无效 verification 值静默返回空列表", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    const grounds = service.listGrounds(db, undefined, "invalid");
+    const grounds = service.listStatements(db, undefined, "invalid");
     expect(grounds).toEqual([]);
   });
 });

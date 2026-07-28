@@ -443,16 +443,16 @@ describe("invalidateCompiledClaims — status reversion", () => {
 });
 
 // =============================================================================
-// list_ground 工具
+// list_statements 工具
 // =============================================================================
 
 describe("list_statements 工具", () => {
-  test("空数据库返回 'No grounds found.'", async () => {
+  test("空数据库返回 'No statements found.'", async () => {
     const result = await tools.list_statements.handler({});
-    expect(result.content[0].text).toBe("No grounds found.");
+    expect(result.content[0].text).toBe("No statements found.");
   });
 
-  test("无过滤返回所有 ground，格式含 [source/verification]", async () => {
+  test("无过滤返回所有 statement，格式含 [source/verification]", async () => {
     makeGround(db, { content: "实验数据", source: "observed", verification: "verified" });
     makeGround(db, { content: "文献引用", source: "literature", verification: "pending" });
     const result = await tools.list_statements.handler({});
@@ -509,10 +509,10 @@ describe("list_statements 工具", () => {
     expect(text).not.toContain("G-obs-v");
   });
 
-  test("无效 source 值返回 'No grounds found.'", async () => {
+  test("无效 source 值返回 'No statements found.'", async () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     const result = await tools.list_statements.handler({ source: "invalid_source" });
-    expect(result.content[0].text).toBe("No grounds found.");
+    expect(result.content[0].text).toBe("No statements found.");
   });
 });
 

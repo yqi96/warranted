@@ -324,21 +324,21 @@ export function listClaims(db: Database, statusFilter?: string): ClaimNode[] {
   return claims;
 }
 
-/** 列出所有 Ground (statement 类型节点)，可按 source 和/或 verification 过滤 */
+/** 列出所有 Statement 节点，可按 source 和/或 verification 过滤 */
 export function listStatements(db: Database, sourceFilter?: string, verificationFilter?: string): StatementNode[] {
   const rows = repo.listNodesByType(db, "statement");
-  let grounds = rows.map(toStatementNode);
+  let statements = rows.map(toStatementNode);
 
   if (sourceFilter) {
     const sources = sourceFilter.split(",").map(s => s.trim());
-    grounds = grounds.filter(g => g.source !== undefined && sources.includes(g.source));
+    statements = statements.filter(g => g.source !== undefined && sources.includes(g.source));
   }
   if (verificationFilter) {
     const statuses = verificationFilter.split(",").map(s => s.trim());
-    grounds = grounds.filter(g => g.verification !== undefined && statuses.includes(g.verification));
+    statements = statements.filter(g => g.verification !== undefined && statuses.includes(g.verification));
   }
 
-  return grounds;
+  return statements;
 }
 
 /** 获取节点的完整论证子图 */

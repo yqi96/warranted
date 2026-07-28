@@ -452,8 +452,8 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "list_statements",
     {
-      title: "List Grounds",
-      description: "List all ground (evidence) nodes, optionally filtered by source type and/or verification status.",
+      title: "List Statements",
+      description: "List all statement (evidence) nodes, optionally filtered by source type and/or verification status.",
       inputSchema: {
         source: z.string().optional().describe("Filter by source type (comma-separated: literature,observed,hypothesis). Omit to include all."),
         verification: z.string().optional().describe("Filter by verification status (comma-separated: verified,pending). Omit to include all."),
@@ -461,9 +461,9 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("list_statements", async ({ source, verification }: { source?: string; verification?: string }) => {
       try {
-        const grounds = service.listStatements(db, source, verification);
-        if (grounds.length === 0) return ok("No grounds found.");
-        const lines = grounds.map(g => {
+        const statements = service.listStatements(db, source, verification);
+        if (statements.length === 0) return ok("No statements found.");
+        const lines = statements.map(g => {
           return formatNodeLine(g);
         });
         return ok(lines.join("\n"));

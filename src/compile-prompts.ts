@@ -1,11 +1,12 @@
 /**
  * Warranted — Compile 审查 Prompt 构建
  *
- * 4 种审查 prompt：
+ * 3 种审查 prompt：
  * 1. Claim 定义审查
  * 2. Warrant 定义审查
- * 3. Ground 定义审查
- * 4. 逻辑链审查（整体连贯性）
+ * 3. 逻辑链审查（整体连贯性：warrant 嵌套 grounds/backings，rebuttal 标注 target 类型）
+ *
+ * 注：单个 statement 的证据审查在 review-prompts.ts（buildStatementEvidencePrompt）。
  */
 
 // =============================================================================
@@ -177,9 +178,9 @@ export function buildChainReviewPrompt(data: ChainReviewData): string {
     ? `\n\n**Rebuttals**:\n${data.rebuttals.map(r => `  - Rebuttal #${r.id} (targets ${r.targetType}): ${r.content}`).join("\n")}`
     : "";
 
-  return `You are a rigorous scientific argumentation reviewer. Your task is to evaluate whether the overall logical chain of a Toulmin argument is coherent and sound.
+  return `You are a rigorous scientific argumentation reviewer. Your task is to audit whether the logical relationships in a Toulmin argument are coherent and sound.
 
-IMPORTANT: Assume each individual element (Claim, Warrant, Ground) has already been validated for correct definition usage. Focus ONLY on the logical connections between elements.
+IMPORTANT: Assume each individual element (Claim, Warrant, Ground, Backing, Rebuttal) has already been validated for correct definition usage. Focus ONLY on the logical connections between elements. Do NOT decide whether the Grounds ultimately defeat the Rebuttals, and do NOT decide whether the Claim is ultimately supported or true.
 
 ## Argument to Review
 
@@ -189,15 +190,17 @@ ${warrantsText}${rebuttalsText}
 
 ## Review Checklist
 
-Evaluate the following, assuming all Grounds are factually true:
+Evaluate the following, assuming all Grounds, Backings, and Rebuttals are factually true:
 
-1. **Ground-Claim relevance**: Do the Grounds actually provide evidence for the Claim? Is there a logical gap between the evidence and the conclusion?
+1. **Ground-Warrant-Claim fit**: Do the Grounds provide the kind of evidence that the Warrant licenses for the Claim? Is there a logical gap between the evidence type, the warrant principle, and the conclusion?
 
-2. **Warrant-Ground fit**: Does each Warrant correctly authorize the inference FROM its specific Grounds TO the Claim? Does the Warrant's general principle match the TYPES of Grounds present?
+2. **Warrant authorization**: Does each Warrant correctly authorize the inference FROM its specific Grounds TO the Claim? Does the Warrant's general principle match the TYPES of Grounds present?
 
 3. **Ground-Claim circularity**: Does any Ground merely restate the Claim in different words? Circular Grounds provide no independent support.
 
-4. **Warrant-Backing completeness**: If a Warrant relies on a specific methodology or authority, is there a corresponding Backing? An unsupported Warrant is a structural gap.
+4. **Warrant-Backing fit**: Does each Backing actually substantiate the Warrant's inference-licensing principle rather than restating the Claim or summarizing the Grounds?
+
+5. **Rebuttal-target fit**: Does each Rebuttal genuinely challenge the target Claim or Warrant by naming a counter-condition, exception, or contradiction? Do not weigh whether the rebuttal defeats the grounds; only check whether it logically attacks the stated target.
 
 ${CHAIN_OUTPUT_FORMAT}`;
 }

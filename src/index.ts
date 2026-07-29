@@ -90,9 +90,9 @@ async function main() {
       reviewConfig.reviewDir = null;
       reviewConfig.auditDir = null;
     }
-    console.error(`[Warranted] Async review enabled (model: ${reviewConfig.model})`);
+    console.error(`[Warranted] Review enabled (synchronous, model: ${reviewConfig.model})`);
   } else {
-    console.error("[Warranted] Async review disabled");
+    console.error("[Warranted] Review disabled");
   }
 
   // 追踪 in-flight 工具调用，确保关闭前全部完成

@@ -1,7 +1,7 @@
 /**
  * Toulmin MCP — 自动验证测试
  *
- * 测试 autoVerifyAfterMutation 的逻辑分支（不含 LLM 调用）。
+ * 测试 compileClaims 的逻辑分支（不含 LLM 调用）。
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
@@ -16,7 +16,7 @@ import {
   makeCompiledClaim,
   makeChainReasoning,
 } from "./helpers.ts";
-import { autoVerifyAfterMutation, findAffectedClaimIds } from "../src/compile-service.ts";
+import { compileClaims, findAffectedClaimIds } from "../src/compile-service.ts";
 import { computeArgumentHash } from "../src/merkle-hash.ts";
 import * as repo from "../src/repo.ts";
 import type { Database } from "bun:sqlite";
@@ -32,10 +32,10 @@ afterEach(() => {
 });
 
 // =============================================================================
-// autoVerifyAfterMutation — 无 LLM 分支
+// compileClaims — 无 LLM 分支
 // =============================================================================
 
-describe("autoVerifyAfterMutation", () => {
+describe("compileClaims", () => {
   test("已 compiled 且哈希未变 → no-change", async () => {
     const { claim } = seedBasicArgument(db);
     const argHash = computeArgumentHash(db, claim.id);
@@ -44,7 +44,7 @@ describe("autoVerifyAfterMutation", () => {
     repo.setCompileStatus(db, claim.id, "passed");
     repo.saveCompileState(db, claim.id, "passed", "ok", argHash);
 
-    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+    const results = await compileClaims(db, null, [claim.id]);
 
     expect(results.length).toBe(1);
     expect(results[0].action).toBe("no-change");
@@ -54,7 +54,7 @@ describe("autoVerifyAfterMutation", () => {
     const claim = makeClaim(db, "Uncompiled claim");
     // Don't set compile_status, don't save compile_state
 
-    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+    const results = await compileClaims(db, null, [claim.id]);
 
     expect(results.length).toBe(1);
     expect(results[0].action).toBe("marked-stale");
@@ -75,7 +75,7 @@ describe("autoVerifyAfterMutation", () => {
     // Modify content → hash will change
     repo.updateNodeFields(db, claim.id, { content: "Modified claim" });
 
-    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+    const results = await compileClaims(db, null, [claim.id]);
 
     expect(results.length).toBe(1);
     expect(results[0].action).toBe("marked-stale");
@@ -87,7 +87,7 @@ describe("autoVerifyAfterMutation", () => {
   });
 
   test("不存在的 Claim → skipped", async () => {
-    const results = await autoVerifyAfterMutation(db, null, [999]);
+    const results = await compileClaims(db, null, [999]);
 
     expect(results.length).toBe(1);
     expect(results[0].action).toBe("skipped");
@@ -98,7 +98,7 @@ describe("autoVerifyAfterMutation", () => {
     const claim2 = makeClaim(db, "Claim 2");
     const claim3 = makeClaim(db, "Claim 3");
 
-    const results = await autoVerifyAfterMutation(db, null, [claim1.id, claim2.id, claim3.id]);
+    const results = await compileClaims(db, null, [claim1.id, claim2.id, claim3.id]);
 
     expect(results.length).toBe(3);
     expect(results.every(r => r.action === "marked-stale")).toBe(true);
@@ -108,7 +108,7 @@ describe("autoVerifyAfterMutation", () => {
     const claim = makeClaim(db, "Already stale");
     repo.setCompileStatus(db, claim.id, "stale");
 
-    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+    const results = await compileClaims(db, null, [claim.id]);
 
     expect(results[0].action).toBe("marked-stale");
     // compile_status should still be stale
@@ -124,7 +124,7 @@ describe("autoVerifyAfterMutation", () => {
     const { claim } = seedBasicArgument(db);
     // 不设置 compile_state，不设置 compile_status
 
-    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+    const results = await compileClaims(db, null, [claim.id]);
 
     expect(results[0].action).toBe("marked-stale");
     expect(results[0].message).toContain("Review not configured");
@@ -136,7 +136,7 @@ describe("autoVerifyAfterMutation", () => {
   test("未审查 + 结构不完整（无 warrant）→ marked-stale", async () => {
     const claim = makeClaim(db, "Bare claim, no warrant");
 
-    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+    const results = await compileClaims(db, null, [claim.id]);
 
     expect(results[0].action).toBe("marked-stale");
 
@@ -149,7 +149,7 @@ describe("autoVerifyAfterMutation", () => {
     // 创建 warrant 但不关联 ground
     makeWarrant(db, claim.id, [], "Warrant without grounds");
 
-    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+    const results = await compileClaims(db, null, [claim.id]);
 
     expect(results[0].action).toBe("marked-stale");
   });
@@ -164,7 +164,7 @@ describe("autoVerifyAfterMutation", () => {
     // 失败的 compile_state 不保存 argumentHash（生产代码行为）
     repo.saveCompileState(db, claim.id, "failed", "Structural error");
 
-    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+    const results = await compileClaims(db, null, [claim.id]);
 
     // 无 argumentHash → 不进 Case 1 → 走 Case 2 → 结构完整 + 无 config → marked-stale
     expect(results[0].action).toBe("marked-stale");
@@ -178,7 +178,7 @@ describe("autoVerifyAfterMutation", () => {
     // 模拟旧数据：带 hash 的 failed 状态（新代码不会产生此状态）
     repo.saveCompileState(db, claim.id, "failed", "Issues found", argHash);
 
-    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+    const results = await compileClaims(db, null, [claim.id]);
 
     // prevState.argumentHash 非空 → Case 1 → hash 未变 → no-change
     expect(results[0].action).toBe("no-change");
@@ -194,7 +194,7 @@ describe("autoVerifyAfterMutation", () => {
     // 修改 content → 哈希变化
     repo.updateNodeFields(db, claim.id, { content: "Modified claim" });
 
-    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+    const results = await compileClaims(db, null, [claim.id]);
 
     expect(results[0].action).toBe("marked-stale");
     expect(results[0].message).toContain("Review not configured");
@@ -215,7 +215,7 @@ describe("autoVerifyAfterMutation", () => {
     // 修改 content → 哈希变化
     repo.updateNodeFields(db, claim.id, { content: "Modified claim" });
 
-    const results = await autoVerifyAfterMutation(db, null, [claim.id]);
+    const results = await compileClaims(db, null, [claim.id]);
 
     expect(results[0].action).toBe("marked-stale");
 

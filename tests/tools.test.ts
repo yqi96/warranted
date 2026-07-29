@@ -84,6 +84,7 @@ describe("create_statement 工具", () => {
       content: "实验数据",
       source: "observed",
       verification: "verified",
+      attachments: ["/data.csv"],
     });
     expect(result.content[0].text).toContain("Created statement #1");
   });

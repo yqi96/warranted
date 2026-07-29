@@ -95,7 +95,7 @@ describe("createStatement", () => {
     const ground = service.createStatement(db, {
       content: "x",
       source: "observed",
-      verification: "verified",
+      verification: "pending",
     });
     expect(ground.attachments).toEqual([]);
   });
@@ -888,6 +888,7 @@ describe("审查规则: 结构约束", () => {
       content: "支撑内容",
       source: "literature",
       verification: "verified",
+      attachments: ["/refs/paper.pdf"],
     });
     repo.addWarrantBackings(db, warrant.id, [backing.id]);
     expect(backing.type).toBe("statement");
@@ -901,6 +902,7 @@ describe("审查规则: 结构约束", () => {
       content: "支撑内容",
       source: "literature",
       verification: "verified",
+      attachments: ["/refs/paper.pdf"],
     });
     repo.addWarrantBackings(db, warrant.id, [backing.id]);
     expect(backing.type).toBe("statement");

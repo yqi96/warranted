@@ -3,9 +3,8 @@
  *
  * 用法：bun test tests/review-real-data.test.ts --project-dir=/path/to/project
  *
- * 自动从 project/.toulmin/argument.db 读取所有论证链，
- * 对每条完整链路（Claim→Warrant→Grounds）跑 Argument Review，
- * 对所有 verified Ground 跑 Evidence Review。
+ * 自动从 project/.toulmin/argument.db 读取所有 verified Ground，
+ * 对每个 verified Ground 跑 Evidence Review。
  */
 
 import { describe, test, expect } from "bun:test";
@@ -14,8 +13,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { loadReviewConfig } from "../src/review-config.ts";
 import { callAgent, parseLLMResponse } from "../src/review-llm.ts";
-import { buildArgumentReviewPrompt, buildGroundEvidencePrompt } from "../src/review-prompts.ts";
-import { detectConnectedChain } from "../src/service.ts";
+import { buildStatementEvidencePrompt } from "../src/review-prompts.ts";
 
 // =============================================================================
 // 从命令行参数或环境变量获取项目路径
@@ -41,19 +39,9 @@ if (!dbExists) {
 // 工具函数
 // =============================================================================
 
-function readNode(db: Database, id: number): any {
-  const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(id) as any;
-  if (!row) throw new Error(`Node #${id} not found`);
-  return { ...row, data: JSON.parse(row.data) };
-}
-
-function getAllWarrants(db: Database): any[] {
-  return db.prepare("SELECT * FROM nodes WHERE type = 'warrant'").all() as any[];
-}
-
 function getAllVerifiedGroundsWithAttachments(db: Database): any[] {
   const grounds = db
-    .prepare("SELECT * FROM nodes WHERE type = 'ground'")
+    .prepare("SELECT * FROM nodes WHERE type = 'statement'")
     .all() as any[];
   return grounds.filter((g) => {
     const data = JSON.parse(g.data);
@@ -72,57 +60,6 @@ describe.skipIf(!dbExists)("真实数据审查测试", () => {
   const db = new Database(DB_PATH, { readonly: true });
 
   // =========================================================================
-  // 自动发现所有论证链并跑 Argument Review
-  // =========================================================================
-  const warrants = getAllWarrants(db);
-  console.error(`[Integration] Found ${warrants.length} warrants in DB`);
-
-  for (const wRow of warrants) {
-    const chain = detectConnectedChain(db, wRow.id);
-    if (!chain) continue; // 跳过不完整链路
-
-    const claim = readNode(db, chain.claimId);
-    const warrant = readNode(db, chain.warrantId);
-    const grounds = chain.groundIds.map((gid) => readNode(db, gid));
-
-    test(`Argument Review: Claim #${chain.claimId} → Warrant #${chain.warrantId}`, async () => {
-      if (!config) throw new Error("Config not loaded");
-
-      const prompt = buildArgumentReviewPrompt({
-        claim: {
-          id: chain.claimId,
-          content: claim.content,
-          status: claim.data.status,
-          qualifier: claim.data.qualifier || null,
-        },
-        warrant: { id: chain.warrantId, content: warrant.content },
-        grounds: grounds.map((g) => ({
-          id: g.id,
-          content: g.content,
-          source: g.data.source,
-          verification: g.data.verification,
-          attachments: g.data.attachments || [],
-        })),
-      });
-
-      console.error(`\n[Integration] === Argument Review: Claim #${chain.claimId} ===`);
-      console.error(`[Integration] Prompt length: ${prompt.length} chars`);
-
-      const raw = await callAgent(config, prompt, [], PROJECT_DIR);
-      const result = parseLLMResponse(raw, "");
-
-      // Argument review 可能返回旧格式 {verdict, summary, issues} 或新格式 {errors, warnings}
-      if (result.verdict) {
-        console.error(`[Integration] Verdict: ${result.verdict}`);
-        expect(["sound", "concerns", "invalid"]).toContain(result.verdict as string);
-      } else {
-        console.error(`[Integration] Errors: ${(result.errors as any[])?.length ?? 0}`);
-        expect(result.errors).toBeDefined();
-      }
-    }, { timeout: 180_000 });
-  }
-
-  // =========================================================================
   // 自动发现所有 verified Ground 并跑 Evidence Review
   // =========================================================================
   const verifiedGrounds = getAllVerifiedGroundsWithAttachments(db);
@@ -134,8 +71,8 @@ describe.skipIf(!dbExists)("真实数据审查测试", () => {
     test(`Ground Evidence Review: Ground #${gRow.id} (${groundData.source})`, async () => {
       if (!config) throw new Error("Config not loaded");
 
-      const prompt = buildGroundEvidencePrompt({
-        ground: {
+      const prompt = buildStatementEvidencePrompt({
+        statement: {
           id: gRow.id,
           content: gRow.content,
           source: groundData.source,

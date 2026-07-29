@@ -81,6 +81,7 @@ describe("场景 1：论文复现", () => {
       content: "ResNet 上加速倍数未达论文声称的 2.0×",
       source: "observed",
       verification: "verified",
+      attachments: ["/repro/logs/resnet.log"],
       rebuttal_for: { target_id: claim.id, target_type: "claim" },
     });
     repo.setCompileStatus(db, claim.id, "passed");
@@ -156,6 +157,7 @@ describe("场景 2：假设验证", () => {
       content: "t-SNE 可视化显示增强后特征空间覆盖率提升 30%",
       source: "observed",
       verification: "verified",
+      attachments: ["/repro/tsne/coverage.png"],
     });
 
     // 通过 update_node 追加 ground
@@ -218,6 +220,7 @@ describe("场景 3：文献综述", () => {
       content: "RetNet: 在长序列任务上效率提升但精度略低",
       source: "literature",
       verification: "verified",
+      attachments: ["/papers/retnet.pdf"],
     });
 
     service.updateNode(db, warrant.id, {
@@ -379,19 +382,19 @@ describe("场景 6：复杂级联删除", () => {
   test("删除 Claim 级联清理所有关联节点但保留 Ground", () => {
     // 构建复杂论证
     const claim = service.createClaim(db, "核心主张");
-    const g1 = service.createStatement(db, { content: "证据1", source: "observed", verification: "verified" });
-    const g2 = service.createStatement(db, { content: "证据2", source: "literature", verification: "verified" });
+    const g1 = service.createStatement(db, { content: "证据1", source: "observed", verification: "verified", attachments: ["/e/g1.csv"] });
+    const g2 = service.createStatement(db, { content: "证据2", source: "literature", verification: "verified", attachments: ["/e/g2.pdf"] });
 
     const w1 = service.createWarrant(db, { content: "推理1", claimId: claim.id, groundIds: [g1.id] });
     const w2 = service.createWarrant(db, { content: "推理2", claimId: claim.id, groundIds: [g2.id] });
 
-    const b1Stmt = service.createStatement(db, { content: "支撑1", source: "literature", verification: "verified" });
+    const b1Stmt = service.createStatement(db, { content: "支撑1", source: "literature", verification: "verified", attachments: ["/e/b1.pdf"] });
     repo.addWarrantBackings(db, w1.id, [b1Stmt.id]);
-    const b2Stmt = service.createStatement(db, { content: "支撑2", source: "literature", verification: "verified" });
+    const b2Stmt = service.createStatement(db, { content: "支撑2", source: "literature", verification: "verified", attachments: ["/e/b2.pdf"] });
     repo.addWarrantBackings(db, w2.id, [b2Stmt.id]);
 
-    const r1 = service.createStatement(db, { content: "反驳Claim", source: "observed", verification: "verified", rebuttal_for: { target_id: claim.id, target_type: "claim" } });
-    const r2 = service.createStatement(db, { content: "反驳Warrant", source: "observed", verification: "verified", rebuttal_for: { target_id: w1.id, target_type: "warrant" } });
+    const r1 = service.createStatement(db, { content: "反驳Claim", source: "observed", verification: "verified", attachments: ["/e/r1.csv"], rebuttal_for: { target_id: claim.id, target_type: "claim" } });
+    const r2 = service.createStatement(db, { content: "反驳Warrant", source: "observed", verification: "verified", attachments: ["/e/r2.csv"], rebuttal_for: { target_id: w1.id, target_type: "warrant" } });
 
     // 执行级联删除
     service.deleteNode(db, claim.id, true);
@@ -428,10 +431,10 @@ describe("场景 6：复杂级联删除", () => {
 describe("场景 7：增量 ground_ids 操作", () => {
   test("add 和 remove 组合操作", () => {
     const claim = service.createClaim(db, "主张");
-    const g1 = service.createStatement(db, { content: "G1", source: "observed", verification: "verified" });
-    const g2 = service.createStatement(db, { content: "G2", source: "observed", verification: "verified" });
-    const g3 = service.createStatement(db, { content: "G3", source: "observed", verification: "verified" });
-    const g4 = service.createStatement(db, { content: "G4", source: "observed", verification: "verified" });
+    const g1 = service.createStatement(db, { content: "G1", source: "observed", verification: "verified", attachments: ["/e/g1.csv"] });
+    const g2 = service.createStatement(db, { content: "G2", source: "observed", verification: "verified", attachments: ["/e/g2.csv"] });
+    const g3 = service.createStatement(db, { content: "G3", source: "observed", verification: "verified", attachments: ["/e/g3.csv"] });
+    const g4 = service.createStatement(db, { content: "G4", source: "observed", verification: "verified", attachments: ["/e/g4.csv"] });
 
     const warrant = service.createWarrant(db, {
       content: "推理",

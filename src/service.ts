@@ -36,7 +36,7 @@ import {
   TypeMismatchError,
   StatusTransitionError,
 } from "./errors.ts";
-import { WARNINGS, HINTS } from "./content.ts";
+import { WARNINGS, HINTS } from "./content/index.ts";
 
 // =============================================================================
 // 辅助函数
@@ -232,6 +232,13 @@ export function createStatement(
   const validVerifications: string[] = ["verified", "pending"];
   if (!validVerifications.includes(verification)) {
     throw new ValidationError(`Invalid verification: ${verification}. Must be one of: ${validVerifications.join(", ")}`);
+  }
+
+  // H1: verified Statement 必须有 attachments（与 updateNode 一致）
+  if (verification === "verified" && (attachments || []).length === 0) {
+    throw new ValidationError(
+      `Cannot create statement as "verified": verified statements must have attachments. Provide scripts, logs, or other evidence files via the attachments parameter.`
+    );
   }
 
   const row = repo.insertNode(db, "statement", content.trim(), {
@@ -730,12 +737,12 @@ export function updateNode(
     const prevVerification = data.verification;
     data.verification = params.verification;
 
-    // H1: verified Ground 必须有 attachments
+    // H1: verified statement 必须有 attachments
     if (params.verification === "verified") {
       const finalAttachments = data.attachments || [];
       if (finalAttachments.length === 0) {
         throw new ValidationError(
-          `Cannot mark Ground #${nodeId} as "verified": verified Grounds must have attachments. Provide scripts, logs, or other evidence files via the attachments parameter.`
+          `Cannot mark statement #${nodeId} as "verified": verified statements must have attachments. Provide scripts, logs, or other evidence files via the attachments parameter.`
         );
       }
     }

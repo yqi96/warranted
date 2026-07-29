@@ -21,7 +21,7 @@ import * as repo from "./repo.ts";
 import { runChainReview, loadArgumentContext } from "./compile-reviewers.ts";
 import { computeArgumentHash } from "./merkle-hash.ts";
 import { findWarrantsUsingGround } from "./service.ts";
-import { WARNINGS } from "./content.ts";
+import { WARNINGS } from "./content/index.ts";
 import { log } from "./logger.ts";
 import { writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
@@ -541,7 +541,7 @@ export function invalidateCompiledClaims(db: Database, nodeId: number): string[]
 
 /**
  * Compile 调度器。由 compile_arguments 工具显式调用，不是 mutation 自动触发。
- * 名称 autoVerifyAfterMutation 是历史遗留，实际语义是"按需决定是否重新 compile"。
+ * 按需决定是否重新 compile：
  *
  * - 有 compile_state + argumentHash 未变 → no-change（argumentHash 只在 passed 时保存）
  * - 有 compile_state + argumentHash 变了 → 触发逻辑链审查
@@ -549,7 +549,7 @@ export function invalidateCompiledClaims(db: Database, nodeId: number): string[]
  * - 无 compile_state + 结构不完整 → 标记 stale
  * - 无 reviewConfig → 标记 stale
  */
-export async function autoVerifyAfterMutation(
+export async function compileClaims(
   db: Database,
   config: ReviewConfig | null,
   affectedClaimIds: number[]

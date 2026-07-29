@@ -6,7 +6,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { ReviewConfig } from "./review-config.ts";
-import { buildArgumentReviewPrompt, buildGroundEvidencePrompt } from "./review-prompts.ts";
+import { buildStatementEvidencePrompt } from "./review-prompts.ts";
 import { callAgent, parseLLMResponse } from "./review-llm.ts";
 import { writeFileSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
@@ -14,101 +14,22 @@ import { log } from "./logger.ts";
 import * as repo from "./repo.ts";
 
 // =============================================================================
-// 类型定义
+// Statement Evidence Review（同步）
 // =============================================================================
 
-export interface ReviewResult {
-  verdict: string;
-  summary: string;
-  issues: Array<{
-    severity: string;
-    element?: string;
-    nodeId?: number;
-    message: string;
-  }>;
-}
-
-// =============================================================================
-// Argument Review（同步）
-// =============================================================================
-
-export async function executeArgumentReview(
-  config: ReviewConfig,
-  db: Database,
-  claimId: number,
-  warrantId: number,
-  groundIds: number[]
-): Promise<ReviewResult | null> {
-  const claimRow = repo.getNodeById(db, claimId);
-  const warrantRow = repo.getNodeById(db, warrantId);
-  if (!claimRow || !warrantRow) return null;
-
-  const claimData = JSON.parse(claimRow.data);
-
-  const grounds = groundIds.map(gid => {
-    const gRow = repo.getNodeById(db, gid);
-    if (!gRow) return null;
-    const gData = JSON.parse(gRow.data);
-    return {
-      id: gid,
-      content: gRow.content,
-      source: gData.source || "unknown",
-      verification: gData.verification || "pending",
-      attachments: gData.attachments || [],
-    };
-  }).filter((g): g is NonNullable<typeof g> => g !== null);
-
-  if (grounds.length === 0) return null;
-
-  const prompt = buildArgumentReviewPrompt({
-    claim: {
-      id: claimId,
-      content: claimRow.content,
-      status: claimData.status || "proposed",
-      qualifier: claimData.qualifier,
-    },
-    warrant: {
-      id: warrantId,
-      content: warrantRow.content,
-    },
-    grounds,
-  });
-
-  try {
-    const cwd = dirname(dirname(config.dbPath));  // .toulmin 的父目录（项目根目录）
-    const response = await callAgent(config, prompt, [], cwd);
-    const result = parseLLMResponse(response, "concerns") as unknown as ReviewResult;
-
-    saveReviewResult(config, "argument", { claimId, warrantId, groundIds }, result);
-
-    if (result.verdict !== "sound") {
-      return result;
-    }
-
-    return null;
-  } catch (error) {
-    console.error(`[Warranted] Argument review failed: ${error}`);
-    return null;
-  }
-}
-
-// =============================================================================
-// Ground Evidence Review（同步）
-// =============================================================================
-
-/** Ground 证据审查结果 */
-export interface GroundReviewResult {
+/** Statement 证据审查结果 */
+export interface StatementReviewResult {
   errors: string[];
   warnings: string[];
 }
 
 /** 创建前证据审查：不依赖 DB，接受参数直接审查 */
-export async function reviewGroundEvidencePreCreate(
+export async function reviewStatementEvidencePreCreate(
   config: ReviewConfig,
   params: { content: string; source: string; attachments: string[] }
-): Promise<GroundReviewResult> {
-  const prompt = buildGroundEvidencePrompt({
-    ground: {
+): Promise<StatementReviewResult> {
+  const prompt = buildStatementEvidencePrompt({
+    statement: {
       id: 0, // 尚未创建
       content: params.content,
       source: params.source,
@@ -119,7 +40,7 @@ export async function reviewGroundEvidencePreCreate(
 
   try {
     const cwd = dirname(dirname(config.dbPath));
-    log("ground_review", "OK", 0, `START ground_reviewer: pre-create`);
+    log("statement_review", "OK", 0, `START statement_reviewer: pre-create`);
     const t0 = Date.now();
 
     const response = await callAgent(config, prompt, params.attachments, cwd);
@@ -132,46 +53,46 @@ export async function reviewGroundEvidencePreCreate(
       typeof w === "string" ? w : w.message || String(w)
     );
 
-    log("ground_review", "OK", elapsed,
-      `END ground_reviewer: pre-create → ${errors.length} error(s), ${warnings.length} warning(s)`);
+    log("statement_review", "OK", elapsed,
+      `END statement_reviewer: pre-create → ${errors.length} error(s), ${warnings.length} warning(s)`);
 
     return { errors, warnings };
   } catch (error) {
-    log("ground_review", "ERR", 0, `pre-create: ${error}`);
+    log("statement_review", "ERR", 0, `pre-create: ${error}`);
     return { errors: [`Reviewer error: ${error}`], warnings: [] };
   }
 }
 
-/** 已有 Ground 证据审查：从 DB 读取，审查并保存结果 */
-export async function executeGroundReview(
+/** 已有 Statement 证据审查：从 DB 读取，审查并保存结果 */
+export async function executeStatementReview(
   config: ReviewConfig,
   db: Database,
-  groundId: number
-): Promise<GroundReviewResult> {
-  const groundRow = repo.getNodeById(db, groundId);
-  if (!groundRow) {
-    return { errors: [`Ground #${groundId} not found.`], warnings: [] };
+  statementId: number
+): Promise<StatementReviewResult> {
+  const statementRow = repo.getNodeById(db, statementId);
+  if (!statementRow) {
+    return { errors: [`Statement #${statementId} not found.`], warnings: [] };
   }
 
-  const groundData = JSON.parse(groundRow.data);
+  const statementData = JSON.parse(statementRow.data);
 
-  const prompt = buildGroundEvidencePrompt({
-    ground: {
-      id: groundId,
-      content: groundRow.content,
-      source: groundData.source || "unknown",
-      verification: groundData.verification || "pending",
-      attachments: groundData.attachments || [],
+  const prompt = buildStatementEvidencePrompt({
+    statement: {
+      id: statementId,
+      content: statementRow.content,
+      source: statementData.source || "unknown",
+      verification: statementData.verification || "pending",
+      attachments: statementData.attachments || [],
     },
   });
 
   try {
     const cwd = dirname(dirname(config.dbPath));
-    log("ground_review", "OK", 0,
-      `START ground_reviewer: ground=#${groundId}`);
+    log("statement_review", "OK", 0,
+      `START statement_reviewer: statement=#${statementId}`);
     const t0 = Date.now();
 
-    const response = await callAgent(config, prompt, groundData.attachments || [], cwd);
+    const response = await callAgent(config, prompt, statementData.attachments || [], cwd);
     const elapsed = Date.now() - t0;
     const parsed = parseLLMResponse(response, "");
     const errors: string[] = ((parsed.errors as Array<any>) || []).map(e =>
@@ -181,14 +102,14 @@ export async function executeGroundReview(
       typeof w === "string" ? w : w.message || String(w)
     );
 
-    log("ground_review", "OK", elapsed,
-      `END ground_reviewer: ground=#${groundId} → ${errors.length} error(s), ${warnings.length} warning(s)`);
+    log("statement_review", "OK", elapsed,
+      `END statement_reviewer: statement=#${statementId} → ${errors.length} error(s), ${warnings.length} warning(s)`);
 
-    saveGroundReviewFile(config, groundId, { errors, warnings });
+    saveStatementReviewFile(config, statementId, { errors, warnings });
 
     return { errors, warnings };
   } catch (error) {
-    log("ground_review", "ERR", 0, `ground=#${groundId}: ${error}`);
+    log("statement_review", "ERR", 0, `statement=#${statementId}: ${error}`);
     return { errors: [`Reviewer error: ${error}`], warnings: [] };
   }
 }
@@ -197,45 +118,21 @@ export async function executeGroundReview(
 // 工具函数
 // =============================================================================
 
-/** 将 Ground 证据审查结果保存为独立 JSON 文件到 reviews/ 目录 */
-export function saveGroundReviewFile(
+/** 将 Statement 证据审查结果保存为独立 JSON 文件到 reviews/ 目录 */
+export function saveStatementReviewFile(
   config: ReviewConfig,
-  groundId: number,
-  result: GroundReviewResult
+  statementId: number,
+  result: StatementReviewResult
 ): void {
   if (!config.reviewDir) return;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `ground_evidence_ground${groundId}_${timestamp}.json`;
+  const filename = `statement_evidence_statement${statementId}_${timestamp}.json`;
   const filepath = join(config.reviewDir, filename);
 
   mkdirSync(config.reviewDir, { recursive: true });
   writeFileSync(filepath, JSON.stringify({
-    groundId,
+    statementId,
     reviewedAt: new Date().toISOString().slice(0, 19),
     ...result,
   }, null, 2), "utf-8");
-}
-
-function saveReviewResult(
-  config: ReviewConfig,
-  reviewType: string,
-  context: Record<string, any>,
-  result: ReviewResult
-): void {
-  if (!config.reviewDir) return;
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `${reviewType}_${timestamp}.json`;
-  const filepath = join(config.reviewDir, filename);
-
-  // 确保目录存在
-  mkdirSync(config.reviewDir, { recursive: true });
-
-  const data = {
-    reviewType,
-    timestamp: new Date().toISOString(),
-    context,
-    result,
-  };
-
-  writeFileSync(filepath, JSON.stringify(data, null, 2), "utf-8");
 }

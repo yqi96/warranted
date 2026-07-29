@@ -19,9 +19,9 @@ import {
 } from "./errors.ts";
 import type { ArgumentResult, Stats, ToulminNode, AutoVerifyResult, NodeRow } from "./types.ts";
 import { log, summarizeInput, summarizeOutput } from "./logger.ts";
-import { ELEMENTS, HINTS, WARNINGS } from "./content.ts";
+import { TOOLS, PARAMS, HINTS, WARNINGS, MESSAGES } from "./content/index.ts";
 import type { ReviewConfig } from "./review-config.ts";
-import { executeGroundReview, reviewGroundEvidencePreCreate, saveGroundReviewFile } from "./review-sync.ts";
+import { executeStatementReview, reviewStatementEvidencePreCreate, saveStatementReviewFile } from "./review-sync.ts";
 import * as compileService from "./compile-service.ts";
 
 export interface Lifecycle {
@@ -136,7 +136,7 @@ function formatArgument(result: ArgumentResult): string {
     const lines: string[] = [];
     lines.push(`## Claim #${result.claim.id}`);
     if (result.claim.compile_status === "stale") {
-      lines.push("⚠ STALE — logical chain review pending. Call compile_arguments.");
+      lines.push(HINTS.staleClaimBanner);
     }
     lines.push(`Content: ${result.claim.content}`);
     lines.push(`Status: ${result.claim.status}`);
@@ -264,7 +264,7 @@ function formatReviewIssues(errors: string[], warnings: string[], infos?: string
 /** invalidateCompiledClaims 警告 + compile 提示 */
 function appendInvalidateHint(text: string, warnings: string[]): string {
   if (warnings.length === 0) return text;
-  return text + "\n" + warnings.join("\n") + "\nHint: Call compile_arguments to verify the argument chain.";
+  return text + "\n" + warnings.join("\n") + "\n" + HINTS.compileAfterMutation;
 }
 
 type ToolResult = { content: { type: string; text: string }[]; isError?: boolean };
@@ -314,11 +314,11 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "create_claim",
     {
-      title: "Create Claim",
-      description: ELEMENTS.claim.description,
+      title: TOOLS.create_claim.title,
+      description: TOOLS.create_claim.description,
       inputSchema: {
-        content: z.string().describe(ELEMENTS.claim.content),
-        qualifier: z.string().optional().describe(ELEMENTS.claim.qualifier),
+        content: z.string().describe(PARAMS.claim_content),
+        qualifier: z.string().optional().describe(PARAMS.claim_qualifier),
       },
     },
     withLog("create_claim", async ({ content, qualifier }: { content: string; qualifier?: string }) => {
@@ -328,7 +328,9 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
         }
         const claim = service.createClaim(db, content, qualifier);
-        return ok(`Created claim #${claim.id}\n\n${HINTS.claimNoWarrants}`);
+        const lines = [`Created claim #${claim.id}`, "", HINTS.claimNoWarrants];
+        if (!reviewConfig) lines.push("", HINTS.reviewSkipped);
+        return ok(lines.join("\n"));
       } catch (e) {
         return fail(formatError(e));
       }
@@ -341,48 +343,56 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "create_statement",
     {
-      title: "Create Statement",
-      description: ELEMENTS.statement.description,
+      title: TOOLS.create_statement.title,
+      description: TOOLS.create_statement.description,
       inputSchema: {
-        content: z.string().describe(ELEMENTS.statement.content),
-        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(ELEMENTS.statement.source),
-        verification: z.enum(["verified", "pending"]).optional().describe(ELEMENTS.statement.verification),
-        attachments: z.array(z.string()).optional().describe(ELEMENTS.statement.attachments),
+        content: z.string().describe(PARAMS.statement_content),
+        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(PARAMS.statement_source),
+        verification: z.enum(["verified", "pending"]).optional().describe(PARAMS.statement_verification),
+        attachments: z.array(z.string()).optional().describe(PARAMS.statement_attachments),
         rebuttal_for: z.object({
-          target_id: z.number().describe(ELEMENTS.rebuttal.targetId),
-          target_type: z.enum(["claim", "warrant"]).describe(ELEMENTS.rebuttal.targetType),
-        }).optional().describe("If provided, the statement is recorded as a rebuttal for the given target."),
+          target_id: z.number().describe(PARAMS.rebuttal_target_id),
+          target_type: z.enum(["claim", "warrant"]).describe(PARAMS.rebuttal_target_type),
+        }).optional().describe(PARAMS.rebuttal_for_stmt),
       },
     },
     withLog("create_statement", async (opts: any) => {
       try {
+        const wantsVerified = (opts.verification ?? "pending") === "verified";
         let preCreateReviewResult: { errors: string[]; warnings: string[] } | null = null;
-        if (reviewConfig && opts.verification === "verified") {
-          const reviewResult = await reviewGroundEvidencePreCreate(reviewConfig, {
+        let reviewFailed = false;
+        if (reviewConfig && wantsVerified) {
+          preCreateReviewResult = await reviewStatementEvidencePreCreate(reviewConfig, {
             content: opts.content || "",
             source: opts.source || "unknown",
             attachments: opts.attachments || [],
           });
-          if (reviewResult.errors.length > 0) return fail(formatReviewIssues(reviewResult.errors, reviewResult.warnings));
-          preCreateReviewResult = reviewResult;
+          reviewFailed = preCreateReviewResult.errors.length > 0;
         }
+        // Option A: 证据审查失败不拒绝创建，改为以 verification=pending 落库
+        const effectiveVerification = reviewFailed ? "pending" : (opts.verification ?? "pending");
         const stmt = service.createStatement(db, {
           content: opts.content,
           source: opts.source ?? "observed",
-          verification: opts.verification ?? "pending",
+          verification: effectiveVerification,
           attachments: opts.attachments,
           rebuttal_for: opts.rebuttal_for,
         });
         if (reviewConfig && preCreateReviewResult) {
-          saveGroundReviewFile(reviewConfig, stmt.id, preCreateReviewResult);
+          saveStatementReviewFile(reviewConfig, stmt.id, preCreateReviewResult);
         }
         const lines = [`Created statement #${stmt.id}`];
-        if ((opts.verification ?? "pending") === "pending") {
+        if (reviewFailed && preCreateReviewResult) {
+          lines.push("", "Evidence review did not pass — statement created with verification=pending.");
+          lines.push(formatReviewIssues(preCreateReviewResult.errors, preCreateReviewResult.warnings));
+        }
+        if (effectiveVerification === "pending") {
           const src = opts.source ?? "observed";
           if (src === "literature") lines.push("", HINTS.groundPendingLiterature);
           else if (src === "observed") lines.push("", HINTS.groundPendingObserved);
           else lines.push("", HINTS.groundPendingHypothesis);
         }
+        if (!reviewConfig) lines.push("", HINTS.reviewSkipped);
         return ok(lines.join("\n"));
       } catch (e) {
         return fail(formatError(e));
@@ -396,12 +406,12 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "create_warrant",
     {
-      title: "Create Warrant",
-      description: ELEMENTS.warrant.description,
+      title: TOOLS.create_warrant.title,
+      description: TOOLS.create_warrant.description,
       inputSchema: {
-        claim_id: z.number().describe(ELEMENTS.warrant.claimId),
-        content: z.string().describe(ELEMENTS.warrant.content),
-        ground_ids: z.array(z.number()).optional().describe(ELEMENTS.warrant.groundIds),
+        claim_id: z.number().describe(PARAMS.warrant_claim_id),
+        content: z.string().describe(PARAMS.warrant_content),
+        ground_ids: z.array(z.number()).optional().describe(PARAMS.warrant_ground_ids),
       },
     },
     withLog("create_warrant", async ({ claim_id, content, ground_ids }: { claim_id: number; content: string; ground_ids?: number[] }) => {
@@ -411,10 +421,12 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
         }
         const warrant = service.createWarrant(db, { content, claimId: claim_id, groundIds: ground_ids });
-        return ok(appendInvalidateHint(
+        let text = appendInvalidateHint(
           `Created warrant #${warrant.id}`,
           compileService.invalidateCompiledClaims(db, warrant.id)
-        ));
+        );
+        if (!reviewConfig) text += "\n\n" + HINTS.reviewSkipped;
+        return ok(text);
       } catch (e) {
         return fail(formatError(e));
       }
@@ -428,16 +440,16 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "list_claims",
     {
-      title: "List Claims",
-      description: "List all claims, optionally filtered by status.",
+      title: TOOLS.list_claims.title,
+      description: TOOLS.list_claims.description,
       inputSchema: {
-        status: z.string().optional().describe("Filter by status (comma-separated: proposed,supported,disputed,refuted)"),
+        status: z.string().optional().describe(PARAMS.claim_status_filter),
       },
     },
     withLog("list_claims", async ({ status }: { status?: string }) => {
       try {
         const claims = service.listClaims(db, status);
-        if (claims.length === 0) return ok("No claims found.");
+        if (claims.length === 0) return ok(MESSAGES.no_claims);
         const lines = claims.map(c => formatNodeLine(c));
         return ok(lines.join("\n"));
       } catch (e) {
@@ -452,17 +464,17 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "list_statements",
     {
-      title: "List Statements",
-      description: "List all statement (evidence) nodes, optionally filtered by source type and/or verification status.",
+      title: TOOLS.list_statements.title,
+      description: TOOLS.list_statements.description,
       inputSchema: {
-        source: z.string().optional().describe("Filter by source type (comma-separated: literature,observed,hypothesis). Omit to include all."),
-        verification: z.string().optional().describe("Filter by verification status (comma-separated: verified,pending). Omit to include all."),
+        source: z.string().optional().describe(PARAMS.statement_source_filter),
+        verification: z.string().optional().describe(PARAMS.statement_verification_filter),
       },
     },
     withLog("list_statements", async ({ source, verification }: { source?: string; verification?: string }) => {
       try {
         const statements = service.listStatements(db, source, verification);
-        if (statements.length === 0) return ok("No statements found.");
+        if (statements.length === 0) return ok(MESSAGES.no_statements);
         const lines = statements.map(g => {
           return formatNodeLine(g);
         });
@@ -479,10 +491,10 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "get_argument",
     {
-      title: "Get Argument",
-      description: "Get the complete argumentation subgraph for a node.",
+      title: TOOLS.get_argument.title,
+      description: TOOLS.get_argument.description,
       inputSchema: {
-        node_id: z.number().describe("Any node ID"),
+        node_id: z.number().describe(PARAMS.any_node_id),
       },
     },
     withLog("get_argument", async ({ node_id }: { node_id: number }) => {
@@ -501,10 +513,10 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "get_node",
     {
-      title: "Get Node",
-      description: "Get all fields of a single node by ID, including attachments. Does not traverse relationships.",
+      title: TOOLS.get_node.title,
+      description: TOOLS.get_node.description,
       inputSchema: {
-        node_id: z.number().describe("Node ID"),
+        node_id: z.number().describe(PARAMS.node_id),
       },
     },
     withLog("get_node", async ({ node_id }: { node_id: number }) => {
@@ -524,17 +536,17 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "search_nodes",
     {
-      title: "Search Nodes",
-      description: "Search nodes by keyword, optionally filtered by type.",
+      title: TOOLS.search_nodes.title,
+      description: TOOLS.search_nodes.description,
       inputSchema: {
-        keyword: z.string().describe("Search keyword"),
-        node_type: z.enum(["claim", "statement", "warrant", "ground", "backing", "rebuttal"]).optional().describe("Filter by node type. 'ground', 'backing', 'rebuttal' are virtual filters that query by relationship role; 'statement' returns all statements regardless of role."),
+        keyword: z.string().describe(PARAMS.search_keyword),
+        node_type: z.enum(["claim", "statement", "warrant", "ground", "backing", "rebuttal"]).optional().describe(PARAMS.node_type_filter),
       },
     },
     withLog("search_nodes", async ({ keyword, node_type }: { keyword: string; node_type?: string }) => {
       try {
         const results = service.searchNodesService(db, keyword, node_type);
-        if (results.length === 0) return ok("No matching nodes found.");
+        if (results.length === 0) return ok(MESSAGES.no_matching_nodes);
         const lines = results.map(n => formatNode(n));
         return ok(lines.join("\n"));
       } catch (e) {
@@ -549,8 +561,8 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "get_stats",
     {
-      title: "Get Stats",
-      description: "Get global argumentation statistics.",
+      title: TOOLS.get_stats.title,
+      description: TOOLS.get_stats.description,
       inputSchema: {},
     },
     withLog("get_stats", async () => {
@@ -569,28 +581,28 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "update_node",
     {
-      title: "Update Node",
-      description: "Update a node's content, status, verification, or relationships.",
+      title: TOOLS.update_node.title,
+      description: TOOLS.update_node.description,
       inputSchema: {
-        node_id: z.number().describe("Node ID to update"),
-        content: z.string().optional().describe("New content"),
-        attachments: z.array(z.string()).optional().describe("New attachment file paths"),
-        status: z.enum(["proposed", "supported", "disputed", "refuted"]).optional().describe(ELEMENTS.claim.status),
-        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(ELEMENTS.statement.source),
-        verification: z.enum(["verified", "pending"]).optional().describe(ELEMENTS.statement.verification),
+        node_id: z.number().describe(PARAMS.node_id_to_update),
+        content: z.string().optional().describe(PARAMS.new_content),
+        attachments: z.array(z.string()).optional().describe(PARAMS.new_attachments),
+        status: z.enum(["proposed", "supported", "disputed", "refuted"]).optional().describe(PARAMS.claim_status),
+        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(PARAMS.statement_source),
+        verification: z.enum(["verified", "pending"]).optional().describe(PARAMS.statement_verification),
         ground_ids: z.object({
           add: z.array(z.number()).optional(),
           remove: z.array(z.number()).optional(),
-        }).optional().describe("Warrant ground_ids incremental update"),
+        }).optional().describe(PARAMS.ground_ids_incremental),
         backing_ids: z.object({
           add: z.array(z.number()).optional(),
           remove: z.array(z.number()).optional(),
-        }).optional().describe("Warrant backing statement IDs incremental update"),
+        }).optional().describe(PARAMS.backing_ids_incremental),
         rebuttal_ids: z.object({
           add: z.array(z.number()).optional(),
           remove: z.array(z.number()).optional(),
-        }).optional().describe("Rebuttal statement IDs incremental update for Claim or Warrant nodes. target_type is inferred from the updated node's type."),
-        qualifier: z.string().optional().describe("Claim qualifier: degree of certainty ('probably', 'presumably', 'certainly')"),
+        }).optional().describe(PARAMS.rebuttal_ids_incremental),
+        qualifier: z.string().optional().describe(PARAMS.qualifier_update),
       },
     },
     withLog("update_node", async (opts: any) => {
@@ -622,10 +634,10 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           qualifier: opts.qualifier,
         });
 
-        // Ground 证据审查（阻断式：失败则回退 verification）
+        // Statement 证据审查（阻断式：失败则回退 verification）
         if (reviewConfig && node.type === "statement" && opts.verification === "verified") {
           try {
-            const reviewResult = await executeGroundReview(reviewConfig, db, node.id);
+            const reviewResult = await executeStatementReview(reviewConfig, db, node.id);
             if (reviewResult.errors.length > 0) {
               revertGroundVerification(db, node.id);
               return fail(formatReviewIssues(reviewResult.errors, reviewResult.warnings));
@@ -633,7 +645,15 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           } catch { /* 审查本身出错不阻断 */ }
         }
 
-        const invalidateWarnings = opts.content !== undefined
+        // 任何改变论证结构或证据状态的字段都使已通过的 compile 失效
+        const structuralChange =
+          opts.content !== undefined ||
+          opts.ground_ids !== undefined ||
+          opts.backing_ids !== undefined ||
+          opts.rebuttal_ids !== undefined ||
+          opts.verification !== undefined ||
+          opts.source !== undefined;
+        const invalidateWarnings = structuralChange
           ? compileService.invalidateCompiledClaims(db, opts.node_id)
           : [];
         let text = `Updated ${formatNodeBrief(node)}`;
@@ -657,11 +677,11 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "delete_node",
     {
-      title: "Delete Node",
-      description: "Delete a node. Deleting Ground/Warrant auto-cleans references and returns warnings. Claim deletion requires cascade=true.",
+      title: TOOLS.delete_node.title,
+      description: TOOLS.delete_node.description,
       inputSchema: {
-        node_id: z.number().describe("Node ID to delete"),
-        cascade: z.boolean().optional().default(false).describe("Recursively delete child nodes (required for Claims)"),
+        node_id: z.number().describe(PARAMS.node_id_to_delete),
+        cascade: z.boolean().optional().default(false).describe(PARAMS.cascade_delete),
       },
     },
     withLog("delete_node", async ({ node_id, cascade }: { node_id: number; cascade?: boolean }) => {
@@ -683,25 +703,17 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   server.registerTool(
     "compile_arguments",
     {
-      title: "Compile Arguments",
-      description:
-        "Validates the logical coherence of the argument. " +
-        "The primary chain is Ground (evidence) → Warrant (inference principle) → Claim (conclusion); " +
-        "Backing (warrant authority) and Rebuttal (exception conditions) are also reviewed. " +
-        "Reviews all affected Claims in parallel and returns a verdict per Claim. " +
-        "When to call: after completing all nodes under a Claim (Warrant + Ground(s) in place), " +
-        "after any structural change to an existing argument, or whenever a Claim shows stale status. " +
-        "A Claim must pass compile before its status can advance to 'supported'. " +
-        "Omit claim_ids to compile all Claims at once.",
+      title: TOOLS.compile_arguments.title,
+      description: TOOLS.compile_arguments.description,
       inputSchema: {
-        claim_ids: z.array(z.number()).optional().describe("Specific Claim IDs to compile. Omit to compile all Claims."),
+        claim_ids: z.array(z.number()).optional().describe(PARAMS.claim_ids_to_compile),
       },
     },
     withLog("compile_arguments", async ({ claim_ids }: { claim_ids?: number[] }) => {
-      if (!reviewConfig) return fail("Review not configured. Set ANTHROPIC_API_KEY to enable compile.");
+      if (!reviewConfig) return fail(MESSAGES.review_not_configured);
       const ids = claim_ids ?? repo.listNodesByType(db, "claim").map(r => r.id);
-      if (ids.length === 0) return ok("No claims to compile.");
-      const results = await compileService.autoVerifyAfterMutation(db, reviewConfig, ids);
+      if (ids.length === 0) return ok(MESSAGES.no_claims_to_compile);
+      const results = await compileService.compileClaims(db, reviewConfig, ids);
       const { errors, warnings, infos } = collectChainReviewIssues(results);
 
       const lines: string[] = [];

@@ -1,7 +1,7 @@
 {
   "name": "warranted",
   "displayName": "Warranted",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Make AI research agents accountable — give every conclusion a traceable argument graph.",
   "author": {
     "name": "QiYao"

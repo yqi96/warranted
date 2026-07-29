@@ -17,6 +17,7 @@ import {
 } from "./helpers.ts";
 import { structuralPreCheck, findAffectedClaimIds, invalidateCompiledClaims } from "../src/compile-service.ts";
 import { loadArgumentContext } from "../src/compile-reviewers.ts";
+import { buildChainReviewPrompt } from "../src/compile-prompts.ts";
 import { computeNodeHash, computeArgumentHash } from "../src/merkle-hash.ts";
 import * as repo from "../src/repo.ts";
 import type { Database } from "bun:sqlite";
@@ -147,6 +148,71 @@ describe("loadArgumentContext", () => {
   test("不存在的 Claim 返回 null", () => {
     const ctx = loadArgumentContext(db, 999);
     expect(ctx).toBeNull();
+  });
+});
+
+// =============================================================================
+// Rebuttal 目标解析（连接派生 — 角色来自关系表，非 node data）
+// =============================================================================
+
+describe("rebuttal target resolution (connection-derived)", () => {
+  // Seed: claim -> warrant(ground); one rebuttal statement linked to BOTH the
+  // warrant and the claim via rebuttal_targets. Node data carries no target_type.
+  function seedDualTargetRebuttal() {
+    const claim = makeClaim(db, "Test claim");
+    const ground = makeGround(db, { content: "Ground one" });
+    const warrant = makeWarrant(db, claim.id, [ground.id]);
+    const reb = makeRebuttal(db, warrant.id, "warrant", "A counter-condition");
+    // Add the second edge: same rebuttal also challenges the claim directly.
+    db.prepare(
+      "INSERT OR IGNORE INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, ?)"
+    ).run(reb.id, claim.id, "claim");
+    return { claim, ground, warrant, reb };
+  }
+
+  test("loadArgumentContext 从关系表带出 targetType/targetId（node data 不含 target_type）", () => {
+    const { claim, warrant, reb } = seedDualTargetRebuttal();
+
+    const rebRow = repo.getNodeById(db, reb.id)!;
+    expect(JSON.parse(rebRow.data).target_type).toBeUndefined();
+
+    const ctx = loadArgumentContext(db, claim.id)!;
+    expect(ctx).not.toBeNull();
+    expect(ctx.rebuttalRows.length).toBe(2);
+
+    const warrantEntry = ctx.rebuttalRows.find(r => r.targetType === "warrant");
+    const claimEntry = ctx.rebuttalRows.find(r => r.targetType === "claim");
+    expect(warrantEntry).toBeDefined();
+    expect(warrantEntry!.targetId).toBe(warrant.id);
+    expect(warrantEntry!.row.id).toBe(reb.id);
+    expect(claimEntry).toBeDefined();
+    expect(claimEntry!.targetId).toBe(claim.id);
+    expect(claimEntry!.row.id).toBe(reb.id);
+  });
+
+  test("buildChainReviewPrompt 渲染具体 target，绝不出现 'targets undefined'", () => {
+    const { claim, ground, warrant } = seedDualTargetRebuttal();
+    const ctx = loadArgumentContext(db, claim.id)!;
+
+    const prompt = buildChainReviewPrompt({
+      claim: { id: ctx.claimRow.id, content: ctx.claimRow.content },
+      warrants: ctx.warrantRows.map(w => ({
+        id: w.id,
+        content: w.content,
+        grounds: [{ id: ground.id, content: ground.content }],
+        backings: [],
+      })),
+      rebuttals: ctx.rebuttalRows.map(rr => ({
+        id: rr.row.id,
+        content: rr.row.content,
+        targetType: rr.targetType,
+        targetId: rr.targetId,
+      })),
+    });
+
+    expect(prompt).toContain(`targets warrant #${warrant.id}`);
+    expect(prompt).toContain(`targets claim #${claim.id}`);
+    expect(prompt).not.toContain("targets undefined");
   });
 });
 

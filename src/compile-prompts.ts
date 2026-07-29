@@ -156,7 +156,7 @@ export interface ChainReviewData {
     grounds: Array<{ id: number; content: string }>;
     backings: Array<{ id: number; content: string }>;
   }>;
-  rebuttals: Array<{ id: number; content: string; targetType: string }>;
+  rebuttals: Array<{ id: number; content: string; targetType: string; targetId: number }>;
 }
 
 export function buildChainReviewPrompt(data: ChainReviewData): string {
@@ -175,7 +175,7 @@ export function buildChainReviewPrompt(data: ChainReviewData): string {
   }).join("\n\n");
 
   const rebuttalsText = data.rebuttals.length > 0
-    ? `\n\n**Rebuttals**:\n${data.rebuttals.map(r => `  - Rebuttal #${r.id} (targets ${r.targetType}): ${r.content}`).join("\n")}`
+    ? `\n\n**Rebuttals**:\n${data.rebuttals.map(r => `  - Rebuttal #${r.id} (targets ${r.targetType} #${r.targetId}): ${r.content}`).join("\n")}`
     : "";
 
   return `You are a rigorous scientific argumentation reviewer. Your task is to audit whether the logical relationships in a Toulmin argument are coherent and sound.

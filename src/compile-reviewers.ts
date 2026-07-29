@@ -30,7 +30,7 @@ export interface ArgumentContext {
   groundRows: NodeRow[];
   groundDatas: Array<Record<string, unknown>>;
   backingRows: NodeRow[];
-  rebuttalRows: NodeRow[];
+  rebuttalRows: Array<{ row: NodeRow; targetType: "claim" | "warrant"; targetId: number }>;
 }
 
 export function loadArgumentContext(db: Database, claimId: number): ArgumentContext | null {
@@ -61,12 +61,16 @@ export function loadArgumentContext(db: Database, claimId: number): ArgumentCont
 
   // Backings & Rebuttals
   const backingRows: NodeRow[] = [];
-  const rebuttalRows: NodeRow[] = [];
+  const rebuttalRows: Array<{ row: NodeRow; targetType: "claim" | "warrant"; targetId: number }> = [];
   for (const w of warrantRows) {
     backingRows.push(...repo.findBackingsByWarrant(db, w.id));
-    rebuttalRows.push(...repo.findRebuttalsByTarget(db, w.id, "warrant"));
+    for (const r of repo.findRebuttalsByTarget(db, w.id, "warrant")) {
+      rebuttalRows.push({ row: r, targetType: "warrant", targetId: w.id });
+    }
   }
-  rebuttalRows.push(...repo.findRebuttalsByTarget(db, claimId, "claim"));
+  for (const r of repo.findRebuttalsByTarget(db, claimId, "claim")) {
+    rebuttalRows.push({ row: r, targetType: "claim", targetId: claimId });
+  }
 
   return {
     claimRow,
@@ -115,14 +119,12 @@ async function reviewChain(
           .map(b => ({ id: b.id, content: b.content })),
       };
     }),
-    rebuttals: ctx.rebuttalRows.map(r => {
-      const rData = JSON.parse(r.data);
-      return {
-        id: r.id,
-        content: r.content,
-        targetType: rData.target_type as string,
-      };
-    }),
+    rebuttals: ctx.rebuttalRows.map(rr => ({
+      id: rr.row.id,
+      content: rr.row.content,
+      targetType: rr.targetType,
+      targetId: rr.targetId,
+    })),
   });
 
   try {

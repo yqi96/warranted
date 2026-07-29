@@ -9,7 +9,7 @@ The paper's argument is the object under test. Extract it into the graph first; 
 
 ```
 paper conclusion                           -> Claim
-paper stated result                        -> hypothesis Ground, verification=pending
+paper stated result                        -> hypothesis Statement(Ground role), verification=pending
 paper inference from result to conclusion  -> Warrant
 paper method/standard behind the inference -> Backing
 paper acknowledged exception               -> Rebuttal
@@ -20,7 +20,7 @@ Granularity:
 - extract the Claims whose verdicts matter; do not force the whole paper into one giant Claim
 - attach each stated result to the specific Claim it bears on
 - distinct results, conditions, populations, or scopes are separate hypothesis Grounds
-- a paper sub-Claim used as evidence for another Claim -> `create_ground(ref_claim_id=sub_claim_id)`
+- a paper sub-Claim used as evidence for another Claim -> reference the sub-Claim's id directly in the consuming Warrant's `ground_ids`
 
 ## Obligations
 
@@ -29,25 +29,26 @@ Object-layer work in this channel — implementation, data download, computation
 | Graph state | Required action |
 |---|---|
 | A paper conclusion whose verdict matters has no Claim | `create_claim`, status `proposed` |
-| A paper-stated result must be tested | `create_ground(source="hypothesis", verification="pending")` |
+| A paper-stated result must be tested | `create_statement(source="hypothesis", verification="pending")` |
 | A Claim's Grounds have no inference principle | `create_warrant` |
-| A Warrant needs authority | `create_backing` from the paper's method or standard |
-| The paper acknowledges an exception or limitation | `create_rebuttal` |
+| A Warrant needs authority | `create_statement(...)` from the paper's method or standard, then `update_node(<warrant>, backing_ids={add:[...]})` |
+| The paper acknowledges an exception or limitation | `create_statement(rebuttal_for={target_id, target_type})` |
 | The initial Claim-Ground-Warrant structure exists | `compile_arguments` — coherence to test, not proof |
 | A hypothesis Ground needs an independent test | delegate execution to `code-experimenter` |
 | Reproduction output mismatches a Ground | route to `discrepancy-auditor` before any Rebuttal |
 | A claimed blocker would halt an obligation | route to `discrepancy-auditor` before accepting it |
-| A result supports its Ground | `update_node(verification="verified", attachments=[...])`, reassess the Claim after compile |
+| A result supports its Ground | `update_node(verification="verified", attachments=[...])` |
 | Reproduction differs but audit finds a setup issue | keep the Ground `pending`; fix and rerun |
-| Audit confirms a real contradiction | `create_rebuttal`; move the Claim to `disputed`/`refuted` only after compile and evidence assessment |
-| A result reveals something the paper never claimed | new observed Ground or Claim; never rewrite the paper Claim |
-| Only a narrower scope can be tested | record scoped evidence; do not let scoped success make the broader Claim `supported` |
+| Audit confirms a real contradiction | `create_statement(rebuttal_for=...)`; move the Claim to `disputed`/`refuted` only after compile and evidence assessment |
+| A result reveals something the paper never claimed | new observed Statement or Claim; never rewrite the paper Claim |
+| A full-scope test looks too slow, large, or costly | do NOT narrow scope for cost or time alone — long-running experiments are expected and accepted; profile via `discrepancy-auditor`, then delegate the fix to `code-optimizer` to make the full test feasible |
+| Only a narrower scope is verifiable (after optimization is exhausted) | bound the Claim with a `qualifier` that honestly records the verified scope and degree; the Claim may then be `supported` **within that qualifier** — never present the full, unqualified Claim as `supported` on scoped evidence |
 
 ## Fidelity
 
 The graph represents the paper's argument, not an improved version that happens to reproduce.
 
-- Claims are fixed: do not change conclusion, scope, or qualifier to fit your results.
+- Claims are fixed: do not change the conclusion, and do not loosen scope or qualifier to make a result fit. Adding a qualifier that *honestly narrows* the verified scope and degree is not loosening — it is the allowed way to record what reproduction actually established (see the Obligations table).
 - Hypothesis Grounds are fixed in logical assertion: do not rewrite what the paper claimed was found. A minor numerical correction is allowed only when it preserves the same assertion and is documented.
 - Warrants reflect the paper's reasoning; do not swap them merely to make reproduction easier.
 - If the paper's formulation is ambiguous, record the ambiguity — do not silently pick the interpretation most convenient to your implementation.
@@ -67,11 +68,13 @@ If the paper produced it, it cannot verify the Ground. It may still serve sanity
 
 ## Delegation
 
-Reproduction is long-running and demands isolated context, so delegate substantial object-layer work by default. Both workers report evidence only; neither sets Claim status nor creates Rebuttals — you own those graph decisions.
+Reproduction is long-running and demands isolated context, so delegate substantial object-layer work by default. All delegated workers report evidence only; none set Claim status nor create Rebuttals — you own those graph decisions.
 
 Delegate experiment execution to `code-experimenter`, briefing it with the target hypothesis Ground, the expected paper result, the method to implement, the paper-produced artifacts it must not use as verification (see Independence), and the raw artifacts to return.
 
 Route to `discrepancy-auditor` before the graph accepts any negative verdict: it decides whether a mismatch is a real contradiction or an incidental artifact, and whether a claimed blocker is genuine or a premature stop with a defensible narrower test still available.
+
+Route to `code-optimizer` when a full-scope test is blocked by runtime, memory, or compute cost. It profiles and speeds up the implementation while preserving the method and result semantics exactly, so the full-scope test becomes feasible; it never narrows scientific scope. Cost is an engineering problem to solve, not a reason to shrink a Claim — reach for optimization before scope reduction.
 
 A Claim may stay `proposed` only after its unresolved obligation has passed audit and no defensible narrower verification remains — never as a way to avoid a verdict.
 

@@ -6,7 +6,7 @@ Use this reference for Introduction, Background, Related Work, literature review
 
 Apply `literature-survey` for all published-paper evidence.
 
-- Source-specific factual sentences cite `source="literature"` Grounds with `\cite{ground_N}`.
+- Source-specific factual sentences cite `source="literature"` Grounds with `\cite{statement_N}`.
 - Paragraph theses are Claims, not citations.
 - Synthesis across papers requires a Warrant.
 - Conflicting or boundary-setting literature becomes Rebuttal, not vague hedging.

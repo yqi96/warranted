@@ -9,7 +9,7 @@ The Toulmin graph is the governing structure of the work. It is not a notebook, 
 
 ## Two Layers
 
-The **Toulmin layer** is the argument graph — five node types (Claim, Ground, Warrant, Backing, Rebuttal), a qualifier, and status tracking. It forces each decision to have a structural home and prevents the agent from chasing whatever **seems** useful in the moment.
+The **Toulmin layer** is the argument graph. There are **three node types** — Claim, Warrant, and Statement — plus a qualifier and status tracking. Ground, Backing, and Rebuttal are not node types; they are **roles a Statement plays** once it is linked into an argument (a Statement used as a Warrant's evidence is a Ground, as a Warrant's authority is a Backing, as a challenge to a Claim/Warrant is a Rebuttal). A Claim can itself serve as a Ground for another Warrant. This layer forces each decision to have a structural home and prevents the agent from chasing whatever **seems** useful in the moment.
 
 The **object layer** is concrete execution — search, source reading, experiment, analysis, implementation, audit — and it acts only when a Toulmin obligation cannot be discharged by graph operations alone.
 
@@ -62,17 +62,19 @@ Work upstream before downstream:
 | Scientific move | Graph operation |
 |---|---|
 | State a conclusion whose merit must be established | `create_claim` |
-| Record an independently produced result | `create_ground(source="observed")` |
-| Record a finding from a paper | `create_ground(source="literature")` |
-| Record an expected result to be tested | `create_ground(source="hypothesis", verification="pending")` |
-| Use another Claim as evidence | `create_ground(ref_claim_id=sub_claim_id)`; prefer supported Claims, and treat unsupported or stale upstream Claims as downstream obligations |
+| Record an independently produced result | `create_statement(source="observed")` |
+| Record a finding from a paper | `create_statement(source="literature")` |
+| Record an expected result to be tested | `create_statement(source="hypothesis", verification="pending")` |
+| Attach evidence to an inference (the Ground role) | `create_warrant(ground_ids=[...])`, or `update_node(<warrant>, ground_ids={add:[...]})` |
+| Use another Claim as evidence | pass the Claim's id into `ground_ids`; prefer supported Claims, and treat unsupported or stale upstream Claims as downstream obligations |
 | Explain why evidence licenses a conclusion | `create_warrant` |
-| Support the authority of an inference principle | `create_backing` |
-| Record a contradiction, exception, or boundary condition | `create_rebuttal` |
+| Support the authority of an inference principle (the Backing role) | `create_statement(...)` then `update_node(<warrant>, backing_ids={add:[...]})` |
+| Record a contradiction, exception, or boundary condition (the Rebuttal role) | `create_statement(rebuttal_for={target_id, target_type})` |
 | Mark evidence as established | `update_node(verification="verified", attachments=[...])` only after evidence check passes |
-| Record unexpected or independent result | `create_ground(source="observed")` or `create_rebuttal` after discrepancy audit |
-| Mark an earned verdict | `update_node(status="supported" | "disputed" | "refuted")` |
+| Record an unexpected result after a discrepancy audit | `create_statement(source="observed")` or a Rebuttal via `create_statement(rebuttal_for=...)` |
+| Mark an earned verdict | `update_node(status="supported" \| "disputed" \| "refuted")` |
 | Recheck logical coherence | `compile_arguments` |
+| Inspect an argument or enumerate nodes | `get_argument`, `list_claims`, `list_statements` |
 
 ## Anti-Patterns
 

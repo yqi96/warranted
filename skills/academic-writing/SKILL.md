@@ -24,9 +24,9 @@ Use this projection map:
 
 | Manuscript unit | Graph source |
 |---|---|
-| Section thesis | section-level Claim, usually supported by paragraph Claims through `ref_claim_id` Grounds |
+| Section thesis | section-level Claim, usually supported by paragraph Claims used as Grounds (pass each paragraph Claim's id into the Warrant's `ground_ids`) |
 | Paragraph thesis | Claim |
-| Reported paper finding | `source="literature"` Ground + `\cite{ground_N}` |
+| Reported paper finding | `source="literature"` Ground + `\cite{statement_N}` |
 | This-study result | `source="observed"` Ground + figure/table/source-data/method artifact |
 | Reason why evidence matters | Warrant prose |
 | Method/statistical authority | Backing or Methods/Statistics text linked to the Warrant it supports |
@@ -50,7 +50,7 @@ Do not use source or result voice to smuggle in inference. Sentences such as "To
 When editing existing manuscript text:
 
 1. Identify the paragraph Claim.
-2. List every cited `ground_N`, figure, table, or source-data reference supporting it.
+2. List every cited `statement_N`, figure, table, or source-data reference supporting it.
 3. Check whether the paragraph's synthesis language matches the Warrant.
 4. If the text narrows, broadens, or changes the thesis, update the Claim or create a new Claim.
 5. If an edit removes evidence, reassess the Claim status and compile state.

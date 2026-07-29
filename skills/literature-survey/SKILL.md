@@ -1,18 +1,18 @@
 ---
 name: literature-survey
-description: Use for literature-backed surveys, related work, introductions, discussions, or prose whose evidence comes from published papers. Translate citable propositions into verified literature Grounds and cite them as \cite{ground_N}.
+description: Use for literature-backed surveys, related work, introductions, discussions, or prose whose evidence comes from published papers. Translate citable propositions into verified literature Grounds and cite them as \cite{statement_N}.
 ---
 
 ## Graph Mapping
 
-Never cite a paper directly. A citable proposition from a paper first becomes a `source="literature"` Ground; LaTeX then cites that Ground with `\cite{ground_N}`. The citation is a pointer into the argument graph, not a bibliography shortcut.
+Never cite a paper directly. A citable proposition from a paper first becomes a `source="literature"` Statement (Ground role); LaTeX then cites that Statement with `\cite{statement_N}`, where N is the Statement's id. The citation is a pointer into the argument graph, not a bibliography shortcut.
 
 ```
-citable proposition from a paper -> literature Ground
+citable proposition from a paper -> literature Statement (Ground role)
 paragraph point                  -> Claim
 why findings support the point   -> Warrant
-methodological authority         -> Backing
-conflicting paper finding        -> Rebuttal
+methodological authority         -> Statement (Backing role)
+conflicting paper finding        -> Statement (Rebuttal role)
 ```
 
 Granularity:
@@ -24,21 +24,21 @@ Granularity:
 
 ## Obligations
 
-Object-layer work in this channel — search, reading, download, BibTeX, prose edits — is valid only when it creates, verifies, cites, or reconciles a literature Ground, or a Claim built from literature Grounds. A searched paper must become a Ground, Backing, or Rebuttal, or be discarded with a reason; it is never accumulated as an inert reading list.
+Object-layer work in this channel — search, reading, download, BibTeX, prose edits — is valid only when it creates, verifies, cites, or reconciles a literature Statement (Ground role), or a Claim built from such Statements. A searched paper must become a Ground, Backing, or Rebuttal, or be discarded with a reason; it is never accumulated as an inert reading list.
 
 | Graph state | Required action |
 |---|---|
-| No Claim for a load-bearing paragraph thesis | Create or update the Claim |
-| A sentence cites a paper for a proposition | Reuse a matching Ground, or create a literature Ground and attach the paper |
-| A paper provides several relevant propositions | Create one Ground per distinct proposition |
-| Several papers support the same specific finding | Attach them to the same Ground only when they support the same proposition |
-| A literature Ground is cited but not verified | Check the paper supports it, then mark verified |
-| A Claim has Grounds but no Warrant | Write the inference principle |
-| A Warrant needs authority | Add Backing |
-| A paper contradicts the Claim or Warrant | Create Rebuttal |
+| No Claim for a load-bearing paragraph thesis | `create_claim`, or update the existing Claim |
+| A sentence cites a paper for a proposition | Reuse a matching literature Statement, or `create_statement(source="literature")` and attach the paper |
+| A paper provides several relevant propositions | One `create_statement(source="literature")` per distinct proposition |
+| Several papers support the same specific finding | Attach them to the same Statement only when they support the same proposition |
+| A literature Statement is cited but not verified | Check the paper supports it, then `update_node(verification="verified", attachments=[...])` |
+| A Claim has Grounds but no Warrant | `create_warrant(ground_ids=[...])` |
+| A Warrant needs authority | `create_statement(...)`, then `update_node(<warrant>, backing_ids={add:[...]})` |
+| A paper contradicts the Claim or Warrant | `create_statement(rebuttal_for={target_id, target_type})` |
 | The text changes the paragraph thesis | Reconcile the Claim |
-| A citation points to the wrong Ground | Point to the correct Ground, or create one; edit an existing Ground only to fix an error, never to fit the sentence |
-| Existing LaTeX uses author-year keys | Migrate each: identify the cited proposition, create/reuse its Ground, replace the key with `ground_N` |
+| A citation points to the wrong Ground | Point to the correct Statement, or create one; edit an existing Statement only to fix an error, never to fit the sentence |
+| Existing LaTeX uses author-year keys | Migrate each: identify the cited proposition, create/reuse its literature Statement, replace the key with `statement_N` |
 
 A citable proposition may be a result, definition, taxonomy, dataset description, method claim, limitation, opinion, or argument — but it must be specific enough that citation faithfulness can be checked.
 
@@ -46,15 +46,15 @@ A citable proposition may be a result, definition, taxonomy, dataset description
 
 For every external citation in `.tex`:
 
-1. the source uses `\cite{ground_N}`
-2. Ground N exists, is `source="literature"`, and is `verified`
-3. Ground N states the exact proposition being cited
-4. Ground N attaches every source paper supporting it in this citation
+1. the source uses `\cite{statement_N}`
+2. the Statement cited as `statement_N` exists, is `source="literature"`, and is `verified`
+3. that Statement states the exact proposition being cited
+4. that Statement attaches every source paper supporting it in this citation
 5. each attached paper's filename stem matches a BibTeX key in the project `.bib`
 
 This contract proves provenance, not argument strength — a citation can be faithful while the Claim stays unsupported.
 
-Get faithfulness right while writing: each `\cite{ground_N}` sentence must already represent Ground N at the moment you write it. A mismatch caught late — after the argument has been built on it — can force reworking the paper's logic.
+Get faithfulness right while writing: each `\cite{statement_N}` sentence must already represent that Statement at the moment you write it. A mismatch caught late — after the argument has been built on it — can force reworking the paper's logic.
 
 ## Writing As Graph Projection
 
@@ -67,7 +67,7 @@ A load-bearing paragraph is a projection of a Claim and its supporting structure
 
 Keep three voices distinct:
 
-- **Paper voice** — what a source reports → literature Ground + `\cite{ground_N}`
+- **Paper voice** — what a source reports → literature Ground + `\cite{statement_N}`
 - **Synthesis voice** — what the body of evidence suggests → Claim + Grounds + Warrant
 - **Verdict voice** — what the graph has earned → Claim status
 

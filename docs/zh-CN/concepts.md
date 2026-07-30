@@ -27,13 +27,20 @@
 
 ---
 
-## 五种节点
+## 三种节点类型与角色
 
 Warranted 实现了论证的 [Toulmin 模型](https://en.wikipedia.org/wiki/Toulmin_model)。
 
+共有**三种节点类型**：Claim、Warrant 和 Statement。Ground、Backing、Rebuttal 不是独立的类型；它们是 **Statement 在论证中扮演的角色**，由节点的挂载方式决定。
+
 **Claim（主张）**——你所断言的命题。论文复现中，这是逐字提取的论文结论；原创写作中，这是你的综合判断。Claim 只有在论证链通过逻辑审查后，才从 `proposed` 推进到某个判定。
 
-**Ground（证据）**——支撑 Claim 的证据。论文复现中，这是论文陈述的实验结果（初始为假设，随验证而更新）；文献写作中，这是某篇已发表论文中的具体发现（附上 PDF 作为出处凭证）。
+**Statement（陈述）**——一个证据或上下文单元，其在论证中的角色由挂载方式决定：
+- **Ground 角色**：挂入某个 Warrant 的 `ground_ids` — 作为推理的证据基础
+- **Backing 角色**：挂入某个 Warrant 的 `backing_ids` — 为推理原则本身提供方法学支撑
+- **Rebuttal 角色**：通过 `rebuttal_for` 挂到某个 Claim 或 Warrant — 记录例外或矛盾
+
+一个 Statement 可以同时扮演多个角色。Claim 也可以直接作为另一个 Warrant 的 Ground（链式推理）。
 
 **Warrant（理据）**——连接 Ground 与 Claim 的推理原则。这是最难写对的节点。
 
@@ -50,10 +57,6 @@ Warrant 回答的是：给定这类证据，凭什么推理能推出这类结论
 当 `compile_arguments` 报告链条审查员认为推理不连贯时，问题通常出在 Warrant——要么循环，要么太含糊无法评估，要么根本没把具体的 Ground 连到具体的 Claim。
 
 Warrant 与特定的 Ground 相连——它正把这些证据导向 Claim。当推理依赖多个 Ground 共同成立时，多个 Ground 可汇入同一个 Warrant。
-
-**Backing（支撑）**——为 Warrant 的权威性提供支持。当推理原则本身需要论证时使用——通常是方法学共识或元分析。
-
-**Rebuttal（反驳）**——一条被记录下来的例外或矛盾。复现中，是与论文不同的结果；写作中，是一篇结论相冲突的论文，或该 Claim 已知的边界条件。
 
 ---
 

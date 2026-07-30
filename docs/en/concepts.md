@@ -27,15 +27,22 @@ Read this way, none of the rules are bureaucratic — each is the answer to a sp
 
 ---
 
-## The five node types
+## Three node types and roles
 
 Warranted implements the [Toulmin model](https://en.wikipedia.org/wiki/Toulmin_model) of argumentation.
 
+There are **three node types** — Claim, Warrant, and Statement. Ground, Backing, and Rebuttal are not separate types; they are **roles a Statement plays** once it is linked into an argument.
+
 **Claim** — a proposition you are asserting. In paper reproduction, this is the paper's conclusion extracted verbatim. In original writing, this is your synthesis judgment. Claims advance from `proposed` to a verdict only after the argument chain passes a logic check.
 
-**Ground** — evidence that supports the Claim. In paper reproduction, this is the paper's stated experimental result (initially a hypothesis, updated as you verify). In literature writing, this is a specific finding from a published paper (with the PDF attached as provenance).
+**Statement** — a unit of evidence or context. Its role in the argument is determined by how it is attached:
+- **Ground role**: attached to a Warrant's `ground_ids` — the evidence that grounds the inference
+- **Backing role**: attached to a Warrant's `backing_ids` — methodological consensus or meta-analysis that legitimizes the Warrant
+- **Rebuttal role**: attached via `rebuttal_for` to a Claim or Warrant — a documented exception or contradiction
 
-**Warrant** — the inference principle connecting Ground to Claim. This is the hardest node to write correctly.
+A Statement can play multiple roles simultaneously. A Claim can also serve as a Ground for another Warrant (direct chain reasoning).
+
+**Warrant** — the inference principle connecting Grounds to a Claim. This is the hardest node to write correctly.
 
 A Warrant is not a restatement of the support relationship. "Ground 1 and Ground 2 support Claim" is circular — it says the evidence supports the conclusion without explaining *why*. That's not an inference principle, it's just naming the connection.
 
@@ -50,10 +57,6 @@ A Warrant answers: given this type of evidence, by what reasoning does it imply 
 When `compile_arguments` reports that the chain reviewer found the reasoning incoherent, the Warrant is usually the cause — either circular, too vague to evaluate, or genuinely not connecting the specific Grounds to the specific Claim.
 
 A Warrant is linked to specific Grounds — the evidence it is channeling toward the Claim. Multiple Grounds can feed into one Warrant when the inference depends on them together.
-
-**Backing** — support for the Warrant's authority. Used when the inference principle itself needs justification — typically a methodological consensus or meta-analysis.
-
-**Rebuttal** — a documented exception or contradiction. In reproduction, a result that differs from the paper. In writing, a paper with conflicting findings or a known boundary condition of the Claim.
 
 ---
 

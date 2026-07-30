@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-30
+
+### Added
+- `code-optimizer` agent: object-layer agent for targeted code optimization; identifies hot paths, benchmarks, and implements improvements within a bounded scope without touching the Toulmin layer.
+
+### Changed
+- `toulmin-researcher`: delegation guidance sharpened — explicit bounded-task contract required for each subagent dispatch (obligation, target nodes, allowed sources, required report format); experiment traceability section added (unexpected results must enter the graph before the obligation is closed).
+- Skills and agents aligned to v0.4.0 statement model; `\cite{ground_N}` citation keys renamed to `\cite{statement_N}` throughout skills, agents, and `overleaf-push.py`.
+
+### Fixed
+- `update_node`: `ground_ids` writes now update both `warrant_grounds` relation table and `data.ground_ids` JSON field — dual-storage divergence that silently broke `get_argument` results (Bugs 1/2/3).
+- Visualizer: `drawNodeShape` now handles tree-display types `ground`, `backing`, and `rebuttal` correctly — previously fell through to the default branch.
+- Visualizer: pan, zoom, and node positions now persist across SSE reconnects — state is restored from `nodePositionMap` after each graph refresh.
+- `update_node`: modifying `verification` or `source` on a Statement no longer triggers `invalidateCompiledClaims` — only structural changes (`content`, `ground_ids`, `backing_ids`, `rebuttal_ids`) invalidate compiled Claims.
+
+## [0.4.0] - 2026-07-28
+
+### Added
+- `create_statement`: unified Statement creator that replaces `create_ground`, `create_backing`, and `create_rebuttal`. Accepts `source`, `verification`, `attachments`, and an optional `rebuttal_for` attachment to simultaneously place the Statement in the Rebuttal role.
+- `update_node`: `backing_ids {add, remove}` and `rebuttal_ids {add, remove}` incremental update fields, replacing the need for separate creation tools.
+- Direct Claim-as-Ground: Claim nodes can now be passed directly in `ground_ids`, eliminating the `ref_claim_id` proxy-node pattern. The DB migration `migrateRefClaimIdData` converts legacy proxy nodes on startup.
+
+### Changed
+- `list_grounds` renamed to `list_statements` — the tool now lists all Statement-type nodes regardless of role.
+- Three-type node model: `nodes.type` is now `claim | warrant | statement`. Ground, Backing, and Rebuttal are **roles** a Statement plays, determined by relation tables (`warrant_grounds`, `warrant_backings`, `rebuttal_targets`), not a stored type field.
+- Compile chain-reviewer: rebuttal targets are now derived from `rebuttal_targets` relation table instead of stale `data.target_id` JSON field.
+- Statement terminology propagated through all content strings, tool descriptions, and review system.
+
+### Removed
+- `create_ground`, `create_backing`, `create_rebuttal` MCP tools — replaced by `create_statement`.
+
 ## [0.3.0] - 2026-07-25
 
 ### Added
@@ -52,7 +83,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `UserPromptSubmit` hook that injects the current node selection as context.
 - Bilingual README and a known-working dependency versions snapshot.
 
-[Unreleased]: https://github.com/yqi96/warranted/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/yqi96/warranted/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/yqi96/warranted/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/yqi96/warranted/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yqi96/warranted/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yqi96/warranted/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yqi96/warranted/releases/tag/v0.1.0

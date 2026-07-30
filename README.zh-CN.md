@@ -34,7 +34,7 @@
 
 | 文档 | 讲什么 |
 |------|--------|
-| [论证图](docs/zh-CN/concepts.md) | 核心概念——五种节点、`compile`、状态生命周期，以及如何用论证图的语言跟 Agent 沟通。**从这里开始。** |
+| [论证图](docs/zh-CN/concepts.md) | 核心概念——三种节点类型与角色、`compile`、状态生命周期，以及如何用论证图的语言跟 Agent 沟通。**从这里开始。** |
 | [复现一篇论文](docs/zh-CN/reproduce-a-paper.md) | 场景指南：用一张独立的论证图验证论文主张（`/paper-reproduce`）。 |
 | [写一篇论文](docs/zh-CN/write-a-paper.md) | 场景指南：写论文或文献综述，让每处引用都能追溯到一个 verified 的 Ground（`/overleaf-setup`、`/literature-survey`）。 |
 
@@ -114,6 +114,7 @@ bun run viz
 | `toulmin-explorer` | 只读浏览。快速查找节点、查看验证状态、探索论证结构，不做修改。 |
 | `code-experimenter` | Object 层。执行受限的编码、复现与实验任务并返回证据报告；不决定 Claim 状态。 |
 | `discrepancy-auditor` | Object 层。在负面结果进入图之前审计它——可能是即将成为 Rebuttal 的意外不一致，也可能是即将中止某项义务的声明阻塞。 |
+| `code-optimizer` | Object 层。识别热路径、做基准测试并在受限范围内实施定向性能优化；不决定 Claim 状态。 |
 
 ---
 
@@ -122,7 +123,7 @@ bun run viz
 | Skill | 触发方式 | 作用 |
 |-------|----------|------|
 | `paper-reproduce` | `/paper-reproduce` | 论文复现工作流。构建独立论证图，逐步验证论文主张是否成立。 |
-| `literature-survey` | `/literature-survey` | 文献综述工作流。将外部发现接入论证图作为 Ground，用 LaTeX 以 `\cite{ground_N}` 引用写作，全程维护 `.bib` 文件。 |
-| `cite-review` | `/cite-review` | 引用忠实性审计。并行核对每个 `\cite{ground_N}` 与其 Ground 是否一致，修正不符的 LaTeX，并回填论证图。 |
+| `literature-survey` | `/literature-survey` | 文献综述工作流。将外部发现接入论证图作为 Statement（Ground 角色），用 LaTeX 以 `\cite{statement_N}` 引用写作，全程维护 `.bib` 文件。 |
+| `cite-review` | `/cite-review` | 引用忠实性审计。并行核对每个 `\cite{statement_N}` 与其 Statement 是否一致，修正不符的 LaTeX，并回填论证图。 |
 | `academic-writing` | `/academic-writing` | 论文写作总纲 skill。把有图支撑的论证投射到论文各章节、图、表与引用的正文表达中。 |
 | `overleaf-setup` | `/overleaf-setup` | 一次性配置 skill。安装 `leaf`、完成认证、把本地 LaTeX 目录关联到 Overleaf 项目，并写入一个 Stop hook，在每轮对话结束时自动推送（无文件改动则跳过）。 |

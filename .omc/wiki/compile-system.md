@@ -45,7 +45,7 @@ updated: 2026-07-22
 |----------|---------|
 | `claim` | create_claim / update_node 修改 claim content |
 | `warrant` | create_warrant / update_node 修改 warrant content |
-| `ground` | create_ground / update_node 修改 ground content；**`source=literature` 跳过**（内容合法性由证据审查保证）；`ref_claim_id` 模式同样跳过（占位文本） |
+| `statement` | create_statement / update_node 修改 statement content；**`source=literature` 跳过**（内容合法性由证据审查保证）；Claim 节点作为 ground 时同样跳过（占位内容） |
 
 **compile_arguments 审查**（显式调用触发）：
 
@@ -54,9 +54,9 @@ updated: 2026-07-22
 | `structure` | 论证结构完整性（确定性规则，无 LLM） |
 | `chain` | 整体论证链路逻辑连贯性（LLM） |
 
-### chain reviewer — ref_claim ground 内容展开
+### chain reviewer — Claim-type ground 内容展开
 
-当 Ground 通过 `ref_claim_id` 引用另一个 Claim（链式推理）时，chain reviewer 收到的是**被引用 Claim 的 content**，而非 Ground 自身的占位文本（`"Reference to Claim #N"`）。这确保 LLM 能对实际前置主张内容作逻辑判断。
+当 Ground 是一个 Claim 节点（直接链式推理，`warrant_grounds` 中有 claim-type 条目）时，chain reviewer 收到的是**该 Claim 的 content**，而非占位文本。这确保 LLM 能对实际前置主张内容作逻辑判断。
 
 ## 状态流转约束（A0 规则）
 

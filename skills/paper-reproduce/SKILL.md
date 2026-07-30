@@ -64,7 +64,11 @@ Author-published code, scripts, and weights may be used only when they are part 
 
 > Did the paper produce this artifact as its result, or use it as an input/tool?
 
-If the paper produced it, it cannot verify the Ground. It may still serve sanity checks, debugging, or a narrower sub-step — but that narrower check must not be reported as independent verification of the original Ground.
+If the paper produced it, it cannot verify the Ground. It may still be used for debugging or sanity checks only. Such use never constitutes verification evidence and must never be reported as independent verification of the Ground.
+
+<IMPORTANT>
+**Zero-tolerance rule: Any use of a paper-produced artifact as verification evidence—however minor, direct or indirect—constitutes an irreversible loss of independence. The verification is void, and the entire verification task must be reported as a failure.**
+</IMPORTANT>
 
 ## Delegation
 

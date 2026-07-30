@@ -28,6 +28,7 @@ updated: 2026-07-20
 | `service.test.ts` | Service 层单元测试 |
 | `repo.test.ts` | Repository CRUD 测试 |
 | `tools.test.ts` | 工具注册和输入验证 |
+| `compile.test.ts` | Compile 失效与 staleness 传播测试 |
 | `review-*.test.ts` | 异步 review 系统相关测试 |
 | `compile-viz.test.ts` | Compile 可视化测试 |
 | `helpers.ts` | 共享测试工具（createTestDb、factory methods） |
@@ -64,7 +65,7 @@ Ground content 变更时若已 verified，自动退回 pending。
 
 ### Pending Ground 提示文案（按 source 区分）
 
-`create_ground` 和 `update_node` 在 Ground 处于 pending 状态时，根据 `source` 返回不同的操作指引：
+`create_statement` 和 `update_node` 在 Statement 处于 pending 状态时，根据 `source` 返回不同的操作指引：
 
 | source | 提示要点 |
 |--------|---------|

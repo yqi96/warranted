@@ -194,8 +194,8 @@ function drawNodeShape(el, d) {
     el.append('text').attr('class', 'node-type-label')
       .attr('text-anchor', 'middle').attr('dy', 3.5).text('C#' + data.id);
 
-  } else if (data.type === 'statement') {
-    const role = data.data?.primary_role || 'ground';
+  } else if (data.type === 'statement' || data.type === 'ground' || data.type === 'backing' || data.type === 'rebuttal') {
+    const role = data.data?.primary_role || (data.type !== 'statement' ? data.type : 'ground');
     const s = size;
 
     if (role === 'rebuttal') {

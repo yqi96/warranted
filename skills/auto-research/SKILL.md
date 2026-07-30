@@ -1,11 +1,11 @@
 ---
 name: auto-research
-description: Use for open-ended autonomous research where you must generate the research questions and Claims yourself from provided data and reference material — not reproduce a paper's stated Claims (use paper-reproduce) nor write prose from published literature (use literature-survey). Route the goal through a Framing step, propose falsifiable Claims, produce observed Grounds from the data and literature Grounds from the references, actively seek disconfirming evidence before any verdict, and let compile gate completion.
+description: Use for open-ended autonomous research where you must generate the research questions and Claims yourself from provided data and reference material. Route the goal through a Framing step, propose falsifiable Claims, produce observed Grounds from the data and literature Grounds from the references, actively seek disconfirming evidence before any verdict, and let compile gate completion.
 ---
 
 ## Channel
 
-You are handed a research goal plus reference material and data, and no fixed argument to extract. Unlike `paper-reproduce`, nothing external supplies the Claims — you generate them. This is the highest-risk research mode: an agent that invents its own target is the one most likely to confirm what it wanted to find. The graph is the counterweight. Every question you raise gets a structural home, every conclusion must be earned through evidence, inference, rebuttal handling, and compile — never asserted because the analysis "looked right."
+You are handed a research goal plus reference material and data, and no fixed argument to extract. The graph is the counterweight. Every question you raise gets a structural home, every conclusion must be earned through evidence, inference, rebuttal handling, and compile — never asserted because the analysis "looked right."
 
 ## Framing Router
 
@@ -13,7 +13,7 @@ The first decision is where the Claims come from. Test each input proposition: *
 
 - **Weak Framing** — the input already states a specific question or a hypothesis to test. Cast the question's answer as a Claim; cast a user-stated hypothesis as a `source="hypothesis"` Statement (verification `pending`). Do not re-decompose; the target is given, so proceed like a bounded reproduction.
 - **Strong Framing** — the input is a research goal or direction with no pre-stated falsifiable answer. Decompose it into a small set of answerable research questions, then `create_claim` (status starts `proposed`) — one Claim per question whose verdict matters. Because nothing external fixes the target, the falsification obligation below is mandatory before any evidence run.
-- **Mixed input** — apply Weak Framing to the stated parts and Strong Framing to the gaps. Naming a method (e.g. "use a Bayesian framework") is direction, not a falsifiable Claim; that is still Strong Framing.
+- **Mixed input** — apply Weak Framing to the stated parts and Strong Framing to the gaps.
 
 Keep the initial Claim set small and load-bearing. Over-proposing Claims you never test is the same failure as testing none.
 
@@ -73,15 +73,7 @@ Autonomous research picks its own targets, so confirmation bias is the dominant 
 - A negative or surprising result never becomes a Rebuttal or a stop until `discrepancy-auditor` has ruled out an object-layer artifact.
 - A Claim reaches `supported` only after: its registered refutation condition was tested and did not fire, `compile_arguments` passes, and the surviving Rebuttals are weighed. Absent any of these, it stays `proposed` — never as a way to dodge a verdict.
 
-## Independence
 
-Evidence for a Claim must be produced independently, not assumed from what a reference concluded.
-
-`observed` Grounds must come from your own computation over the given data — not from a reference's stated result restated as fact. When references include prior results or author artifacts, apply the reproduction test:
-
-> Did the reference produce this artifact as its result, or provide it as an input/tool?
-
-An artifact the reference produced as its result cannot verify a Claim; an artifact offered as method or tool may. A convenient number lifted from a reference is a `hypothesis` to test, not an `observed` Ground that verifies.
 
 ## Delegation
 

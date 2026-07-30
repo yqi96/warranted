@@ -397,3 +397,74 @@ describe("invalidateCompiledClaims", () => {
     expect(JSON.parse(updatedClaim.data).compile_status).toBe("passed");
   });
 });
+
+// =============================================================================
+// BFS 链式传播 — claim-type ground
+// =============================================================================
+
+describe("BFS 链式传播 — claim-type ground", () => {
+  test("修改 sub-claim content → 父 Claim 失效（一跳）", () => {
+    const subClaim = makeClaim(db, "Sub claim");
+    const parentClaim = makeClaim(db, "Parent claim");
+    // sub-claim 作为父 Claim warrant 的 ground
+    makeWarrant(db, parentClaim.id, [subClaim.id], "Chain warrant");
+
+    repo.setCompileStatus(db, parentClaim.id, "passed");
+    repo.saveCompileState(db, parentClaim.id, "passed", "ok");
+
+    const affected = findAffectedClaimIds(db, subClaim.id);
+    expect(affected).toContain(subClaim.id);
+    expect(affected).toContain(parentClaim.id);
+  });
+
+  test("修改 sub-claim 的 ground statement → 父 Claim 也失效（二跳）", () => {
+    const subGround = makeGround(db, { content: "Sub-level evidence" });
+    const subClaim = makeClaim(db, "Sub claim");
+    makeWarrant(db, subClaim.id, [subGround.id], "Sub warrant");
+
+    const parentClaim = makeClaim(db, "Parent claim");
+    makeWarrant(db, parentClaim.id, [subClaim.id], "Chain warrant");
+
+    repo.setCompileStatus(db, parentClaim.id, "passed");
+    repo.saveCompileState(db, parentClaim.id, "passed", "ok");
+
+    // 修改 sub-claim 的 ground → sub-claim 失效 → BFS → 父 Claim 也失效
+    const affected = findAffectedClaimIds(db, subGround.id);
+    expect(affected).toContain(subClaim.id);
+    expect(affected).toContain(parentClaim.id);
+  });
+
+  test("三层链：A ← B(ground:C) ← D(ground:stmt) → 修改 stmt 传播到 A", () => {
+    const stmt = makeGround(db, { content: "Base evidence" });
+    const claimC = makeClaim(db, "Claim C");
+    makeWarrant(db, claimC.id, [stmt.id], "Warrant C");
+
+    const claimB = makeClaim(db, "Claim B");
+    makeWarrant(db, claimB.id, [claimC.id], "Warrant B");
+
+    const claimA = makeClaim(db, "Claim A");
+    makeWarrant(db, claimA.id, [claimB.id], "Warrant A");
+
+    repo.setCompileStatus(db, claimA.id, "passed");
+    repo.saveCompileState(db, claimA.id, "passed", "ok");
+
+    const affected = findAffectedClaimIds(db, stmt.id);
+    expect(affected).toContain(claimC.id);
+    expect(affected).toContain(claimB.id);
+    expect(affected).toContain(claimA.id);
+  });
+
+  test("invalidateCompiledClaims: 修改 sub-claim → 父 Claim compile_state 被清除", () => {
+    const subClaim = makeClaim(db, "Sub claim");
+    const parentClaim = makeClaim(db, "Parent claim");
+    makeWarrant(db, parentClaim.id, [subClaim.id], "Chain warrant");
+
+    repo.setCompileStatus(db, parentClaim.id, "passed");
+    repo.saveCompileState(db, parentClaim.id, "passed", "ok");
+
+    invalidateCompiledClaims(db, subClaim.id);
+
+    expect(repo.getCompileState(db, parentClaim.id)).toBeNull();
+    expect(JSON.parse(repo.getNodeById(db, parentClaim.id)!.data).compile_status).toBe("stale");
+  });
+});

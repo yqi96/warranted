@@ -1233,3 +1233,137 @@ describe("list_claims — multi-value status filter", () => {
     expect(text).not.toContain("C-disputed");
   });
 });
+
+// =============================================================================
+// compile 失效 — 非结构性字段不触发失效（负面测试）
+// =============================================================================
+
+describe("compile 失效 — 非结构性字段变更不触发失效", () => {
+  function makeCompiledChain(db: any) {
+    const claim = makeCompiledClaim(db, "Compiled claim");
+    const ground = makeGround(db, { content: "Evidence", source: "observed", verification: "verified" });
+    const warrant = makeWarrant(db, claim.id, [ground.id]);
+    return { claim, ground, warrant };
+  }
+
+  function compileStatus(db: any, claimId: number): string | null {
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claimId) as { data: string };
+    return JSON.parse(row.data).compile_status ?? null;
+  }
+
+  test("修改 statement verification → compile_status 保持 passed，无失效警告", async () => {
+    const { claim, ground } = makeCompiledChain(db);
+
+    const result = await tools.update_node.handler({
+      node_id: ground.id,
+      verification: "pending",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).not.toContain("compiled status has been cleared");
+    expect(compileStatus(db, claim.id)).toBe("passed");
+  });
+
+  test("修改 statement source → compile_status 保持 passed，无失效警告", async () => {
+    const { claim, ground } = makeCompiledChain(db);
+
+    const result = await tools.update_node.handler({
+      node_id: ground.id,
+      source: "literature",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).not.toContain("compiled status has been cleared");
+    expect(compileStatus(db, claim.id)).toBe("passed");
+  });
+
+  test("修改 claim qualifier → compile_status 保持 passed，无失效警告", async () => {
+    const { claim } = makeCompiledChain(db);
+
+    const result = await tools.update_node.handler({
+      node_id: claim.id,
+      qualifier: "probably",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).not.toContain("compiled status has been cleared");
+    expect(compileStatus(db, claim.id)).toBe("passed");
+  });
+});
+
+// =============================================================================
+// compile 失效 — backing_ids / rebuttal_ids 变更触发失效（正面测试）
+// =============================================================================
+
+describe("compile 失效 — backing_ids 变更触发失效", () => {
+  test("backing_ids add → compiled claim 失效", async () => {
+    const claim = makeCompiledClaim(db, "Claim with backing");
+    const ground = makeGround(db, { content: "Ground" });
+    const warrant = makeWarrant(db, claim.id, [ground.id]);
+    const newBacking = makeGround(db, { content: "New backing" });
+
+    const result = await tools.update_node.handler({
+      node_id: warrant.id,
+      backing_ids: { add: [newBacking.id] },
+    });
+
+    expect(result.content[0].text).toContain("compiled status has been cleared");
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    expect(JSON.parse(row.data).compile_status).toBe("stale");
+  });
+
+  test("backing_ids remove → compiled claim 失效", async () => {
+    const claim = makeCompiledClaim(db, "Claim with backing");
+    const ground = makeGround(db, { content: "Ground" });
+    const warrant = makeWarrant(db, claim.id, [ground.id]);
+    const backing = makeBacking(db, warrant.id, "Existing backing");
+
+    const result = await tools.update_node.handler({
+      node_id: warrant.id,
+      backing_ids: { remove: [backing.id] },
+    });
+
+    expect(result.content[0].text).toContain("compiled status has been cleared");
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    expect(JSON.parse(row.data).compile_status).toBe("stale");
+  });
+});
+
+describe("compile 失效 — rebuttal_ids 变更触发失效", () => {
+  test("rebuttal_ids add → compiled claim 失效", async () => {
+    const claim = makeCompiledClaim(db, "Claim with rebuttal");
+    const ground = makeGround(db, { content: "Ground" });
+    makeWarrant(db, claim.id, [ground.id]);
+    const rebuttalStmt = makeGround(db, { content: "Counter evidence" });
+
+    const result = await tools.update_node.handler({
+      node_id: claim.id,
+      rebuttal_ids: { add: [rebuttalStmt.id] },
+    });
+
+    expect(result.content[0].text).toContain("compiled status has been cleared");
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    expect(JSON.parse(row.data).compile_status).toBe("stale");
+  });
+
+  test("rebuttal_ids remove → compiled claim 失效", async () => {
+    const claim = makeCompiledClaim(db, "Claim with rebuttal");
+    const ground = makeGround(db, { content: "Ground" });
+    makeWarrant(db, claim.id, [ground.id]);
+    const rebuttal = makeRebuttal(db, claim.id, "claim", "Existing rebuttal");
+
+    const result = await tools.update_node.handler({
+      node_id: claim.id,
+      rebuttal_ids: { remove: [rebuttal.id] },
+    });
+
+    expect(result.content[0].text).toContain("compiled status has been cleared");
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    expect(JSON.parse(row.data).compile_status).toBe("stale");
+    // 验证关系行实际被删除
+    const rel = db.prepare(
+      "SELECT * FROM rebuttal_targets WHERE statement_id = ? AND target_id = ?"
+    ).get(rebuttal.id, claim.id);
+    expect(rel).toBeNull();
+  });
+});

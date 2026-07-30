@@ -645,14 +645,13 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
           } catch { /* 审查本身出错不阻断 */ }
         }
 
-        // 任何改变论证结构或证据状态的字段都使已通过的 compile 失效
+        // 改变论证结构（内容或关系）才使已通过的 compile 失效；
+        // verification/source/qualifier/status 不影响逻辑链，不触发失效
         const structuralChange =
           opts.content !== undefined ||
           opts.ground_ids !== undefined ||
           opts.backing_ids !== undefined ||
-          opts.rebuttal_ids !== undefined ||
-          opts.verification !== undefined ||
-          opts.source !== undefined;
+          opts.rebuttal_ids !== undefined;
         const invalidateWarnings = structuralChange
           ? compileService.invalidateCompiledClaims(db, opts.node_id)
           : [];

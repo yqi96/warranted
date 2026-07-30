@@ -1,9 +1,8 @@
 -- =============================================================================
--- Toulmin MCP — SQLite Schema
+-- Warranted — SQLite Schema (reference only)
 --
--- 单表 nodes + JSON data 列设计：
--- - 公共字段 (id, type, content, timestamps) 直接是列，可索引
--- - 类型特有字段存储在 data JSON 中，用 json_extract() 按需查询
+-- NOTE: src/db.ts:initializeSchema() is authoritative. This file is
+-- documentation-only and is NOT executed at runtime. Keep it in sync manually.
 -- =============================================================================
 
 PRAGMA journal_mode = WAL;
@@ -11,37 +10,20 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS nodes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    type       TEXT    NOT NULL CHECK(type IN ('claim','ground','warrant','backing','rebuttal')),
+    type       TEXT    NOT NULL CHECK(type IN ('claim','statement','warrant')),
     content    TEXT    NOT NULL,
     data       TEXT    NOT NULL DEFAULT '{}',
     created_at TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
--- 按类型查询
 CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
 
--- Warrant 按 claim_id 查询（data JSON 中提取）
 CREATE INDEX IF NOT EXISTS idx_nodes_warrant_claim ON nodes(
     CAST(json_extract(data, '$.claim_id') AS INTEGER)
 ) WHERE type = 'warrant';
 
--- Backing 按 warrant_id 查询
-CREATE INDEX IF NOT EXISTS idx_nodes_backing_warrant ON nodes(
-    CAST(json_extract(data, '$.warrant_id') AS INTEGER)
-) WHERE type = 'backing';
-
--- Rebuttal 按 target_id 查询
-CREATE INDEX IF NOT EXISTS idx_nodes_rebuttal_target ON nodes(
-    CAST(json_extract(data, '$.target_id') AS INTEGER)
-) WHERE type = 'rebuttal';
-
--- Ground 按 ref_claim_id 查询（链式推理）
-CREATE INDEX IF NOT EXISTS idx_nodes_ground_ref_claim ON nodes(
-    CAST(json_extract(data, '$.ref_claim_id') AS INTEGER)
-) WHERE type = 'ground' AND json_extract(data, '$.ref_claim_id') IS NOT NULL;
-
--- Compile 状态表（compile 工具使用）
+-- Compile state per claim
 CREATE TABLE IF NOT EXISTS compile_state (
     claim_id       INTEGER PRIMARY KEY,
     verdict        TEXT    NOT NULL DEFAULT 'passed',
@@ -50,3 +32,27 @@ CREATE TABLE IF NOT EXISTS compile_state (
     argument_hash  TEXT,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Grounds for a warrant (statement or claim nodes)
+CREATE TABLE IF NOT EXISTS warrant_grounds (
+    warrant_id   INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    ground_id    INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    PRIMARY KEY (warrant_id, ground_id)
+);
+
+-- Backing statements for a warrant
+CREATE TABLE IF NOT EXISTS warrant_backings (
+    warrant_id   INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    statement_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    PRIMARY KEY (warrant_id, statement_id)
+);
+
+-- Rebuttal targets: a statement rebuts a claim or warrant
+CREATE TABLE IF NOT EXISTS rebuttal_targets (
+    statement_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    target_id    INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    target_type  TEXT    NOT NULL CHECK(target_type IN ('claim','warrant')),
+    PRIMARY KEY (statement_id, target_id, target_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rebuttal_targets_target ON rebuttal_targets(target_id, target_type);

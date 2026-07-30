@@ -38,7 +38,8 @@ async function syncSelectionToServer() {
       if (!node) return null;
       const type = node.type || node.data?.type || '';
       const content = node.content || node.data?.content || '';
-      return { id, type, content };
+      const roles = node.data?.roles || [];
+      return { id, type, content, roles };
     }).filter(Boolean);
     await fetch('http://localhost:3456/viz/selection', {
       method: 'POST',

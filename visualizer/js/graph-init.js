@@ -1,5 +1,5 @@
 function initGraph() {
-  svg = d3.select('#cy').append('svg').attr('width', '100%').attr('height', '100%');
+  svg = d3.select('#graph').append('svg').attr('width', '100%').attr('height', '100%');
   const defs = svg.append('defs');
 
   // ── Arrow markers — semantically typed ──
@@ -109,7 +109,7 @@ function initGraph() {
   simulation = d3.forceSimulation()
     .force('charge', d3.forceManyBody().strength(-420).distanceMax(500))
     .force('link', d3.forceLink().id(d => d.id).distance(120).strength(0.4))
-    .force('collision', d3.forceCollide().radius(d => (TYPE_SIZES[d.type] || 18) + 14))
+    .force('collision', d3.forceCollide().radius(d => nodeSize(d) + 14))
     .force('center', d3.forceCenter(0, 0).strength(0.03))
     .on('tick', forceTicked);
   simulation.stop();
@@ -139,16 +139,15 @@ function setSelectionMode(mode) {
   selectionMode = mode;
   document.getElementById('mode-box')?.classList.toggle('active', mode === 'box');
   document.getElementById('mode-pan')?.classList.toggle('active', mode === 'pan');
-  // Update canvas cursor
-  const cyEl = document.getElementById('cy');
+  const cyEl = document.getElementById('graph');
   if (cyEl) cyEl.style.cursor = mode === 'pan' ? 'grab' : 'default';
 }
 
 function drawNodeShape(el, d) {
   const data   = (currentLayout === 'tree') ? d.data : d;
-  const fill   = NODE_FILLS[data.type]   || 'rgba(255,255,255,0.05)';
-  const stroke = NODE_STROKES[data.type] || 'rgba(255,255,255,0.18)';
-  const size   = TYPE_SIZES[data.type]   || 18;
+  const fill   = nodeFill(data);
+  const stroke = nodeStroke(data);
+  const size   = nodeSize(data);
 
   if (data.type === 'claim') {
     const status = data.data?.status;
@@ -164,7 +163,6 @@ function drawNodeShape(el, d) {
       .attr('fill', fill).attr('stroke', strokeColor).attr('stroke-width', sw)
       .attr('stroke-dasharray', dash).attr('filter', 'url(#shadow)');
 
-    // Subtle glass sheen
     el.append('rect')
       .attr('x', -size * 1.55 + 3).attr('y', -size * 0.68 + 2)
       .attr('width', size * 3.1 - 6).attr('height', size * 0.35)
@@ -172,7 +170,6 @@ function drawNodeShape(el, d) {
       .attr('fill', 'rgba(255,255,255,0.07)')
       .attr('pointer-events', 'none');
 
-    // Status badge (top-right)
     if (status === 'supported') {
       el.append('circle').attr('cx', size * 1.35).attr('cy', -size * 0.56).attr('r', 5)
         .attr('fill', '#34C759').attr('stroke', '#090909').attr('stroke-width', 1.5);
@@ -181,7 +178,6 @@ function drawNodeShape(el, d) {
         .attr('font-size', '6.5px').attr('font-weight', '800').text('✓');
     }
 
-    // Compile badge (top-left)
     const compileState = getClaimCompileState(data.data);
     if (compileState) {
       const badgeFill = compileState === 'passed' ? '#34C759' : '#FF9500';
@@ -198,20 +194,38 @@ function drawNodeShape(el, d) {
     el.append('text').attr('class', 'node-type-label')
       .attr('text-anchor', 'middle').attr('dy', 3.5).text('C#' + data.id);
 
-  } else if (data.type === 'ground') {
-    const isVerified = data.data?.verification === 'verified';
-    const isChain    = !!data.data?.ref_claim_id;
+  } else if (data.type === 'statement') {
+    const role = data.data?.primary_role || 'ground';
     const s = size;
-    // Verified grounds: brighter fill + solid stroke; unverified: muted dashed
-    const groundFill   = isVerified ? 'rgba(91,155,213,0.18)' : fill;
-    const groundStroke = isVerified ? 'rgba(91,155,213,0.65)' : stroke;
-    const sdash        = (!isVerified && !isChain) ? '3,2.5' : 'none';
-    el.append('path').attr('class', 'node-shape')
-      .attr('d', `M0,${-s * 1.05} L${s * 1.28},0 L0,${s * 1.05} L${-s * 1.28},0 Z`)
-      .attr('fill', groundFill).attr('stroke', groundStroke).attr('stroke-width', 1.5)
-      .attr('stroke-dasharray', sdash).attr('filter', 'url(#shadow)');
-    const icon = isVerified ? '✓' : isChain ? '→' : '·';
-    el.append('text').attr('class', 'node-icon').attr('text-anchor', 'middle').attr('dy', 3.5).text(icon);
+
+    if (role === 'rebuttal') {
+      el.append('path').attr('class', 'node-shape')
+        .attr('d', `M0,${-s} L${s * 1.15},0 L0,${s} L${-s * 1.15},0 Z`)
+        .attr('fill', fill).attr('stroke', stroke).attr('stroke-width', 1.5)
+        .attr('stroke-dasharray', '4,2').attr('filter', 'url(#shadow)');
+      el.append('text').attr('class', 'node-type-label')
+        .attr('text-anchor', 'middle').attr('dy', 4).text('R');
+
+    } else if (role === 'backing') {
+      el.append('circle').attr('class', 'node-shape')
+        .attr('r', s).attr('fill', fill).attr('stroke', stroke).attr('stroke-width', 1.5)
+        .attr('filter', 'url(#shadow)');
+      el.append('text').attr('class', 'node-type-label')
+        .attr('text-anchor', 'middle').attr('dy', 4).text('B');
+
+    } else {
+      const isVerified  = data.data?.verification === 'verified';
+      const groundFill  = isVerified ? 'rgba(91,155,213,0.18)' : fill;
+      const groundStroke = isVerified ? 'rgba(91,155,213,0.65)' : stroke;
+      const sdash       = isVerified ? 'none' : '3,2.5';
+      el.append('rect').attr('class', 'node-shape')
+        .attr('x', -s).attr('y', -s)
+        .attr('width', s * 2).attr('height', s * 2)
+        .attr('fill', groundFill).attr('stroke', groundStroke).attr('stroke-width', 1.5)
+        .attr('stroke-dasharray', sdash).attr('filter', 'url(#shadow)');
+      el.append('text').attr('class', 'node-icon')
+        .attr('text-anchor', 'middle').attr('dy', 4).text(isVerified ? '✓' : '·');
+    }
 
   } else if (data.type === 'warrant') {
     const s = size, a = s * 0.87, b = s * 0.50;
@@ -221,19 +235,10 @@ function drawNodeShape(el, d) {
       .attr('filter', 'url(#shadow)');
     el.append('text').attr('class', 'node-type-label').attr('text-anchor', 'middle').attr('dy', 3.5).text('W');
 
-  } else if (data.type === 'rebuttal') {
-    const s = size;
-    el.append('path').attr('class', 'node-shape')
-      .attr('d', `M0,${-s} L${s},${s * 0.7} L${-s},${s * 0.7} Z`)
-      .attr('fill', fill).attr('stroke', stroke).attr('stroke-width', 1.5)
-      .attr('stroke-dasharray', '4,2').attr('filter', 'url(#shadow)');
-    el.append('text').attr('class', 'node-type-label').attr('text-anchor', 'middle').attr('dy', 7).text('R');
-
   } else {
-    // backing
     el.append('circle').attr('class', 'node-shape')
       .attr('r', size).attr('fill', fill).attr('stroke', stroke).attr('stroke-width', 1.5)
       .attr('filter', 'url(#shadow)');
-    el.append('text').attr('class', 'node-type-label').attr('text-anchor', 'middle').attr('dy', 3.5).text('B');
+    el.append('text').attr('class', 'node-type-label').attr('text-anchor', 'middle').attr('dy', 3.5).text('?');
   }
 }

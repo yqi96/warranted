@@ -52,6 +52,28 @@ const TYPE_SHAPES = {
   rebuttal: 'R',
 };
 
+// ── Node attribute resolvers (claim/warrant use type key; statement uses primary_role) ──
+function nodeColor(n) {
+  if (n.type === 'statement') return TYPE_COLORS[n.data?.primary_role || 'ground'] || TYPE_COLORS.ground;
+  return TYPE_COLORS[n.type] || '#8E8E93';
+}
+function nodeFill(n) {
+  if (n.type === 'statement') return NODE_FILLS[n.data?.primary_role || 'ground'] || NODE_FILLS.ground;
+  return NODE_FILLS[n.type] || 'rgba(255,255,255,0.04)';
+}
+function nodeStroke(n) {
+  if (n.type === 'statement') return NODE_STROKES[n.data?.primary_role || 'ground'] || NODE_STROKES.ground;
+  return NODE_STROKES[n.type] || 'rgba(255,255,255,0.18)';
+}
+function nodeSize(n) {
+  if (n.type === 'statement') return TYPE_SIZES[n.data?.primary_role || 'ground'] || TYPE_SIZES.ground;
+  return TYPE_SIZES[n.type] || 18;
+}
+function nodeShapeLabel(n) {
+  if (n.type === 'statement') return TYPE_SHAPES[n.data?.primary_role || 'ground'] || 'G';
+  return TYPE_SHAPES[n.type] || '?';
+}
+
 // ── Global state ──
 let svg, g, zoomBehavior, simulation;
 let graphData = { nodes: [], edges: [], stats: {} };

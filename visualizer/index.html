@@ -23,7 +23,7 @@
     <div id="phase1-stats">
       <div class="phase1-stat">
         <div class="phase1-stat-num" id="phase1-verified">0</div>
-        <div class="phase1-stat-label">VERIFIED<br>GROUNDS</div>
+        <div class="phase1-stat-label">VERIFIED<br>EVIDENCE</div>
       </div>
       <div class="phase1-stat-divider"></div>
       <div class="phase1-stat">
@@ -150,7 +150,7 @@
   </div>
 
   <!-- ── Full-bleed Canvas ── -->
-  <div id="cy-container">
+  <div id="graph-container">
     <div id="toolbar">
       <button onclick="refreshGraph()">⟳</button>
       <button onclick="fitGraph()">◎</button>
@@ -160,7 +160,7 @@
       <button id="mode-box" class="mode-btn active" onclick="setSelectionMode('box')" title="框选模式 (拖动画框选中节点)">⬚</button>
       <button id="mode-pan" class="mode-btn" onclick="setSelectionMode('pan')" title="拖动模式 (拖动平移画布)">✥</button>
     </div>
-    <div id="cy"></div>
+    <div id="graph"></div>
     <div id="empty-state" style="display:none">
       <p style="font-size:40px;margin-bottom:12px;opacity:0.3">◈</p>
       <p>暂无论证数据</p>

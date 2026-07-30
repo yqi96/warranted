@@ -38,11 +38,11 @@ function animateCount(el, target, duration) {
 // Update Phase 1 dashboard stats
 function updatePhase1Stats(nodes, stats) {
   const total = Object.values(stats).reduce((a, b) => a + b, 0);
-  const grounds  = nodes.filter(n => n.type === 'ground');
-  const claims   = nodes.filter(n => n.type === 'claim');
-  const verified = grounds.filter(n => n.data?.verification === 'verified').length;
-  const supported = claims.filter(n => n.data?.status === 'supported').length;
-  const pending   = grounds.filter(n => n.data?.verification !== 'verified').length;
+  const statements = nodes.filter(n => n.type === 'statement');
+  const claims     = nodes.filter(n => n.type === 'claim');
+  const verified   = statements.filter(n => n.data?.verification === 'verified').length;
+  const supported  = claims.filter(n => n.data?.status === 'supported').length;
+  const pending    = statements.filter(n => n.data?.verification !== 'verified').length;
 
   const totalEl     = document.getElementById('phase1-total-num');
   const verifiedEl  = document.getElementById('phase1-verified');
@@ -74,7 +74,7 @@ function buildAttentionItems(nodes) {
   if (!container) return;
   container.innerHTML = '';
 
-  const pendingGrounds  = nodes.filter(n => n.type === 'ground' && n.data?.verification !== 'verified');
+  const pendingGrounds  = nodes.filter(n => n.data?.roles?.includes('ground') && n.data?.verification !== 'verified');
   const unsupportedClaims = nodes.filter(n => n.type === 'claim' && n.data?.status !== 'supported');
 
   if (pendingGrounds.length) {

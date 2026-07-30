@@ -51,7 +51,8 @@ function buildForest(nodes, edges) {
   function buildLeaf(nodeId) {
     const n = nodeById.get(nodeId);
     if (!n) return null;
-    const h = { id: nodeId, type: n.type, content: n.content, data: n.data, created_at: n.created_at, updated_at: n.updated_at };
+    const displayType = n.type === 'statement' ? (n.data?.primary_role || 'ground') : n.type;
+    const h = { id: nodeId, type: displayType, content: n.content, data: n.data, created_at: n.created_at, updated_at: n.updated_at };
     const kids = (extrasOf.get(nodeId) || []).map(buildLeaf).filter(Boolean);
     if (kids.length) h.children = kids;
     return h;
@@ -109,8 +110,10 @@ function buildForest(nodes, edges) {
   function collectIds(h) { inTree.add(h.id); (h.children || []).forEach(collectIds); }
   forests.forEach(collectIds);
   nodes.forEach(n => {
-    if (!inTree.has(String(n.id)))
-      forests.push({ id: String(n.id), type: n.type, content: n.content, data: n.data, created_at: n.created_at, updated_at: n.updated_at });
+    if (!inTree.has(String(n.id))) {
+      const displayType = n.type === 'statement' ? (n.data?.primary_role || 'ground') : n.type;
+      forests.push({ id: String(n.id), type: displayType, content: n.content, data: n.data, created_at: n.created_at, updated_at: n.updated_at });
+    }
   });
 
   return { forests, crossLinks: [] };

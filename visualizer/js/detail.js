@@ -1,6 +1,6 @@
 // Builds inner HTML for the bottom sheet, given raw node data
 function buildNodeDetailHtml(data) {
-  const tagColor = TYPE_COLORS[data.type] || '#8E8E93';
+  const tagColor = nodeColor(data);
 
   let html = `<div id="bs-header">
     <h3>
@@ -56,11 +56,19 @@ function buildNodeDetailHtml(data) {
     }
   }
 
-  // ── Ground ──
-  if (data.type === 'ground') {
-    const veri = data.data?.verification || 'pending';
-    const src  = data.data?.source || '—';
+  // ── Statement ──
+  if (data.type === 'statement') {
+    const roles = data.data?.roles || [];
+    const veri  = data.data?.verification || 'pending';
+    const src   = data.data?.source || '—';
+    const rolesLabel = roles.length
+      ? roles.map(r => r.charAt(0).toUpperCase() + r.slice(1)).join(', ')
+      : '—';
     html += `<div class="bs-grid">
+      <div class="bs-field">
+        <div class="bs-field-label">Roles</div>
+        <div class="bs-field-value" style="color:var(--text-2)">${escapeHtml(rolesLabel)}</div>
+      </div>
       <div class="bs-field">
         <div class="bs-field-label">验证状态</div>
         <div class="bs-field-value"><span class="veri-badge veri-${veri}">${veri === 'verified' ? '✓ verified' : '⋯ pending'}</span></div>
@@ -69,14 +77,8 @@ function buildNodeDetailHtml(data) {
         <div class="bs-field-label">来源类型</div>
         <div class="bs-field-value">${escapeHtml(src)}</div>
       </div>
-      ${data.data?.ref_claim_id ? `<div class="bs-field">
-        <div class="bs-field-label">引用 Claim</div>
-        <div class="bs-field-value" style="color:var(--gold);font-weight:500">→ #${data.data.ref_claim_id}</div>
-      </div>` : ''}
     </div>`;
   }
-
-  // ── Warrant ──
   if (data.type === 'warrant') {
     html += `<div class="bs-grid">
       <div class="bs-field">
@@ -86,26 +88,6 @@ function buildNodeDetailHtml(data) {
       <div class="bs-field">
         <div class="bs-field-label">关联 Grounds</div>
         <div class="bs-field-value">${(data.data?.ground_ids || []).map(i => '#' + i).join(', ') || '—'}</div>
-      </div>
-    </div>`;
-  }
-
-  // ── Backing ──
-  if (data.type === 'backing') {
-    html += `<div class="bs-grid">
-      <div class="bs-field">
-        <div class="bs-field-label">所属 Warrant</div>
-        <div class="bs-field-value">#${data.data?.warrant_id || '—'}</div>
-      </div>
-    </div>`;
-  }
-
-  // ── Rebuttal ──
-  if (data.type === 'rebuttal') {
-    html += `<div class="bs-grid">
-      <div class="bs-field">
-        <div class="bs-field-label">目标节点</div>
-        <div class="bs-field-value">#${data.data?.target_id || '—'} <span style="color:var(--text-3)">(${data.data?.target_type || '—'})</span></div>
       </div>
     </div>`;
   }
@@ -170,7 +152,7 @@ function buildNodeDetailHtml(data) {
 function focusNode(id) {
   const node = nodeMap.get(id);
   if (!node) return;
-  const container = document.getElementById('cy');
+  const container = document.getElementById('graph');
   const rect = container.getBoundingClientRect();
   const scale = 1.3;
 

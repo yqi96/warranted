@@ -1,47 +1,75 @@
 async function loadGraph() {
-  const types = getSelectedTypes();
-  const params = types.length < 5 ? `?types=${types.join(',')}` : '';
   try {
-    const res = await fetch(`viz/graph${params}`);
+    const res = await fetch('viz/graph');
     if (!res.ok) return;
     graphData = await res.json();
+    _applyRoleFilter();
     renderGraph();
     updateCounts();
   } catch { /* server not ready or network error, skip */ }
 }
 
-function getSelectedTypes() {
-  const types = [];
-  document.querySelectorAll('#filter-panel input[data-type]').forEach(cb => {
-    if (cb.checked) types.push(cb.dataset.type);
+function _applyRoleFilter() {
+  const selected = new Set(getSelectedRoles());
+  const visibleNodes = graphData.nodes.filter(n => {
+    if (n.type === 'claim')    return selected.has('claim');
+    if (n.type === 'warrant')  return selected.has('warrant');
+    if (n.type === 'statement') return (n.data?.roles || []).some(r => selected.has(r));
+    return true;
   });
-  return types;
+  const visibleIds = new Set(visibleNodes.map(n => String(n.id)));
+  graphData.nodes = visibleNodes;
+  graphData.edges = graphData.edges.filter(e =>
+    visibleIds.has(String(e.source)) && visibleIds.has(String(e.target))
+  );
+}
+
+function getSelectedRoles() {
+  const roles = [];
+  document.querySelectorAll('#filter-panel input[data-type]').forEach(cb => {
+    if (cb.checked) roles.push(cb.dataset.type);
+  });
+  return roles;
 }
 
 function updateCounts() {
-  const nodes = graphData.nodes;
-  const grounds = nodes.filter(n => n.type === 'ground');
-  const claims  = nodes.filter(n => n.type === 'claim');
-  const verifiedGrounds = grounds.filter(n => n.data?.verification === 'verified').length;
-  const supportedClaims = claims.filter(n => n.data?.status === 'supported').length;
+  const s  = graphData.stats || {};
+  const rs = graphData.roleStats || {};
 
-  const s = graphData.stats;
-  for (const t of ['claim', 'ground', 'warrant', 'backing', 'rebuttal']) {
-    const el = document.getElementById(`count-${t}`);
-    if (el) el.textContent = s[t] || 0;
-  }
-  document.getElementById('stat-total').textContent = Object.values(s).reduce((a, b) => a + b, 0);
+  const elClaim    = document.getElementById('count-claim');
+  const elGround   = document.getElementById('count-ground');
+  const elWarrant  = document.getElementById('count-warrant');
+  const elBacking  = document.getElementById('count-backing');
+  const elRebuttal = document.getElementById('count-rebuttal');
+  if (elClaim)    elClaim.textContent    = s.claim   || 0;
+  if (elWarrant)  elWarrant.textContent  = s.warrant || 0;
+  if (elGround)   elGround.textContent   = rs.ground   || 0;
+  if (elBacking)  elBacking.textContent  = rs.backing  || 0;
+  if (elRebuttal) elRebuttal.textContent = rs.rebuttal || 0;
 
-  const gTotal = grounds.length, cTotal = claims.length;
-  const gPct = gTotal ? Math.round(verifiedGrounds / gTotal * 100) : 0;
-  const cPct = cTotal ? Math.round(supportedClaims / cTotal * 100) : 0;
+  const statTotalEl = document.getElementById('stat-total');
+  if (statTotalEl) statTotalEl.textContent = (s.claim || 0) + (s.statement || 0) + (s.warrant || 0);
 
-  document.getElementById('ground-progress-label').textContent = `${verifiedGrounds}/${gTotal} (${gPct}%)`;
-  document.getElementById('ground-progress-bar').style.width   = gPct + '%';
-  document.getElementById('claim-progress-label').textContent  = `${supportedClaims}/${cTotal} (${cPct}%)`;
-  document.getElementById('claim-progress-bar').style.width    = cPct + '%';
+  const stmtTotal  = s.statement || 0;
+  const stmtNodes  = graphData.nodes.filter(n => n.type === 'statement');
+  const verified   = stmtNodes.filter(n => n.data?.verification === 'verified').length;
+  const gPct = stmtTotal ? Math.round(verified / stmtTotal * 100) : 0;
 
-  if (typeof updatePhase1Stats === 'function') updatePhase1Stats(graphData.nodes, graphData.stats);
+  const claimNodes     = graphData.nodes.filter(n => n.type === 'claim');
+  const supportedCount = claimNodes.filter(n => n.data?.status === 'supported').length;
+  const cTotal = s.claim || 0;
+  const cPct = cTotal ? Math.round(supportedCount / cTotal * 100) : 0;
+
+  const gLabel = document.getElementById('ground-progress-label');
+  const gBar   = document.getElementById('ground-progress-bar');
+  const cLabel = document.getElementById('claim-progress-label');
+  const cBar   = document.getElementById('claim-progress-bar');
+  if (gLabel) gLabel.textContent = `${verified}/${stmtTotal} (${gPct}%)`;
+  if (gBar)   gBar.style.width   = gPct + '%';
+  if (cLabel) cLabel.textContent = `${supportedCount}/${cTotal} (${cPct}%)`;
+  if (cBar)   cBar.style.width   = cPct + '%';
+
+  if (typeof updatePhase1Stats === 'function') updatePhase1Stats(graphData.nodes, s);
 }
 
 let _searchAbort = null;

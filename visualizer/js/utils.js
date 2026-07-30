@@ -25,7 +25,7 @@ function inferTreeEdgeType(sType, tType) {
 function refreshGraph() { loadGraph(); }
 
 function fitGraph() {
-  const container = document.getElementById('cy');
+  const container = document.getElementById('graph');
   const rect = container.getBoundingClientRect();
 
   const nodeData = [];
@@ -63,7 +63,7 @@ function fitGraph() {
 }
 
 function centerGraph() {
-  const container = document.getElementById('cy');
+  const container = document.getElementById('graph');
   const rect = container.getBoundingClientRect();
   svg.transition().duration(300).call(
     zoomBehavior.transform,

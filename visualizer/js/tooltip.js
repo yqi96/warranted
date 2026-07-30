@@ -8,7 +8,7 @@ function showTooltip(event, nodeData) {
   clearTimeout(ttTimeout);
   const data = (currentLayout === 'tree') ? nodeData.data : nodeData;
   ttType.textContent = data.type.toUpperCase() + '  #' + data.id;
-  ttType.style.color = TYPE_COLORS[data.type] || '#8E8E93';
+  ttType.style.color = nodeColor(data);
   ttContent.textContent = data.content || '';
   ttMeta.innerHTML = '';
 
@@ -26,7 +26,15 @@ function showTooltip(event, nodeData) {
     }
   }
 
-  if (data.type === 'ground') {
+  if (data.type === 'statement') {
+    const roles = data.data?.roles || [];
+    if (roles.length) {
+      const roleChip = document.createElement('span');
+      roleChip.className = 'tt-chip';
+      roleChip.style.cssText = 'background:rgba(255,255,255,0.05);color:rgba(240,233,215,0.55);border:1px solid rgba(255,255,255,0.10);border-radius:6px;';
+      roleChip.textContent = roles.map(r => r.charAt(0).toUpperCase() + r.slice(1)).join(' · ');
+      ttMeta.appendChild(roleChip);
+    }
     const veri = data.data?.verification;
     const src  = data.data?.source;
     if (veri) {
@@ -40,13 +48,6 @@ function showTooltip(event, nodeData) {
       chip.className = 'tt-chip';
       chip.style.cssText = 'background:rgba(240,233,215,0.06);color:rgba(240,233,215,0.62);border:1px solid rgba(240,233,215,0.10);border-radius:6px;';
       chip.textContent = src;
-      ttMeta.appendChild(chip);
-    }
-    if (data.data?.ref_claim_id) {
-      const chip = document.createElement('span');
-      chip.className = 'tt-chip';
-      chip.style.cssText = 'background:rgba(200,165,80,0.12);color:#C8A448;border:1px solid rgba(200,165,80,0.22);border-radius:6px;';
-      chip.textContent = '→ Claim #' + data.data.ref_claim_id;
       ttMeta.appendChild(chip);
     }
   }

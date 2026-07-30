@@ -1,7 +1,7 @@
 /**
  * Toulmin 可视化引擎 — HTTP 服务器
  *
- * 提供 JSON API 读取 argument.db，供前端 Cytoscape.js 渲染。
+ * 提供 JSON API 读取 argument.db，供前端 D3.js v7 渲染。
  *
  * Usage:
  *   bun visualizer/server.ts [--db-path ./toulmin.db]
@@ -35,6 +35,43 @@ function parseArgs(): { dbPath: string } {
 }
 
 // =============================================================================
+// 角色语义
+// =============================================================================
+
+type Role = "ground" | "backing" | "rebuttal";
+
+const ROLE_PRECEDENCE: Role[] = ["rebuttal", "backing", "ground"];
+
+function pickPrimaryRole(roles: Set<Role>): Role {
+  for (const role of ROLE_PRECEDENCE) {
+    if (roles.has(role)) return role;
+  }
+  return "ground";
+}
+
+function computeRoleStats(db: Database): { ground: number; backing: number; rebuttal: number } {
+  const statementIds = new Set(
+    (db.prepare("SELECT id FROM nodes WHERE type = 'statement'").all() as Array<{ id: number }>).map(r => r.id)
+  );
+
+  const groundSet   = new Set<number>();
+  const backingSet  = new Set<number>();
+  const rebuttalSet = new Set<number>();
+
+  for (const { ground_id } of db.prepare("SELECT ground_id FROM warrant_grounds").all() as Array<{ ground_id: number }>) {
+    if (statementIds.has(ground_id)) groundSet.add(ground_id);
+  }
+  for (const { statement_id } of db.prepare("SELECT statement_id FROM warrant_backings").all() as Array<{ statement_id: number }>) {
+    backingSet.add(statement_id);
+  }
+  for (const { statement_id } of db.prepare("SELECT DISTINCT statement_id FROM rebuttal_targets").all() as Array<{ statement_id: number }>) {
+    rebuttalSet.add(statement_id);
+  }
+
+  return { ground: groundSet.size, backing: backingSet.size, rebuttal: rebuttalSet.size };
+}
+
+// =============================================================================
 // 图数据构建
 // =============================================================================
 
@@ -54,37 +91,68 @@ interface GraphEdge {
   type: string;
 }
 
-function buildGraph(db: Database, typeFilter?: string[]): { nodes: GraphNode[]; edges: GraphEdge[]; stats: Record<string, number> } {
-  // 获取所有节点
+interface CompileStateRow {
+  claim_id: number;
+  verdict: string;
+  summary: string;
+  created_at: string;
+}
+
+function buildGraph(db: Database): {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  stats: Record<string, number>;
+  roleStats: { ground: number; backing: number; rebuttal: number };
+} {
   const allRows = db.prepare("SELECT * FROM nodes ORDER BY id").all() as NodeRow[];
   const stats = repo.countNodesByType(db);
 
-  // 过滤
-  let filteredRows = allRows;
-  if (typeFilter && typeFilter.length > 0) {
-    filteredRows = allRows.filter(r => typeFilter.includes(r.type));
+  // Build role sets for statement nodes
+  const statementIds = new Set(allRows.filter(r => r.type === "statement").map(r => r.id));
+  const roleMap = new Map<number, Set<Role>>();
+
+  for (const { ground_id } of db.prepare("SELECT ground_id FROM warrant_grounds").all() as Array<{ ground_id: number }>) {
+    if (statementIds.has(ground_id)) {
+      if (!roleMap.has(ground_id)) roleMap.set(ground_id, new Set());
+      roleMap.get(ground_id)!.add("ground");
+    }
+  }
+  for (const { statement_id } of db.prepare("SELECT statement_id FROM warrant_backings").all() as Array<{ statement_id: number }>) {
+    if (!roleMap.has(statement_id)) roleMap.set(statement_id, new Set());
+    roleMap.get(statement_id)!.add("backing");
+  }
+  for (const { statement_id } of db.prepare("SELECT DISTINCT statement_id FROM rebuttal_targets").all() as Array<{ statement_id: number }>) {
+    if (!roleMap.has(statement_id)) roleMap.set(statement_id, new Set());
+    roleMap.get(statement_id)!.add("rebuttal");
   }
 
-  const filteredIds = new Set(filteredRows.map(r => r.id));
-
-  // 批量获取编译状态
-  interface CompileStateRow {
-    claim_id: number;
-    verdict: string;
-    summary: string;
-    created_at: string;
+  // Role stats: each role counted independently (multi-role statement counts in each)
+  const roleStats = { ground: 0, backing: 0, rebuttal: 0 };
+  for (const [, roles] of roleMap) {
+    if (roles.has("ground"))   roleStats.ground++;
+    if (roles.has("backing"))  roleStats.backing++;
+    if (roles.has("rebuttal")) roleStats.rebuttal++;
   }
+
+  // Compile state
   const compileStateRows = db.prepare("SELECT claim_id, verdict, summary, created_at FROM compile_state").all() as CompileStateRow[];
   const compileStateMap = new Map(compileStateRows.map(s => [s.claim_id, s]));
 
-  // 构建节点
-  const nodes: GraphNode[] = filteredRows.map(r => {
+  const allIds = new Set(allRows.map(r => r.id));
+
+  // Build nodes
+  const nodes: GraphNode[] = allRows.map(r => {
     const data = repo.parseNodeData(r) as Record<string, unknown>;
     if (r.type === "claim") {
       const cs = compileStateMap.get(r.id);
-      data.compile_verdict = cs?.verdict ?? null;
-      data.compile_summary = cs?.summary ?? null;
+      data.compile_verdict   = cs?.verdict   ?? null;
+      data.compile_summary   = cs?.summary   ?? null;
       data.compile_created_at = cs?.created_at ?? null;
+    }
+    if (r.type === "statement") {
+      const roles = roleMap.get(r.id);
+      data.roles        = roles ? [...roles] : [];
+      data.primary_role = roles ? pickPrimaryRole(roles) : "ground";
     }
     return {
       id: r.id,
@@ -96,40 +164,36 @@ function buildGraph(db: Database, typeFilter?: string[]): { nodes: GraphNode[]; 
     };
   });
 
-  // 构建边
+  // Build edges
   const edges: GraphEdge[] = [];
 
-  for (const row of filteredRows) {
+  for (const row of allRows) {
     const data = repo.parseNodeData(row);
 
     switch (row.type) {
       case "warrant": {
-        // Claim → Warrant (supports): 推理规则支撑主张
         const claimId = data.claim_id as number;
-        if (claimId && filteredIds.has(claimId)) {
+        if (claimId && allIds.has(claimId)) {
           edges.push({ id: `e_${claimId}_${row.id}_supports`, source: claimId, target: row.id, type: "supports" });
         }
-        // Ground/Claim → Warrant (based_on): 证据支撑推理规则 (via warrant_grounds)
-        const groundLinks = db.prepare("SELECT ground_id FROM warrant_grounds WHERE warrant_id = ?").all(row.id) as Array<{ground_id: number}>;
+        const groundLinks = db.prepare("SELECT ground_id FROM warrant_grounds WHERE warrant_id = ?").all(row.id) as Array<{ ground_id: number }>;
         for (const { ground_id: gid } of groundLinks) {
-          if (filteredIds.has(gid)) {
+          if (allIds.has(gid)) {
             edges.push({ id: `e_${gid}_${row.id}_based_on`, source: gid, target: row.id, type: "based_on" });
           }
         }
         break;
       }
       case "statement": {
-        // Warrant → Statement (reinforces): backing role via warrant_backings
-        const backingLinks = db.prepare("SELECT warrant_id FROM warrant_backings WHERE statement_id = ?").all(row.id) as Array<{warrant_id: number}>;
+        const backingLinks = db.prepare("SELECT warrant_id FROM warrant_backings WHERE statement_id = ?").all(row.id) as Array<{ warrant_id: number }>;
         for (const { warrant_id: wid } of backingLinks) {
-          if (filteredIds.has(wid)) {
+          if (allIds.has(wid)) {
             edges.push({ id: `e_${wid}_${row.id}_reinforces`, source: wid, target: row.id, type: "reinforces" });
           }
         }
-        // Target → Statement (challenges): rebuttal role via rebuttal_targets
-        const rebuttalLinks = db.prepare("SELECT target_id FROM rebuttal_targets WHERE statement_id = ?").all(row.id) as Array<{target_id: number}>;
+        const rebuttalLinks = db.prepare("SELECT target_id FROM rebuttal_targets WHERE statement_id = ?").all(row.id) as Array<{ target_id: number }>;
         for (const { target_id: tid } of rebuttalLinks) {
-          if (filteredIds.has(tid)) {
+          if (allIds.has(tid)) {
             edges.push({ id: `e_${tid}_${row.id}_challenges`, source: tid, target: row.id, type: "challenges" });
           }
         }
@@ -138,7 +202,7 @@ function buildGraph(db: Database, typeFilter?: string[]): { nodes: GraphNode[]; 
     }
   }
 
-  return { nodes, edges, stats };
+  return { nodes, edges, stats, roleStats };
 }
 
 // =============================================================================
@@ -158,7 +222,7 @@ let currentDbPath = initialDbPath;
 console.error(`[Toulmin Viz] Database opened: ${initialDbPath}`);
 
 // ── In-memory selection state (written by browser, read by hook) ──
-interface SelectionNode { id: number; type: string; content: string; }
+interface SelectionNode { id: number; type: string; content: string; roles?: string[]; }
 let currentSelection: { ids: number[]; nodes: SelectionNode[] } = { ids: [], nodes: [] };
 
 // 获取 index.html 路径
@@ -195,7 +259,6 @@ let currentWatcher: ReturnType<typeof fsWatch> | null = null;
 function startWatcher(watchDir: string) {
   try {
     currentWatcher = fsWatch(watchDir, (_event, filename) => {
-      // macOS fs.watch sometimes gives null filename — still treat as a change
       if (filename && !filename.endsWith(".db") && !filename.endsWith(".db-wal") && !filename.endsWith(".db-shm")) return;
       if (watchDebounce) clearTimeout(watchDebounce);
       watchDebounce = setTimeout(() => broadcastSSE("data_updated"), 300);
@@ -273,11 +336,9 @@ const server = Bun.serve({
         });
       }
 
-      // API: 获取完整图数据
+      // API: 获取完整图数据（含角色注释）
       if (path === "/viz/graph") {
-        const typesParam = url.searchParams.get("types");
-        const typeFilter = typesParam ? typesParam.split(",").filter(Boolean) : undefined;
-        const graph = buildGraph(db, typeFilter);
+        const graph = buildGraph(db);
         return Response.json(graph, { headers: corsHeaders });
       }
 
@@ -306,10 +367,11 @@ const server = Bun.serve({
         return Response.json(nodes.map(n => ({ ...n, data: repo.parseNodeData(n) })), { headers: corsHeaders });
       }
 
-      // API: 统计
+      // API: 统计（含角色统计）
       if (path === "/viz/stats") {
         const stats = repo.countNodesByType(db);
-        return Response.json(stats, { headers: corsHeaders });
+        const roleStats = computeRoleStats(db);
+        return Response.json({ ...stats, roleStats }, { headers: corsHeaders });
       }
 
       // API: 搜索
@@ -357,7 +419,6 @@ const server = Bun.serve({
         if (!dir) {
           return Response.json({ error: "Missing 'dir' field" }, { status: 400, headers: corsHeaders });
         }
-        // 兼容直接传 argument.db 路径
         const newDbPath = dir.endsWith("argument.db") ? dir : join(dir, "argument.db");
         if (!existsSync(newDbPath)) {
           return Response.json({ error: `File not found: ${newDbPath}` }, { status: 404, headers: corsHeaders });

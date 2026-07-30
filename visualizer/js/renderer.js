@@ -110,7 +110,7 @@ function renderTreeLayout() {
   nodeEnter.each(function(d) {
     const el = d3.select(this);
     drawNodeShape(el, d);
-    const s = TYPE_SIZES[d.data.type] || 18;
+    const s = nodeSize(d.data);
     const labelY = d.data.type === 'claim' ? s * 0.68 + 14 : s * 1.05 + 13;
     el.append('text').attr('class', 'node-label')
       .attr('text-anchor', 'middle').attr('dy', labelY)
@@ -194,7 +194,7 @@ function renderForceLayout() {
   nodeEnter.each(function(d) {
     const el = d3.select(this);
     drawNodeShape(el, d);
-    const s = TYPE_SIZES[d.type] || 18;
+    const s = nodeSize(d);
     el.append('text').attr('class', 'node-label').attr('text-anchor', 'middle')
       .attr('dy', s + 15).text(truncate(d.content, 30));
   });

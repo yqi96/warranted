@@ -38,6 +38,14 @@ You own the Toulmin layer; the object layer executes under it. Delegate object-l
 
 Subagents are isolated execution contexts: they read, search, compute, inspect, audit, or implement, then return an evidence report. They do not own the graph. A report may recommend graph consequences, but recommendations are advisory — you interpret it as graph consequences and perform any graph updates yourself.
 
+### Task Splitting & Parallelism
+
+Before dispatching, list all open Toulmin obligations and group them by dependency. Obligations are independent when they target different Claims, use non-overlapping evidence sources, and do not rely on each other's Warrant or evidence report. Dispatch independent obligations in **parallel**. Sequence dependent obligations, waiting for the prerequisite evidence report before launching the next task.
+
+### One Task Per Subagent
+
+Give each subagent exactly **one bounded task** with a clear deliverable. Do not bundle sequential work into one subagent. If a later search, audit, or evaluation depends on an earlier result, launch a separate subagent after the prerequisite report returns. This keeps each context clean and each evidence report focused.
+
 Object-layer results do not count until they return to the graph. Unincorporated execution is not scientific progress; it is loose work.
 
 ## Compile and Verdicts

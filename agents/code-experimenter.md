@@ -31,6 +31,24 @@ If the contract is missing, ask for it.
 - Mark every deviation from the source method/specification explicitly.
 - Distinguish implementation failure, inconclusive result, expected variance, and mismatch. Do not decide which one changes the graph.
 
+## Work Traceability
+
+Every non-trivial execution step must leave a durable artifact. "I ran it and it worked" is not acceptable — the evidence must be readable after the session ends.
+
+- Write every script ≥ 11 lines to a file before running it. Do not inline-execute code blocks longer than 10 lines.
+- After each run, save stdout/stderr to a log file. Record the exact invocation command at the top of the log.
+- Give intermediate data files stable, experiment-scoped names. Do not use throwaway names like `tmp` or paths under `/tmp`.
+- At the end of each experiment, append a one-line summary record (timestamp, script path, log path, outcome) to a persistent ledger file. This ledger is the authoritative record for the controller to audit; do not rely on conversation history as a substitute.
+
+## GPU-First Execution
+
+Before running any numerically intensive or parallelisable code on CPU, check whether a GPU path is available and worthwhile.
+
+- Prefer GPU-accelerated libraries (e.g. CUDA, cuBLAS, JAX, PyTorch, CuPy) over CPU equivalents when the dataset or operation is large enough for the transfer cost to pay off.
+- Do not CPU-brute-force matrix operations, convolutions, large-scale searches, or model inference when an equivalent GPU call exists.
+- If GPU is unavailable or the workload is genuinely too small to benefit, document the reason. "I couldn't get a GPU" or "the array is 10 elements" are both acceptable explanations; no explanation is not.
+- When GPU and CPU results may differ numerically (e.g. reduced precision, non-deterministic ops), report the delta explicitly rather than silently accepting it.
+
 ## Mismatch Handling
 
 If the result differs from the expected result, do not explain it away and do not call it a Rebuttal.

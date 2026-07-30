@@ -7,6 +7,7 @@ import type { Database } from "bun:sqlite";
 import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim } from "./helpers.ts";
 import * as service from "../src/service.ts";
 import * as repo from "../src/repo.ts";
+import { structuralPreCheck } from "../src/compile-service.ts";
 import {
   NotFoundError,
   ValidationError,
@@ -132,11 +133,11 @@ describe("createWarrant", () => {
     expect(warrant.groundIds).toEqual([ground.id]);
   });
 
-  test("groundIds 为空抛出 ValidationError (B1)", () => {
+  test("groundIds 为空时创建成功（grounds 可为空）", () => {
     const claim = makeClaim(db);
-    expect(() =>
-      service.createWarrant(db, { content: "规则", claimId: claim.id })
-    ).toThrow(ValidationError);
+    const warrant = service.createWarrant(db, { content: "规则", claimId: claim.id });
+    expect(warrant.type).toBe("warrant");
+    expect(warrant.groundIds).toEqual([]);
   });
 
   test("claimId 引用不存在的节点", () => {
@@ -293,6 +294,192 @@ describe("updateNode", () => {
     expect(() =>
       service.updateNode(db, warrant.id, { ground_ids: { add: [warrant2.id] } })
     ).toThrow(TypeMismatchError);
+  });
+});
+
+// =============================================================================
+// updateNode ground_ids 双存储一致性 (Bugs 1/2/3, Option C)
+// =============================================================================
+
+describe("updateNode ground_ids dual-storage (Bugs 1/2/3)", () => {
+  // blob 缓存读取（get_node/toWarrantNode 路径）
+  const blobIds = (wid: number): number[] =>
+    JSON.parse(repo.getNodeById(db, wid)!.data).ground_ids || [];
+  // 关系表读取（get_argument/findGroundsByWarrant 路径）
+  const relIds = (wid: number): number[] =>
+    repo.findGroundsByWarrant(db, wid).map(r => r.id);
+
+  test("T1 mixed add+remove: [G9] + {add:[G27],remove:[G9]} → both = [G27]", () => {
+    const claim = makeClaim(db);
+    const g9 = makeGround(db, { content: "G9" });
+    const g27 = makeGround(db, { content: "G27" });
+    const warrant = makeWarrant(db, claim.id, [g9.id]);
+
+    const { node } = service.updateNode(db, warrant.id, {
+      ground_ids: { add: [g27.id], remove: [g9.id] },
+    });
+
+    expect((node as any).groundIds).toEqual([g27.id]);
+    expect(blobIds(warrant.id)).toEqual([g27.id]);
+    expect(relIds(warrant.id)).toEqual([g27.id]);
+  });
+
+  test("T2 add+remove same id resolves to defined net-effect state, no divergence", () => {
+    const claim = makeClaim(db);
+    const g9 = makeGround(db, { content: "G9" });
+    const g27 = makeGround(db, { content: "G27" });
+    const warrant = makeWarrant(db, claim.id, [g9.id]);
+
+    // add G27 then remove G27 in the same call → net effect leaves [G9]
+    service.updateNode(db, warrant.id, {
+      ground_ids: { add: [g27.id], remove: [g27.id] },
+    });
+
+    expect(blobIds(warrant.id)).toEqual(relIds(warrant.id));
+    expect([...blobIds(warrant.id)].sort()).toEqual([g9.id]);
+  });
+
+  test("T3 Bug 2 regression: all three read paths agree after {add,remove}", () => {
+    const claim = makeClaim(db);
+    const g7 = makeGround(db, { content: "G7" });
+    const g9 = makeGround(db, { content: "G9" });
+    const g27 = makeGround(db, { content: "G27" });
+    const warrant = makeWarrant(db, claim.id, [g7.id, g9.id]);
+
+    const { node } = service.updateNode(db, warrant.id, {
+      ground_ids: { add: [g27.id], remove: [g7.id] },
+    });
+
+    const returnIds = [...(node as any).groundIds].sort((a, b) => a - b);
+    const argIds = (service.getArgument(db, warrant.id) as any).grounds
+      .map((g: any) => g.id)
+      .sort((a: number, b: number) => a - b);
+    const repoIds = relIds(warrant.id).sort((a, b) => a - b);
+
+    expect(returnIds).toEqual(argIds);
+    expect(argIds).toEqual(repoIds);
+    expect(returnIds).toEqual([g9.id, g27.id].sort((a, b) => a - b));
+  });
+
+  test("T4 add+remove 同批操作使用最终集合（不对中间状态校验）", () => {
+    const claim = makeClaim(db);
+    const g9 = makeGround(db, { content: "G9" });
+    const g27 = makeGround(db, { content: "G27" });
+    const warrant = makeWarrant(db, claim.id, [g9.id]);
+
+    // Bug 3: remove-before-add ordering must NOT trip any guard on intermediate empty set
+    expect(() =>
+      service.updateNode(db, warrant.id, {
+        ground_ids: { add: [g27.id], remove: [g9.id] },
+      })
+    ).not.toThrow();
+    expect(blobIds(warrant.id)).toEqual([g27.id]);
+
+    // removing the last remaining ground is now allowed
+    expect(() =>
+      service.updateNode(db, warrant.id, { ground_ids: { remove: [g27.id] } })
+    ).not.toThrow();
+    expect(blobIds(warrant.id)).toEqual([]);
+  });
+
+  test("T5 atomicity: failed backing add rolls back ground writes (blob & relation)", () => {
+    const claim = makeClaim(db);
+    const g9 = makeGround(db, { content: "G9" });
+    const g27 = makeGround(db, { content: "G27" });
+    const warrant = makeWarrant(db, claim.id, [g9.id]);
+
+    expect(() =>
+      service.updateNode(db, warrant.id, {
+        ground_ids: { add: [g27.id] },
+        backing_ids: { add: [99999] },
+      })
+    ).toThrow(NotFoundError);
+
+    // transaction rollback → both stores unchanged at [G9]
+    expect(blobIds(warrant.id)).toEqual([g9.id]);
+    expect(relIds(warrant.id)).toEqual([g9.id]);
+  });
+
+  test("T6 idempotence: add [G27] then remove [G27] returns to [G9]", () => {
+    const claim = makeClaim(db);
+    const g9 = makeGround(db, { content: "G9" });
+    const g27 = makeGround(db, { content: "G27" });
+    const warrant = makeWarrant(db, claim.id, [g9.id]);
+
+    service.updateNode(db, warrant.id, { ground_ids: { add: [g27.id] } });
+    service.updateNode(db, warrant.id, { ground_ids: { remove: [g27.id] } });
+
+    expect(blobIds(warrant.id)).toEqual([g9.id]);
+    expect(relIds(warrant.id)).toEqual([g9.id]);
+  });
+
+  test("T7 add-only unaffected: {add:[G27]} on [G9] → both = [G9,G27]", () => {
+    const claim = makeClaim(db);
+    const g9 = makeGround(db, { content: "G9" });
+    const g27 = makeGround(db, { content: "G27" });
+    const warrant = makeWarrant(db, claim.id, [g9.id]);
+
+    service.updateNode(db, warrant.id, { ground_ids: { add: [g27.id] } });
+
+    expect([...blobIds(warrant.id)].sort((a, b) => a - b)).toEqual([g9.id, g27.id]);
+    expect([...relIds(warrant.id)].sort((a, b) => a - b)).toEqual([g9.id, g27.id]);
+  });
+
+  test("T8 remove-only unaffected: {remove:[G27]} on [G9,G27] → both = [G9]", () => {
+    const claim = makeClaim(db);
+    const g9 = makeGround(db, { content: "G9" });
+    const g27 = makeGround(db, { content: "G27" });
+    const warrant = makeWarrant(db, claim.id, [g9.id, g27.id]);
+
+    service.updateNode(db, warrant.id, { ground_ids: { remove: [g27.id] } });
+
+    expect(blobIds(warrant.id)).toEqual([g9.id]);
+    expect(relIds(warrant.id)).toEqual([g9.id]);
+  });
+
+  test("T9 self-heal: diverged blob heals to match relation after updateNode", () => {
+    const claim = makeClaim(db);
+    const g9 = makeGround(db, { content: "G9" });
+    const warrant = makeWarrant(db, claim.id, [g9.id]);
+
+    // synthetically diverge: blob [] via raw SQL, relation keeps [G9]
+    const wData = JSON.parse(repo.getNodeById(db, warrant.id)!.data);
+    wData.ground_ids = [];
+    db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(
+      JSON.stringify(wData),
+      warrant.id
+    );
+    expect(blobIds(warrant.id)).toEqual([]);
+    expect(relIds(warrant.id)).toEqual([g9.id]);
+
+    // any ground_ids write re-derives the blob from the relation table
+    service.updateNode(db, warrant.id, { ground_ids: { add: [g9.id] } });
+
+    expect(blobIds(warrant.id)).toEqual(relIds(warrant.id));
+    expect(blobIds(warrant.id)).toEqual([g9.id]);
+  });
+
+  test("T10 structuralPreCheck self-heal after divergence", () => {
+    const claim = makeClaim(db);
+    const g9 = makeGround(db, { content: "G9", verification: "verified", attachments: ["/e.csv"] });
+    const warrant = makeWarrant(db, claim.id, [g9.id]);
+
+    // diverge: blob [] via raw SQL, relation [G9]
+    const wData = JSON.parse(repo.getNodeById(db, warrant.id)!.data);
+    wData.ground_ids = [];
+    db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(
+      JSON.stringify(wData),
+      warrant.id
+    );
+
+    const before = structuralPreCheck(db, claim.id);
+    expect(before.some(e => e.includes("no Grounds"))).toBe(true);
+
+    // heal via a ground_ids write
+    service.updateNode(db, warrant.id, { ground_ids: { add: [g9.id] } });
+
+    const after = structuralPreCheck(db, claim.id);
+    expect(after.some(e => e.includes("no Grounds"))).toBe(false);
   });
 });
 
@@ -793,17 +980,16 @@ describe("审查规则: Claim 状态转换", () => {
   });
 });
 
-describe("审查规则: Warrant 完整性", () => {
-  test("B3: 不能清空 Warrant 的所有 Grounds", () => {
+describe("审查规则: Warrant ground_ids 操作", () => {
+  test("移除所有 Ground 后 warrant 的 groundIds 为空数组", () => {
     const claim = makeClaim(db);
     const g1 = makeGround(db, { content: "G1" });
     const warrant = makeWarrant(db, claim.id, [g1.id]);
-    expect(() =>
-      service.updateNode(db, warrant.id, { ground_ids: { remove: [g1.id] } })
-    ).toThrow(ValidationError);
+    const { node } = service.updateNode(db, warrant.id, { ground_ids: { remove: [g1.id] } });
+    expect((node as any).groundIds).toEqual([]);
   });
 
-  test("B3: 移除部分 Ground 保留其他 Ground 可以成功", () => {
+  test("移除部分 Ground 保留其他 Ground 可以成功", () => {
     const claim = makeClaim(db);
     const g1 = makeGround(db, { content: "G1" });
     const g2 = makeGround(db, { content: "G2" });

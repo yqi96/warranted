@@ -287,11 +287,6 @@ export function createWarrant(
     }
   }
 
-  // B1: Warrant 必须有至少一个 Ground
-  if (gIds.length === 0) {
-    throw new ValidationError("A Warrant must link at least one Ground. Provide ground_ids.");
-  }
-
   // E1: 循环推理检测（仅对 claim-type grounds）
   for (const gid of gIds) {
     const gRow = repo.getNodeById(db, gid);
@@ -634,6 +629,7 @@ export function updateNode(
   nodeId: number,
   params: UpdateNodeParams
 ): { node: ToulminNode; warnings: string[] } {
+  return db.transaction((): { node: ToulminNode; warnings: string[] } => {
   const row = assertNodeExists(repo.getNodeById(db, nodeId), nodeId);
   const data = JSON.parse(row.data);
   const warnings: string[] = [];
@@ -762,37 +758,27 @@ export function updateNode(
     if (row.type !== "warrant") {
       throw new ValidationError("Only Warrant nodes have ground_ids");
     }
-    const currentIds: number[] = data.ground_ids || [];
 
     if (params.ground_ids.add) {
-      // 校验要添加的 ground 存在且是 statement 或 claim 类型
+      // 校验要添加的 ground 存在且是 statement 或 claim 类型（在任何写入前）
       for (const gid of params.ground_ids.add) {
         const gRow = repo.getNodeById(db, gid);
         if (!gRow) throw new NotFoundError(gid);
         if (gRow.type !== "statement" && gRow.type !== "claim") throw new TypeMismatchError(gid, "statement", gRow.type);
       }
-      data.ground_ids = [...new Set([...currentIds, ...params.ground_ids.add])];
-      // Sync warrant_grounds
       for (const gid of params.ground_ids.add) {
-        db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(nodeId, gid);
+        repo.insertWarrantGround(db, nodeId, gid);
       }
     }
 
     if (params.ground_ids.remove) {
-      const removeIds = params.ground_ids.remove;
-      const remaining = currentIds.filter((id: number) => !removeIds.includes(id));
-      // B3: 不能清空 Warrant 的所有 Grounds
-      if (remaining.length === 0) {
-        throw new ValidationError(
-          `Cannot remove all Grounds from Warrant #${nodeId}. A Warrant must have at least one Ground.`
-        );
-      }
-      data.ground_ids = remaining;
-      // Sync warrant_grounds
-      for (const gid of removeIds) {
+      for (const gid of params.ground_ids.remove) {
         db.prepare("DELETE FROM warrant_grounds WHERE warrant_id = ? AND ground_id = ?").run(nodeId, gid);
       }
     }
+
+    // Option C: warrant_grounds 关系表是唯一真源，从其重新派生 blob 缓存
+    data.ground_ids = repo.findGroundsByWarrant(db, nodeId).map(r => r.id);
   }
 
   // 更新 backing_ids（Warrant only）
@@ -845,6 +831,7 @@ export function updateNode(
   const content = params.content !== undefined ? params.content : row.content;
   const updated = repo.updateNodeFields(db, nodeId, { content, data });
   return { node: toNode(assertNodeExists(updated, nodeId)), warnings };
+  })();
 }
 
 // =============================================================================

@@ -689,3 +689,547 @@ describe("create_statement — literature 跳过定义审查", () => {
     cleanupDb(db2);
   });
 });
+
+// =============================================================================
+// create_claim — qualifier 和 hints
+// =============================================================================
+
+describe("create_claim — qualifier 和 hints", () => {
+  test("成功创建时输出 claimNoWarrants hint", async () => {
+    const result = await tools.create_claim.handler({ content: "新主张" });
+    expect(result.content[0].text).toContain("This claim has no warrants yet");
+  });
+
+  test("无 reviewConfig 时输出 reviewSkipped hint", async () => {
+    const result = await tools.create_claim.handler({ content: "新主张" });
+    expect(result.content[0].text).toContain("Automatic review is not configured");
+  });
+
+  test("带 qualifier 创建时 qualifier 存入数据库", async () => {
+    const result = await tools.create_claim.handler({ content: "量化主张", qualifier: "probably" });
+    expect(result.isError).toBeFalsy();
+    const id = parseInt(result.content[0].text.match(/#(\d+)/)?.[1] ?? "0");
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(id) as { data: string };
+    expect(JSON.parse(row.data).qualifier).toBe("probably");
+  });
+});
+
+// =============================================================================
+// create_statement — verified 无附件 + source pending hints + rebuttal_for
+// =============================================================================
+
+describe("create_statement — verified 无附件返回错误", () => {
+  test("verified 但无 attachments 返回 isError", async () => {
+    const result = await tools.create_statement.handler({
+      content: "无附件数据",
+      source: "observed",
+      verification: "verified",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("attachments");
+  });
+});
+
+describe("create_statement — source pending hints", () => {
+  test("literature pending 显示 literature hint", async () => {
+    const result = await tools.create_statement.handler({
+      content: "文献引用内容",
+      source: "literature",
+      verification: "pending",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("cites published work");
+  });
+
+  test("observed pending 显示 observed hint", async () => {
+    const result = await tools.create_statement.handler({
+      content: "实验观测内容",
+      source: "observed",
+      verification: "pending",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("original observation or experiment");
+  });
+
+  test("hypothesis pending 显示 hypothesis hint", async () => {
+    const result = await tools.create_statement.handler({
+      content: "待验证假设",
+      source: "hypothesis",
+      verification: "pending",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("hypothesis to verify");
+  });
+});
+
+describe("create_statement — rebuttal_for", () => {
+  test("rebuttal_for claim 创建 rebuttal 关联", async () => {
+    const claim = makeClaim(db, "目标主张");
+    const result = await tools.create_statement.handler({
+      content: "反驳条件",
+      source: "observed",
+      verification: "pending",
+      rebuttal_for: { target_id: claim.id, target_type: "claim" },
+    });
+    expect(result.isError).toBeFalsy();
+    const stmtId = parseInt(result.content[0].text.match(/#(\d+)/)?.[1] ?? "0");
+    const row = db.prepare(
+      "SELECT * FROM rebuttal_targets WHERE statement_id = ? AND target_id = ?"
+    ).get(stmtId, claim.id) as any;
+    expect(row).toBeTruthy();
+    expect(row.target_type).toBe("claim");
+  });
+
+  test("rebuttal_for warrant 创建 rebuttal 关联", async () => {
+    const claim = makeClaim(db, "主张");
+    const g = makeGround(db);
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+    const result = await tools.create_statement.handler({
+      content: "推理原则反驳",
+      source: "observed",
+      verification: "pending",
+      rebuttal_for: { target_id: warrant.id, target_type: "warrant" },
+    });
+    expect(result.isError).toBeFalsy();
+    const stmtId = parseInt(result.content[0].text.match(/#(\d+)/)?.[1] ?? "0");
+    const row = db.prepare(
+      "SELECT * FROM rebuttal_targets WHERE statement_id = ? AND target_type = 'warrant'"
+    ).get(stmtId) as any;
+    expect(row).toBeTruthy();
+  });
+
+  test("rebuttal_for 不存在目标返回错误", async () => {
+    const result = await tools.create_statement.handler({
+      content: "反驳",
+      source: "observed",
+      rebuttal_for: { target_id: 9999, target_type: "claim" },
+    });
+    expect(result.isError).toBe(true);
+  });
+});
+
+// =============================================================================
+// update_node — ground_ids 增量操作
+// =============================================================================
+
+describe("update_node — ground_ids 增量操作", () => {
+  test("add 将 ground 添加至 warrant", async () => {
+    const claim = makeClaim(db);
+    const g1 = makeGround(db, { content: "G1" });
+    const g2 = makeGround(db, { content: "G2" });
+    const warrant = makeWarrant(db, claim.id, [g1.id]);
+
+    const result = await tools.update_node.handler({
+      node_id: warrant.id,
+      ground_ids: { add: [g2.id] },
+    });
+    expect(result.isError).toBeFalsy();
+    const row = db.prepare(
+      "SELECT ground_id FROM warrant_grounds WHERE warrant_id = ? AND ground_id = ?"
+    ).get(warrant.id, g2.id);
+    expect(row).toBeTruthy();
+  });
+
+  test("remove 从 warrant 移除 ground", async () => {
+    const claim = makeClaim(db);
+    const g1 = makeGround(db, { content: "G1" });
+    const g2 = makeGround(db, { content: "G2" });
+    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
+
+    const result = await tools.update_node.handler({
+      node_id: warrant.id,
+      ground_ids: { remove: [g1.id] },
+    });
+    expect(result.isError).toBeFalsy();
+    const row = db.prepare(
+      "SELECT ground_id FROM warrant_grounds WHERE warrant_id = ? AND ground_id = ?"
+    ).get(warrant.id, g1.id);
+    expect(row).toBeNull();
+  });
+
+  test("移除所有 ground 后 warrant groundIds 为空", async () => {
+    const claim = makeClaim(db);
+    const g = makeGround(db, { content: "G1" });
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+
+    const result = await tools.update_node.handler({
+      node_id: warrant.id,
+      ground_ids: { remove: [g.id] },
+    });
+    expect(result.isError).toBeFalsy();
+    const row = db.prepare("SELECT ground_id FROM warrant_grounds WHERE warrant_id = ?").all(warrant.id);
+    expect(row).toHaveLength(0);
+  });
+});
+
+// =============================================================================
+// update_node — backing_ids 增量操作
+// =============================================================================
+
+describe("update_node — backing_ids 增量操作", () => {
+  test("add 将 backing 添加至 warrant", async () => {
+    const claim = makeClaim(db);
+    const g = makeGround(db);
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+    const backing = makeGround(db, { content: "支撑材料" });
+
+    const result = await tools.update_node.handler({
+      node_id: warrant.id,
+      backing_ids: { add: [backing.id] },
+    });
+    expect(result.isError).toBeFalsy();
+    const row = db.prepare(
+      "SELECT statement_id FROM warrant_backings WHERE warrant_id = ? AND statement_id = ?"
+    ).get(warrant.id, backing.id);
+    expect(row).toBeTruthy();
+  });
+});
+
+// =============================================================================
+// update_node — rebuttal_ids 增量操作
+// =============================================================================
+
+describe("update_node — rebuttal_ids 增量操作", () => {
+  test("add 将 rebuttal 关联至 claim", async () => {
+    const claim = makeClaim(db);
+    const rebuttalStmt = makeGround(db, { content: "反驳条件" });
+
+    const result = await tools.update_node.handler({
+      node_id: claim.id,
+      rebuttal_ids: { add: [rebuttalStmt.id] },
+    });
+    expect(result.isError).toBeFalsy();
+    const row = db.prepare(
+      "SELECT statement_id FROM rebuttal_targets WHERE statement_id = ? AND target_id = ?"
+    ).get(rebuttalStmt.id, claim.id);
+    expect(row).toBeTruthy();
+  });
+
+  test("remove 从 claim 移除 rebuttal 关联", async () => {
+    const claim = makeClaim(db);
+    const rebuttal = makeRebuttal(db, claim.id, "claim", "反驳");
+
+    const result = await tools.update_node.handler({
+      node_id: claim.id,
+      rebuttal_ids: { remove: [rebuttal.id] },
+    });
+    expect(result.isError).toBeFalsy();
+    const row = db.prepare(
+      "SELECT statement_id FROM rebuttal_targets WHERE statement_id = ? AND target_id = ?"
+    ).get(rebuttal.id, claim.id);
+    expect(row).toBeNull();
+  });
+});
+
+// =============================================================================
+// update_node — qualifier
+// =============================================================================
+
+describe("update_node — qualifier", () => {
+  test("更新 claim qualifier 存入数据库", async () => {
+    const claim = makeClaim(db, "主张");
+    const result = await tools.update_node.handler({
+      node_id: claim.id,
+      qualifier: "probably",
+    });
+    expect(result.isError).toBeFalsy();
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    expect(JSON.parse(row.data).qualifier).toBe("probably");
+  });
+
+  test("更新 statement 的 qualifier 返回错误", async () => {
+    const stmt = makeGround(db, { content: "证据" });
+    const result = await tools.update_node.handler({
+      node_id: stmt.id,
+      qualifier: "probably",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Only Claim");
+  });
+});
+
+// =============================================================================
+// update_node — status 转换前提检查
+// =============================================================================
+
+describe("update_node — status 转换", () => {
+  test("→supported 未 compile 返回错误", async () => {
+    const claim = makeClaim(db, "未编译主张");
+    const result = await tools.update_node.handler({ node_id: claim.id, status: "supported" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("argument has not been compiled or is stale");
+  });
+
+  test("→disputed 未 compile 返回错误", async () => {
+    const claim = makeClaim(db, "未编译主张");
+    const result = await tools.update_node.handler({ node_id: claim.id, status: "disputed" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("argument has not been compiled or is stale");
+  });
+
+  test("→supported compile 通过但 ground 未验证返回错误", async () => {
+    const claim = makeCompiledClaim(db, "已编译主张");
+    const g = makeGround(db, { content: "未验证证据", verification: "pending" });
+    makeWarrant(db, claim.id, [g.id]);
+
+    const result = await tools.update_node.handler({ node_id: claim.id, status: "supported" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("no Warrant has all Grounds verified");
+  });
+
+  test("→supported compile 通过且 ground 已验证成功", async () => {
+    const claim = makeCompiledClaim(db, "已编译主张");
+    const g = makeGround(db, { content: "已验证证据", verification: "verified", attachments: ["/data.csv"] });
+    makeWarrant(db, claim.id, [g.id]);
+
+    const result = await tools.update_node.handler({ node_id: claim.id, status: "supported" });
+    expect(result.isError).toBeFalsy();
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    expect(JSON.parse(row.data).status).toBe("supported");
+  });
+
+  test("→disputed compile 通过但无 rebuttal 返回错误", async () => {
+    const claim = makeCompiledClaim(db, "已编译主张");
+    const result = await tools.update_node.handler({ node_id: claim.id, status: "disputed" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("no Rebuttals exist");
+  });
+
+  test("→disputed compile 通过且存在 rebuttal 成功", async () => {
+    const claim = makeCompiledClaim(db, "已编译主张");
+    makeRebuttal(db, claim.id, "claim", "反驳条件");
+
+    const result = await tools.update_node.handler({ node_id: claim.id, status: "disputed" });
+    expect(result.isError).toBeFalsy();
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    expect(JSON.parse(row.data).status).toBe("disputed");
+  });
+});
+
+// =============================================================================
+// update_node — statement content 自动退回 verification
+// =============================================================================
+
+describe("update_node — statement content 自动退回 verification", () => {
+  test("更新 verified statement 内容 → verification 退回 pending + hint", async () => {
+    const stmt = makeGround(db, { content: "原始内容", verification: "verified", attachments: ["/data.csv"] });
+
+    const result = await tools.update_node.handler({ node_id: stmt.id, content: "修改内容" });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("content changed — verification reverted to pending");
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(stmt.id) as { data: string };
+    expect(JSON.parse(row.data).verification).toBe("pending");
+  });
+
+  test("更新 pending statement 内容 → 无 verification 退回提示", async () => {
+    const stmt = makeGround(db, { content: "原始内容", verification: "pending" });
+
+    const result = await tools.update_node.handler({ node_id: stmt.id, content: "修改内容" });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).not.toContain("verification reverted");
+  });
+});
+
+// =============================================================================
+// delete_node — cascade + D1/D3 warnings
+// =============================================================================
+
+describe("delete_node — cascade=true 递归删除 claim", () => {
+  test("cascade=true 删除 claim 及其 warrant", async () => {
+    const claim = makeClaim(db, "要删除的主张");
+    const g = makeGround(db, { content: "证据" });
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+
+    const result = await tools.delete_node.handler({ node_id: claim.id, cascade: true });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain(`Deleted node #${claim.id}`);
+    expect(db.prepare("SELECT id FROM nodes WHERE id = ?").get(claim.id)).toBeNull();
+    expect(db.prepare("SELECT id FROM nodes WHERE id = ?").get(warrant.id)).toBeNull();
+  });
+});
+
+describe("delete_node — D1 warning (ground 被 warrant 引用)", () => {
+  test("删除被 warrant 引用的 ground 返回 D1 警告", async () => {
+    const claim = makeClaim(db);
+    const g = makeGround(db, { content: "被引用证据" });
+    makeWarrant(db, claim.id, [g.id]);
+
+    const result = await tools.delete_node.handler({ node_id: g.id, cascade: false });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("was referenced by Warrant");
+    expect(result.content[0].text).toContain("has been removed from these Warrants");
+  });
+
+  test("删除未被引用的 statement 不含 D1 警告", async () => {
+    const stmt = makeGround(db, { content: "孤立证据" });
+
+    const result = await tools.delete_node.handler({ node_id: stmt.id, cascade: false });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).not.toContain("was referenced by Warrant");
+  });
+});
+
+describe("delete_node — 删除 warrant 时 claim status 被回退", () => {
+  // D3 在 service 层检查，但 tools 层先调用 invalidateCompiledClaims，
+  // 后者已将非 proposed 的 status 回退为 proposed，因此工具层输出的是 statusReverted 警告。
+  test("删除 supported claim 的 warrant → 输出 status 回退警告且 claim 变为 proposed", async () => {
+    const claim = makeClaim(db, "已支持主张", "supported");
+    const g = makeGround(db, { content: "证据" });
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+
+    const result = await tools.delete_node.handler({ node_id: warrant.id, cascade: false });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain('reverted from "supported" to "proposed"');
+    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
+    expect(JSON.parse(row.data).status).toBe("proposed");
+  });
+
+  test("删除 proposed claim 的 warrant → 无 status 回退警告", async () => {
+    const claim = makeClaim(db, "提议主张", "proposed");
+    const g = makeGround(db, { content: "证据" });
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+
+    const result = await tools.delete_node.handler({ node_id: warrant.id, cascade: false });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).not.toContain("reverted");
+  });
+});
+
+// =============================================================================
+// get_argument — warrant 和 statement 节点
+// =============================================================================
+
+describe("get_argument — warrant 节点", () => {
+  test("warrant 节点返回 WarrantArgument 格式", async () => {
+    const claim = makeClaim(db, "主张");
+    const g = makeGround(db, { content: "证据" });
+    const warrant = makeWarrant(db, claim.id, [g.id], "推理规则");
+
+    const result = await tools.get_argument.handler({ node_id: warrant.id });
+    expect(result.isError).toBeFalsy();
+    const text = result.content[0].text;
+    expect(text).toContain(`## Warrant #${warrant.id}`);
+    expect(text).toContain("推理规则");
+    expect(text).toContain("Grounds:");
+    expect(text).toContain("证据");
+  });
+});
+
+describe("get_argument — statement 节点", () => {
+  test("作为 ground 的 statement 显示 used_in_warrants", async () => {
+    const claim = makeClaim(db, "核心主张");
+    const g = makeGround(db, { content: "核心证据" });
+    makeWarrant(db, claim.id, [g.id]);
+
+    const result = await tools.get_argument.handler({ node_id: g.id });
+    expect(result.isError).toBeFalsy();
+    const text = result.content[0].text;
+    expect(text).toContain("Used in warrants:");
+    expect(text).toContain("核心主张");
+  });
+
+  test("未作为 ground 的 statement 不含 used_in_warrants", async () => {
+    const stmt = makeGround(db, { content: "孤立证据" });
+
+    const result = await tools.get_argument.handler({ node_id: stmt.id });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).not.toContain("Used in warrants:");
+  });
+});
+
+describe("get_argument — claim 含 rebuttal", () => {
+  test("含 rebuttal 的 claim 输出 Rebuttals 段落", async () => {
+    const claim = makeClaim(db, "核心主张");
+    makeRebuttal(db, claim.id, "claim", "反驳条件");
+
+    const result = await tools.get_argument.handler({ node_id: claim.id });
+    expect(result.isError).toBeFalsy();
+    const text = result.content[0].text;
+    expect(text).toContain("### Rebuttals");
+    expect(text).toContain("反驳条件");
+  });
+});
+
+describe("get_argument — claim 含 qualifier", () => {
+  test("含 qualifier 的 claim 输出 Qualifier 行", async () => {
+    const claim = makeClaim(db, "量化主张");
+    const data = JSON.parse(
+      (db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string }).data
+    );
+    data.qualifier = "probably";
+    db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(data), claim.id);
+
+    const result = await tools.get_argument.handler({ node_id: claim.id });
+    expect(result.content[0].text).toContain("Qualifier: probably");
+  });
+});
+
+// =============================================================================
+// search_nodes — virtual type filters
+// =============================================================================
+
+describe("search_nodes — virtual type filters", () => {
+  test("node_type='claim' 只返回 claim 节点", async () => {
+    makeClaim(db, "UniqueKeyword claim");
+    makeGround(db, { content: "UniqueKeyword ground" });
+
+    const result = await tools.search_nodes.handler({ keyword: "UniqueKeyword", node_type: "claim" });
+    const text = result.content[0].text;
+    expect(text).toContain("UniqueKeyword claim");
+    expect(text).not.toContain("UniqueKeyword ground");
+  });
+
+  test("node_type='ground' 只返回在 warrant_grounds 中的 statement", async () => {
+    const claim = makeClaim(db);
+    const g = makeGround(db, { content: "GroundFilter" });
+    makeWarrant(db, claim.id, [g.id]);
+    makeGround(db, { content: "GroundFilter standalone" }); // not linked to any warrant
+
+    const result = await tools.search_nodes.handler({ keyword: "GroundFilter", node_type: "ground" });
+    const text = result.content[0].text;
+    expect(text).toContain("GroundFilter");
+    expect(text).not.toContain("standalone");
+  });
+
+  test("node_type='backing' 只返回在 warrant_backings 中的 statement", async () => {
+    const claim = makeClaim(db);
+    const g = makeGround(db);
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+    makeBacking(db, warrant.id, "BackingFilter");
+    makeClaim(db, "BackingFilter claim"); // claim with same keyword, should not appear
+
+    const result = await tools.search_nodes.handler({ keyword: "BackingFilter", node_type: "backing" });
+    const text = result.content[0].text;
+    expect(text).toContain("BackingFilter");
+    expect(text).not.toContain("BackingFilter claim");
+  });
+
+  test("node_type='rebuttal' 只返回在 rebuttal_targets 中的 statement", async () => {
+    const claim = makeClaim(db);
+    makeRebuttal(db, claim.id, "claim", "RebuttalFilter");
+    makeClaim(db, "RebuttalFilter claim"); // claim with same keyword, should not appear
+
+    const result = await tools.search_nodes.handler({ keyword: "RebuttalFilter", node_type: "rebuttal" });
+    const text = result.content[0].text;
+    expect(text).toContain("RebuttalFilter");
+    expect(text).not.toContain("RebuttalFilter claim");
+  });
+});
+
+// =============================================================================
+// list_claims — multi-value status filter
+// =============================================================================
+
+describe("list_claims — multi-value status filter", () => {
+  test("status='proposed,supported' 返回两种状态，排除其他", async () => {
+    makeClaim(db, "C-proposed", "proposed");
+    makeClaim(db, "C-supported", "supported");
+    makeClaim(db, "C-disputed", "disputed");
+
+    const result = await tools.list_claims.handler({ status: "proposed,supported" });
+    const text = result.content[0].text;
+    expect(text).toContain("C-proposed");
+    expect(text).toContain("C-supported");
+    expect(text).not.toContain("C-disputed");
+  });
+});

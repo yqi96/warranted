@@ -143,14 +143,19 @@ function renderTreeLayout() {
       hideTooltip();
     });
 
-  setTimeout(() => fitGraph(), 100);
+  setTimeout(() => { if (!userHasMoved) fitGraph(); }, 100);
 }
 
 // ── 力导向布局 ────────────────────────────────────────────
 function renderForceLayout() {
   g.select('.cross-links-layer').selectAll('*').remove();
 
-  const nodes = graphData.nodes.map(n => ({ ...n, id: String(n.id), x: n.x || 0, y: n.y || 0 }));
+  const nodes = graphData.nodes.map(n => {
+    const cached = positionCache.get(String(n.id));
+    return { ...n, id: String(n.id),
+      x: (cached && isFinite(cached.x)) ? cached.x : 0,
+      y: (cached && isFinite(cached.y)) ? cached.y : 0 };
+  });
   const edges = graphData.edges.map(e => ({ ...e, source: String(e.source), target: String(e.target) }));
   nodeMap = new Map(nodes.map(n => [n.id, n]));
 
@@ -223,9 +228,18 @@ function renderForceLayout() {
     })
     .call(d3.drag().filter(e => !e.shiftKey).on('start', dragStarted).on('drag', dragged).on('end', dragEnded));
 
+  const prevNodeIds = new Set((simulation.nodes() || []).map(n => n.id));
+  const newNodeIds  = new Set(nodes.map(n => n.id));
+  const nodeSetChanged = prevNodeIds.size !== newNodeIds.size || nodes.some(n => !prevNodeIds.has(n.id));
+
+  const prevEdgeIds = new Set((simulation.force('link').links() || []).map(l => l.id));
+  const newEdgeIds  = new Set(edges.map(e => e.id));
+  const edgeSetChanged = prevEdgeIds.size !== newEdgeIds.size || edges.some(e => !prevEdgeIds.has(e.id));
+
   simulation.nodes(nodes);
   simulation.force('link').links(edges);
-  simulation.alpha(0.8).restart();
+  if (nodeSetChanged)      simulation.alpha(0.6).restart();
+  else if (edgeSetChanged) simulation.alpha(0.15).restart();
   renderForceLayout._linkMerge = linkMerge;
   renderForceLayout._nodeMerge = nodeMerge;
 }
@@ -240,6 +254,7 @@ function forceTicked() {
     return `M${d.source.x},${d.source.y}A${dr},${dr} 0 0,1 ${d.target.x},${d.target.y}`;
   });
   nm.attr('transform', d => `translate(${d.x},${d.y})`);
+  nm.each(d => { if (isFinite(d.x) && isFinite(d.y)) positionCache.set(d.id, { x: d.x, y: d.y }); });
 }
 
 function dragStarted(event, d) {

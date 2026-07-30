@@ -22,7 +22,7 @@ function inferTreeEdgeType(sType, tType) {
   return 'connects';
 }
 
-function refreshGraph() { loadGraph(); }
+function refreshGraph() { positionCache.clear(); userHasMoved = false; loadGraph(); }
 
 function fitGraph() {
   const container = document.getElementById('graph');

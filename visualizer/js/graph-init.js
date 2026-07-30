@@ -56,7 +56,10 @@ function initGraph() {
       }
       return true;
     })
-    .on('zoom', e => g.attr('transform', e.transform));
+    .on('zoom', e => {
+      g.attr('transform', e.transform);
+      if (e.sourceEvent) userHasMoved = true;
+    });
   svg.call(zoomBehavior);
 
   // ── Box-select rubber-band ──

@@ -83,3 +83,5 @@ let nodeMap = new Map();
 let nodePositionMap = new Map();
 let currentLayout = 'tree';
 let selectionMode = 'pan'; // 'box' | 'pan'
+let positionCache = new Map(); // node id → {x, y}, survives re-renders
+let userHasMoved = false;      // true after any user-initiated pan/zoom

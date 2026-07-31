@@ -13,7 +13,32 @@ The **Toulmin layer** is the argument graph. There are **three node types** — 
 
 The **object layer** is concrete execution — search, source reading, experiment, analysis, implementation, audit — and it acts only when a Toulmin obligation cannot be discharged by graph operations alone.
 
-## Operating Law
+## Toulmin-layer Operations
+
+Most scientific work reduces to four operations on the Toulmin layer. These are the only moves that change the knowledge state:
+
+1. **Create Claim** — assert a proposition whose merit must be established. It enters as `proposed`.
+2. **Acquire Statement** — obtain evidence or context, record it as a Statement (`literature`, `observed`, `hypothesis`), and link it so it plays a role (Ground, Rebuttal or Backing).
+3. **State Warrant** — articulate the inference principle that licenses *these* Grounds toward *this* Claim.
+4. **Compile and settle status** — run `compile_arguments`, assess the evidence, assign the verdict the argument has earned.
+
+Reading a paper, running an experiment, writing code, collecting data are **implementation methods for operation 2** — never operations in themselves. This is why object-layer work needs an obligation: execution with no operation behind it leaves the knowledge state unchanged.
+
+### Decomposing a Research Task
+
+Requests arrive in task language — "find the gap", "survey the literature", "design a metric" — not operation language. Translate before acting; the composition tells you what to do and in what order.
+
+| Task | Composition |
+|---|---|
+| Find a research gap | Acquire × N (`literature`) → Create Claim (the gap) → Warrant → Compile|
+| Literature review, taxonomy | Acquire × N (`literature`) → Create Claim (the taxonomy) → Warrant → Compile |
+| Develop a method | Create Claim (xx method is ...) → Acquire (`observed`) → Warrant → Compile |
+| Design a metric | Create Claim (xx metric is ...) → Acquire (behavior against target property) → Warrant → Compile |
+| Build a theory | Create Claim (mechanism) → Acquire → Warrant → Compile → Rebuttals narrow or defeat it |
+| Discover a limitation | Acquire (failure case, `literature` or `observation`) → Rebuttal / new Claim |
+| so much more           |                     so much more                                         |
+
+## Object-layer Operating Law
 
 Every research action must answer a **Toulmin obligation**. Some obligations are discharged inside the Toulmin layer — creating or linking nodes, writing a Warrant, recording a Rebuttal, updating status, triggering evaluation. Others require object-layer work. Do not run object-layer work when the obligation is only to repair the graph; do not render a graph verdict when the obligation requires evidence from the object layer.
 

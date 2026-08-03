@@ -36,8 +36,8 @@ export async function callAgent(
       allowedTools: ["Read", "Glob", "Grep"],
       // 禁止写操作
       disallowedTools: ["Edit", "Write", "Bash", "MultiEdit"],
-      // 静默模式
-      permissionMode: "bypassPermissions",
+      // 从不询问：未预批准的操作直接拒绝，不会因为无 TTY 而卡死
+      permissionMode: "dontAsk",
       // 工作目录（agent 在此目录下搜索和读取文件）
       ...(cwd ? { cwd } : {}),
       // 禁用所有 MCP 服务器（reviewer 不需要 MCP 工具）
@@ -47,10 +47,16 @@ export async function callAgent(
 
   // 收集消息，提取最终结果
   let finalResult = "";
+  const deniedTools: string[] = [];
   for await (const message of result) {
     if (message.type === "result" && message.subtype === "success") {
       finalResult = message.result || "";
+    } else if (message.type === "system" && message.subtype === "permission_denied") {
+      deniedTools.push(message.tool_name);
     }
+  }
+  if (deniedTools.length > 0) {
+    console.warn(`[review-llm] ${deniedTools.length} tool call(s) denied under dontAsk: ${deniedTools.join(", ")}`);
   }
 
   if (!finalResult) {

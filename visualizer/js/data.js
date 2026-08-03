@@ -14,7 +14,10 @@ function _applyRoleFilter() {
   const visibleNodes = graphData.nodes.filter(n => {
     if (n.type === 'claim')    return selected.has('claim');
     if (n.type === 'warrant')  return selected.has('warrant');
-    if (n.type === 'statement') return (n.data?.roles || []).some(r => selected.has(r));
+    if (n.type === 'statement') {
+      const roles = n.data?.roles?.length ? n.data.roles : [n.data?.primary_role || 'ground'];
+      return roles.some(r => selected.has(r));
+    }
     return true;
   });
   const visibleIds = new Set(visibleNodes.map(n => String(n.id)));

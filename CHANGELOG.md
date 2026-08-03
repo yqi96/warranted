@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-03
+
+### Added
+- `auto-research` skill: open-ended autonomous research channel that generates its own falsifiable Claims from provided data and references, with a Framing router splitting goal-only (strong) from question/hypothesis-given (weak) inputs.
+- `rigor-auditor` agent: completion gate for autonomous research — judges the whole effort on exhaustiveness and outcome value before a result can close the task, biased toward "not done".
+
+### Changed
+- `discrepancy-auditor`: barrier claims now split into reflexively-rejected excuses (code/complexity/planning gaps — never real barriers) versus claims that must be investigated with tools before classification; `REAL_BARRIER` criteria generalized beyond algorithm/data unavailability.
+- `toulmin-researcher`: added a Toulmin-layer Operations section naming the four atomic operations (Create Claim, Acquire Statement, State Warrant, Compile-and-settle) plus a task-to-composition table for translating incoming requests into graph operations.
+- Docs (`README.md`, `README.zh-CN.md`, `docs/en`, `docs/zh-CN`, wiki) further aligned to the three-node-type/statement-role model; `paper-reproduce` independence hardened — any paper-produced artifact used as verification evidence voids the verification.
+- `.gitignore`: now ignores all of `.omc` except `.omc/wiki`.
+
+### Fixed
+- Visualizer: role filter now falls back to a Statement's `primary_role` when `data.roles` is empty, so statements without an explicit roles array remain visible under role filtering.
+
 ## [0.4.1] - 2026-07-30
 
 ### Added

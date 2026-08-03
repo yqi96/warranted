@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-08-03
+
+### Changed
+- `GroundSource` enum collapsed from `{literature, observed, hypothesis}` to `{literature, observed}` — `source` is an evidence-type axis, not a provenance-origin axis. Paper-reproduction statements (self-produced or independent reproduction) are now `source="observed"`, with `verification="pending"` alone carrying the not-yet-confirmed state. Compile checks B2/B6/C2/C3 (hypothesis-specific) collapsed into their literature/observed equivalents B1/C1. An idempotent DB migration converts existing `hypothesis` rows to `observed`. Docs, skills, and agent prompts (`paper-reproduce`, `toulmin-researcher`, `rigor-auditor`, `code-experimenter`) updated to match.
+- `review-llm.ts`: `callAgent()` no longer bypasses permissions for the headless compile/review Agent SDK call — `permissionMode` switched from `bypassPermissions` to `dontAsk`. Denied tool calls are now logged via `console.warn` instead of being silently dropped, since `allowedTools` already whitelists the only tools (`Read`/`Glob`/`Grep`) this agent needs.
+
+### Fixed
+- Compile: vacuous-truth bug where a Warrant whose grounds are all claim-type (filtered down to an empty grounds list) spuriously tripped the "all grounds pending" check.
+
+### Removed
+- `auto-research` and `academic-writing` skills moved out of the shipped `skills/` directory back into `drafts/` — not ready for release, iteration continues there.
+
 ## [0.4.2] - 2026-08-03
 
 ### Added

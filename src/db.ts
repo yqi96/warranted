@@ -90,10 +90,35 @@ export function initializeSchema(db: Database): void {
   }
 
   migrateToStatementSchema(db);
+  migrateHypothesisSource(db);
   tightenCheckConstraint(db);
   migrateWarrantGroundsColumn(db);
   migrateRefClaimIdData(db);
 
+}
+
+/**
+ * 将旧版 source='hypothesis' 的 statement 节点迁移为 source='observed'。
+ * 幂等：若已无 hypothesis 节点则跳过。
+ */
+export function migrateHypothesisSource(db: Database): void {
+  const rows = db.prepare(
+    "SELECT id FROM nodes WHERE type = 'statement' AND json_extract(data, '$.source') = 'hypothesis'"
+  ).all() as Array<{ id: number }>;
+
+  if (rows.length === 0) return;
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare(
+      "UPDATE nodes SET data = json_set(data, '$.source', 'observed') WHERE type = 'statement' AND json_extract(data, '$.source') = 'hypothesis'"
+    ).run();
+    console.warn(`[warranted] Migrated ${rows.length} statement row(s) from source="hypothesis" to source="observed": [${rows.map(r => `#${r.id}`).join(", ")}]`);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
 }
 
 /**

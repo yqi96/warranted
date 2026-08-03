@@ -5,6 +5,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { z } from "zod";
 import type { Database } from "bun:sqlite";
 import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim, seedBasicArgument } from "./helpers.ts";
 import { registerTools } from "../src/tools.ts";
@@ -87,6 +88,12 @@ describe("create_statement 工具", () => {
       attachments: ["/data.csv"],
     });
     expect(result.content[0].text).toContain("Created statement #1");
+  });
+
+  test("source='hypothesis' 被 zod schema 拒绝（clean validation error, 非异常）", () => {
+    const schema = z.object(tools.create_statement.schema);
+    const result = schema.safeParse({ content: "实验数据", source: "hypothesis" });
+    expect(result.success).toBe(false);
   });
 });
 
@@ -207,6 +214,12 @@ describe("update_node 工具", () => {
       content: "更新后",
     });
     expect(result.content[0].text).toContain("Updated");
+  });
+
+  test("source='hypothesis' 被 zod schema 拒绝（clean validation error, 非异常）", () => {
+    const schema = z.object(tools.update_node.schema);
+    const result = schema.safeParse({ node_id: 1, source: "hypothesis" });
+    expect(result.success).toBe(false);
   });
 
   test("更新不存在节点返回错误", async () => {
@@ -479,15 +492,19 @@ describe("list_statements 工具", () => {
     expect(text).not.toContain("G-obs");
   });
 
-  test("source 逗号多值过滤", async () => {
+  test("source 逗号多值过滤，且排除无 source 字段的 statement（backing）", async () => {
     makeGround(db, { content: "G-obs", source: "observed", verification: "verified" });
     makeGround(db, { content: "G-lit", source: "literature", verification: "verified" });
-    makeGround(db, { content: "G-hyp", source: "hypothesis", verification: "pending" });
-    const result = await tools.list_statements.handler({ source: "observed,hypothesis" });
+    makeGround(db, { content: "G-pending", source: "observed", verification: "pending" });
+    const claim = makeClaim(db, "Claim");
+    const warrant = makeWarrant(db, claim.id, []);
+    makeBacking(db, warrant.id, "B-no-source");
+    const result = await tools.list_statements.handler({ source: "literature,observed" });
     const text = result.content[0].text;
     expect(text).toContain("G-obs");
-    expect(text).toContain("G-hyp");
-    expect(text).not.toContain("G-lit");
+    expect(text).toContain("G-lit");
+    expect(text).toContain("G-pending");
+    expect(text).not.toContain("B-no-source");
   });
 
   test("verification 过滤", async () => {
@@ -748,17 +765,7 @@ describe("create_statement — source pending hints", () => {
       verification: "pending",
     });
     expect(result.isError).toBeFalsy();
-    expect(result.content[0].text).toContain("original observation or experiment");
-  });
-
-  test("hypothesis pending 显示 hypothesis hint", async () => {
-    const result = await tools.create_statement.handler({
-      content: "待验证假设",
-      source: "hypothesis",
-      verification: "pending",
-    });
-    expect(result.isError).toBeFalsy();
-    expect(result.content[0].text).toContain("hypothesis to verify");
+    expect(result.content[0].text).toContain("self-produced experiment/observation");
   });
 });
 

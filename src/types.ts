@@ -20,7 +20,6 @@ export type NodeType = (typeof NodeType)[keyof typeof NodeType];
 export const GroundSource = {
   Literature: "literature",
   Observed: "observed",
-  Hypothesis: "hypothesis",
 } as const;
 
 export type GroundSource = (typeof GroundSource)[keyof typeof GroundSource];

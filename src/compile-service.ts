@@ -177,11 +177,9 @@ export function structuralPreCheck(db: Database, claimId: number): string[] {
 const HIGH_REBUTTAL_THRESHOLD = 4; // tunable: adjust based on observed distribution
 
 /**
- * 对 Claim 的 argument 执行确定性结构质量检查（18条规则）。
- * Category A: 引用完整性 (ERROR)
- * Category B: 个体质量 (WARNING, B6去重)
- * Category C: 聚合质量 (WARNING/ERROR/INFO, C3包含C1+C2, C4状态感知)
- * Category D: 跨节点一致性 (INFO/WARNING, 1-hop chain)
+ * 对 Claim 的 argument 执行确定性结构质量检查（7条规则）。
+ * Category B: 个体质量 (WARNING)
+ * Category C: 聚合质量 (WARNING/ERROR/INFO, C4状态感知)
  */
 export function structuralQualityCheck(db: Database, claimId: number): ElementReviewResult {
   const errors: string[] = [];
@@ -193,16 +191,7 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
 
   const claimData = ctx.claimData as { status?: string; [k: string]: unknown };
 
-  // Build a set of ground IDs used in warrants (for C6 check)
-  const usedGroundIds = new Set<number>();
-  for (const wd of ctx.warrantDatas) {
-    for (const gid of (wd.ground_ids || []) as number[]) {
-      usedGroundIds.add(gid);
-    }
-  }
-
   // --- Category B: Individual Quality (per ground and warrant) ---
-  // B6 dedup: when ground is BOTH hypothesis AND pending → emit B6 only, not B1+B2
   for (const gr of ctx.groundRows) {
     if (gr.type === "claim") continue; // claim-type grounds skip quality checks
     const gData = JSON.parse(gr.data) as {
@@ -210,21 +199,9 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
       verification?: string;
       [k: string]: unknown;
     };
-    const isPending = gData.verification === "pending";
-    const isHypothesis = gData.source === "hypothesis";
-
-    if (isHypothesis && isPending) {
-      // B6: compound weakness (replaces B1+B2 to reduce noise)
-      warnings.push(`Ground #${gr.id} is both hypothesis and unverified (compound weakness: future unverified result)`);
-    } else {
-      if (isPending) {
-        // B1
-        warnings.push(`Ground #${gr.id} has verification=pending`);
-      }
-      if (isHypothesis) {
-        // B2
-        warnings.push(`Ground #${gr.id} has source=hypothesis`);
-      }
+    if (gData.verification === "pending") {
+      // B1
+      warnings.push(`Ground #${gr.id} has verification=pending`);
     }
   }
 
@@ -282,24 +259,10 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
       return JSON.parse(gr.data) as { source?: string; verification?: string };
     }).filter(Boolean) as Array<{ source?: string; verification?: string }>;
 
-    const allPending = groundsForWarrant.every(g => g.verification === "pending");
-    const allHypothesisNoRef = groundsForWarrant.every(g => g.source === "hypothesis");
-    const allHypothesisPendingNoRef = groundsForWarrant.every(
-      g => g.source === "hypothesis" && g.verification === "pending"
-    );
-
-    if (allHypothesisPendingNoRef) {
-      // C3: subsumes C1 and C2
-      warnings.push(`Warrant #${w.id} is fully speculative: all grounds are hypothesis + pending (no verified evidence)`);
-    } else {
-      if (allPending) {
-        // C1
-        warnings.push(`Warrant #${w.id}: all grounds have verification=pending`);
-      }
-      if (allHypothesisNoRef) {
-        // C2
-        warnings.push(`Warrant #${w.id}: all grounds are hypothesis without chain reasoning`);
-      }
+    const allPending = groundsForWarrant.length > 0 && groundsForWarrant.every(g => g.verification === "pending");
+    if (allPending) {
+      // C1
+      warnings.push(`Warrant #${w.id}: all grounds have verification=pending`);
     }
   }
 

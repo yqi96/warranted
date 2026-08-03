@@ -15,14 +15,14 @@ The graph represents the paper's argument, not a new one. Every node is extracte
 | Node | What it represents | Initial state |
 |------|--------------------|---------------|
 | **Claim** | The paper's conclusion, extracted verbatim | `proposed` |
-| **Ground** | The paper's stated experimental result | `source="hypothesis"`, `verification="pending"` |
+| **Ground** | The paper's stated experimental result | `source="observed"`, `verification="pending"` |
 | **Warrant** | The inference principle connecting Ground to Claim | — |
 | **Backing** | Support for the Warrant's authority | — |
 | **Rebuttal** | A contradiction found during reproduction | — |
 
 **Claims are immutable.** A Claim encodes exactly what you are verifying. If reproduction yields a different result, the difference belongs in a Rebuttal — not in a modified Claim. Changing the Claim changes what you're testing. Grounds allow minor numerical corrections (e.g., 42.3 → 42.1 from seed or implementation variance), but the finding a Ground asserts is fixed for the same reason.
 
-**Grounds start as hypotheses.** A Ground initializes as `verification="pending"`. It is `verified` when an independent reproduction has been completed and a description document is attached. A Ground without a description document is incomplete.
+**Grounds start unverified.** A Ground initializes as `verification="pending"`. It is `verified` when an independent reproduction has been completed and a description document is attached. A Ground without a description document is incomplete.
 
 **Independence.** If the paper produced an artifact — supplementary data, pre-computed outputs, model weights — you cannot use it as verification evidence. That is circular. Author-published code may be reused as long as it matches the paper's described methodology. The test: *did this paper produce this artifact, or did the paper use it as external input?*
 

@@ -32,7 +32,7 @@ A result the agent stopped at is not the same as the result the evidence could r
 - Were refutation conditions tested with adequate power — sufficient sample size, runs, and adversarial design — or discharged with a token gesture that could only pass?
 - Did the data or references raise obvious follow-up questions that were ignored rather than pursued or explicitly declined with a reason?
 - Is any `proposed` or parked Claim parked out of fatigue rather than a genuine dead-end? A suspected premature stop on a single obligation is `discrepancy-auditor`'s call — flag it for routing there.
-- Were `hypothesis` Grounds left `pending` that a feasible analysis could have moved to `verified` or `refuted`?
+- Were Grounds left `pending` that a feasible analysis could have moved to `verified` or `refuted`?
 
 Distinguish a **lazy stop** from a **real ceiling**. Do not demand infinite work: when the data's ceiling is genuinely reached, or a barrier is genuinely real, exhaustiveness is satisfied. Say which it is, with evidence.
 

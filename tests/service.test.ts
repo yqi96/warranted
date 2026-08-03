@@ -86,6 +86,12 @@ describe("createStatement", () => {
     ).toThrow(ValidationError);
   });
 
+  test("source='hypothesis' 被 validSources 运行时检查拒绝（TS 已阻止构造该字面量，故用 as any 类型转义）", () => {
+    expect(() =>
+      service.createStatement(db, { content: "x", source: "hypothesis" as any, verification: "pending" })
+    ).toThrow(ValidationError);
+  });
+
   test("Mode A: 无效 verification", () => {
     expect(() =>
       service.createStatement(db, { content: "x", source: "observed", verification: "invalid" as any })
@@ -265,6 +271,13 @@ describe("updateNode", () => {
     const claim = makeClaim(db);
     expect(() =>
       service.updateNode(db, claim.id, { status: "invalid" as any })
+    ).toThrow(ValidationError);
+  });
+
+  test("source='hypothesis' 被 validSources 运行时检查拒绝（TS 已阻止构造该字面量，故用 as any 类型转义）", () => {
+    const ground = makeGround(db, { source: "observed", verification: "pending" });
+    expect(() =>
+      service.updateNode(db, ground.id, { source: "hypothesis" as any })
     ).toThrow(ValidationError);
   });
 
@@ -706,7 +719,7 @@ describe("listStatements", () => {
   test("无过滤器返回所有 statement", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     makeGround(db, { content: "G2", source: "literature", verification: "pending" });
-    makeGround(db, { content: "G3", source: "hypothesis", verification: "pending" });
+    makeGround(db, { content: "G3", source: "observed", verification: "pending" });
     const statements = service.listStatements(db);
     expect(statements.length).toBe(3);
   });
@@ -719,13 +732,16 @@ describe("listStatements", () => {
     expect(statements[0].content).toBe("G2");
   });
 
-  test("source 逗号分隔多值过滤（OR 语义）", () => {
+  test("source 逗号分隔多值过滤（OR 语义），且排除无 source 字段的 statement（backing）", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     makeGround(db, { content: "G2", source: "literature", verification: "verified" });
-    makeGround(db, { content: "G3", source: "hypothesis", verification: "pending" });
-    const statements = service.listStatements(db, "literature,hypothesis");
-    expect(statements.length).toBe(2);
-    expect(statements.map(g => g.content).sort()).toEqual(["G2", "G3"]);
+    makeGround(db, { content: "G3", source: "observed", verification: "pending" });
+    const claim = makeClaim(db, "Claim");
+    const warrant = makeWarrant(db, claim.id, []);
+    makeBacking(db, warrant.id, "B1 (no source field)");
+    const statements = service.listStatements(db, "literature,observed");
+    expect(statements.length).toBe(3);
+    expect(statements.map(g => g.content).sort()).toEqual(["G1", "G2", "G3"]);
   });
 
   test("verification 过滤", () => {

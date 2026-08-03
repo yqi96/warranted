@@ -15,14 +15,14 @@
 | 节点 | 表示什么 | 初始状态 |
 |------|---------|---------|
 | **Claim** | 论文的结论，逐字提取 | `proposed` |
-| **Ground** | 论文陈述的实验结果 | `source="hypothesis"`、`verification="pending"` |
+| **Ground** | 论文陈述的实验结果 | `source="observed"`、`verification="pending"` |
 | **Warrant** | 连接 Ground 与 Claim 的推理原则 | — |
 | **Backing** | 对 Warrant 权威性的支持 | — |
 | **Rebuttal** | 复现过程中发现的矛盾 | — |
 
 **Claim 不可变。** 一个 Claim 精确编码了你要验证的东西。如果复现得到不同结果，这个差异属于 Rebuttal——而不是去改 Claim。改了 Claim，就改了你在测的东西。Ground 允许微小的数值修正（例如因随机种子或实现差异导致的 42.3 → 42.1），但出于同样的道理，一个 Ground 所断言的发现是固定的。
 
-**Ground 起初是假设。** Ground 初始化为 `verification="pending"`。当一次独立复现完成、并附上一份说明文档后，它才 `verified`。没有说明文档的 Ground 是不完整的。
+**Ground 起初未验证。** Ground 初始化为 `verification="pending"`。当一次独立复现完成、并附上一份说明文档后，它才 `verified`。没有说明文档的 Ground 是不完整的。
 
 **独立性。** 如果论文产出了某个产物——补充数据、预计算的输出、模型权重——你不能拿它当验证证据。那是循环论证。作者公开的代码可以复用，只要它与论文所述方法一致。判断标准：*这个产物是这篇论文产出的，还是论文把它当作外部输入使用的？*
 

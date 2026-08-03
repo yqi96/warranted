@@ -54,7 +54,6 @@ Evaluate the following and report any issues found:
 3. **Evidence sufficiency**: Are the attachments sufficient to independently verify the Statement's correctness?
    - For "observed" statements: Are there experimental results, data files, or observation logs?
    - For "literature" statements: Is there a specific citation or reference in the attachments? The reference files themselves (e.g., a paper PDF) are sufficient evidence; no separate description document is required as long as the files are readable.
-   - For "hypothesis" statements marked verified: Is there independent verification evidence?
    Report an error if the evidence is insufficient. Report a warning if partial evidence exists but gaps remain.
 
 4. **Content-attachment consistency**: Does the Statement's content accurately describe what the attachments contain? Report an error if the content directly contradicts the attachments. Report a warning for minor discrepancies that don't change the meaning.

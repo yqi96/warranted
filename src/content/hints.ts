@@ -9,17 +9,13 @@ export const HINTS = {
     "  3. compile_arguments — review the logical relationships before advancing the claim status",
   ].join("\n"),
 
-  /** create_statement / update_node：source=hypothesis 且 verification=pending 时 */
-  groundPendingHypothesis:
-    "Hint: This statement is a hypothesis to verify. To mark it verified, attach a description document explaining what the statement records and how evidence was produced, plus supporting files.",
-
   /** create_statement / update_node：source=literature 且 verification=pending 时 */
   groundPendingLiterature:
     "Hint: This statement cites published work. To mark it verified, attach the source file or reference material (PDF, webpage capture, or equivalent) with specific citation details such as author, year, title, DOI, or page.",
 
   /** create_statement / update_node：source=observed 且 verification=pending 时 */
   groundPendingObserved:
-    "Hint: This statement records an original observation or experiment. To mark it verified, attach a description document plus available substantiating files such as raw data, result files, code, execution logs, or other produced artifacts.",
+    "Hint: This statement records a self-produced experiment/observation or an independent reproduction of a stated result. To mark it verified, attach a description document plus available substantiating files such as raw data, result files, code, execution logs, or other produced artifacts.",
 
   /** get_argument 返回 stale Claim 时 */
   staleClaimBanner:

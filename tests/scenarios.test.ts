@@ -119,15 +119,15 @@ describe("场景 2：假设验证", () => {
     // 阶段 1：提出假设
     const claim = service.createClaim(db, "数据增强通过增加样本多样性补偿小规模训练数据的不足");
 
-    // 推导预期证据（Mode A: hypothesis + pending）
+    // 推导预期证据（observed + pending，待复现验证）
     const g1 = service.createStatement(db, {
       content: "数据多样性增量应随训练集规模增大而递减",
-      source: "hypothesis",
+      source: "observed",
       verification: "pending",
     });
     const g2 = service.createStatement(db, {
       content: "去除数据增强后，小数据集上的性能增益应完全消失",
-      source: "hypothesis",
+      source: "observed",
       verification: "pending",
     });
 

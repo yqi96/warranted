@@ -27,7 +27,7 @@ export const ELEMENTS = {
 
   statement: {
     description:
-      "Record a statement — an atomic factual proposition with provenance (source, verification, attachments). " +
+      "Record a statement — an atomic factual proposition with evidence-type metadata (source, verification, attachments). " +
       "A statement is created independently of any argument role; its role as ground evidence, warrant backing, " +
       "or rebuttal condition is determined by the argument structure it is used in, not by the statement itself. ",
     content:
@@ -35,8 +35,8 @@ export const ELEMENTS = {
       "State the fact — what is established, observed, or published — not the method or context that produced it. " +
       "Keep each statement atomic: one independently verifiable proposition per node.",
     source:
-      "Statement source: 'observed' (independently produced), 'hypothesis' (to be verified), or 'literature' (from published work). " +
-      "If source='hypothesis', write in the same declarative form as observed statements — source='hypothesis' already encodes uncertainty; do not add hedging language to content.",
+      "Statement source: 'observed' (self-produced experiments/observations, or an independent reproduction of a result stated elsewhere — you ran it yourself and are reporting what happened) or 'literature' (cited from published work rather than reproduced). " +
+      "Write in the same declarative form regardless of source — verification='pending' already encodes that the result is not yet confirmed; do not add hedging language to content.",
     verification:
       "Verification status. " +
       "'pending' = not yet independently verified; " +

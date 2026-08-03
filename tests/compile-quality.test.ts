@@ -1,7 +1,7 @@
 /**
  * structuralQualityCheck 综合测试
  *
- * 覆盖规则：B1-B6, C1-C5
+ * 覆盖规则：B1, B3-B5, C1, C4-C5
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
@@ -72,28 +72,6 @@ describe("Category B — Individual Quality", () => {
 
     const result = structuralQualityCheck(db, claim.id);
     expect(result.warnings.some(w => w.includes("pending") && w.includes(`${ground.id}`))).toBe(true);
-    // B6 should NOT fire (not hypothesis)
-    expect(result.warnings.some(w => w.includes("both hypothesis") && w.includes(`${ground.id}`))).toBe(false);
-  });
-
-  test("B2: ground source=hypothesis → warning", () => {
-    const claim = makeClaim(db, "Claim");
-    const ground = makeGround(db, { source: "hypothesis", verification: "verified" });
-    makeWarrant(db, claim.id, [ground.id]);
-
-    const result = structuralQualityCheck(db, claim.id);
-    expect(result.warnings.some(w => w.includes("hypothesis") && w.includes(`${ground.id}`))).toBe(true);
-  });
-
-  test("B2: suppressed when claim used directly as ground (chain reasoning)", () => {
-    const claim = makeClaim(db, "Parent claim");
-    const subClaim = makeClaim(db, "Sub claim");
-    // Use subClaim directly as a ground in the warrant (chain reasoning)
-    makeWarrant(db, claim.id, [subClaim.id]);
-
-    const result = structuralQualityCheck(db, claim.id);
-    // subClaim as ground is a claim node — no B2 warning for it
-    expect(result.warnings.filter(w => w.includes("hypothesis") && w.includes(`${subClaim.id}`))).toHaveLength(0);
   });
 
   test("B3: warrant without backing → warning", () => {
@@ -133,38 +111,6 @@ describe("Category B — Individual Quality", () => {
     expect(result.warnings.some(w => w.includes("rebuttal") && w.includes(`#${warrant.id}`))).toBe(true);
   });
 
-  test("B6: hypothesis+pending ground → B6 emitted, NOT B1+B2 separately", () => {
-    const claim = makeClaim(db, "Claim");
-    const ground = makeGround(db, { source: "hypothesis", verification: "pending" });
-    makeWarrant(db, claim.id, [ground.id]);
-
-    const result = structuralQualityCheck(db, claim.id);
-
-    // B6 fires
-    const b6Warnings = result.warnings.filter(w => w.includes("both hypothesis and unverified"));
-    expect(b6Warnings.length).toBeGreaterThanOrEqual(1);
-
-    // B1 (verification=pending) should NOT be emitted separately
-    const b1Warnings = result.warnings.filter(w => w.includes("verification=pending") && w.includes(`${ground.id}`));
-    expect(b1Warnings).toHaveLength(0);
-
-    // B2 (source=hypothesis without chain reasoning) should NOT be emitted separately
-    const b2Warnings = result.warnings.filter(w => w.includes("source=hypothesis without chain") && w.includes(`${ground.id}`));
-    expect(b2Warnings).toHaveLength(0);
-  });
-
-  test("B6 suppressed when claim used directly as ground (chain-reasoning hypothesis+pending)", () => {
-    const parentClaim = makeClaim(db, "Parent");
-    const subClaim = makeClaim(db, "Sub");
-    // Use subClaim directly as ground — chain reasoning, neither B6 nor B2 fires
-    makeWarrant(db, parentClaim.id, [subClaim.id]);
-
-    const result = structuralQualityCheck(db, parentClaim.id);
-    // No B6 warning for subClaim used as ground
-    expect(result.warnings.filter(w => w.includes("both hypothesis") && w.includes(`${subClaim.id}`))).toHaveLength(0);
-    // No B2 warning
-    expect(result.warnings.filter(w => w.includes("hypothesis without chain") && w.includes(`${subClaim.id}`))).toHaveLength(0);
-  });
 });
 
 // =============================================================================
@@ -181,36 +127,6 @@ describe("Category C — Aggregate Quality", () => {
 
     const result = structuralQualityCheck(db, claim.id);
     expect(result.warnings.some(w => w.includes(`Warrant #${warrant.id}`) && w.includes("all grounds") && w.includes("pending"))).toBe(true);
-  });
-
-  test("C2: all grounds in warrant are hypothesis (no ref) → warning", () => {
-    const claim = makeClaim(db, "Claim");
-    const g1 = makeGround(db, { source: "hypothesis", verification: "verified" });
-    const g2 = makeGround(db, { source: "hypothesis", verification: "verified" });
-    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
-    makeBacking(db, warrant.id);
-
-    const result = structuralQualityCheck(db, claim.id);
-    expect(result.warnings.some(w => w.includes(`Warrant #${warrant.id}`) && w.includes("hypothesis without chain"))).toBe(true);
-  });
-
-  test("C3: all grounds hypothesis+pending → only C3, not C1+C2", () => {
-    const claim = makeClaim(db, "Claim");
-    const g1 = makeGround(db, { source: "hypothesis", verification: "pending" });
-    const g2 = makeGround(db, { source: "hypothesis", verification: "pending" });
-    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
-    makeBacking(db, warrant.id);
-
-    const result = structuralQualityCheck(db, claim.id);
-
-    // C3 emitted
-    expect(result.warnings.some(w => w.includes("fully speculative") && w.includes(`${warrant.id}`))).toBe(true);
-
-    // C1 NOT emitted for the same warrant (C1-specific message contains "all grounds have verification=pending")
-    expect(result.warnings.filter(w => w.includes(`Warrant #${warrant.id}`) && w.includes("all grounds have verification=pending"))).toHaveLength(0);
-
-    // C2 NOT emitted for the same warrant (C2-specific message contains "all grounds are hypothesis without chain")
-    expect(result.warnings.filter(w => w.includes(`Warrant #${warrant.id}`) && w.includes("all grounds are hypothesis without chain"))).toHaveLength(0);
   });
 
   test("C4 WARNING: no verified warrant but claim status=proposed", () => {
@@ -285,16 +201,33 @@ describe("Category C — Aggregate Quality", () => {
 });
 
 // =============================================================================
+// Chain reasoning: claim used directly as ground
+// =============================================================================
+
+describe("chain reasoning — claim used directly as ground", () => {
+  test("warrant with only claim-type grounds → no B1, no C1 (not spuriously 'all pending')", () => {
+    const parentClaim = makeClaim(db, "Parent claim");
+    const subClaim = makeClaim(db, "Sub claim");
+    const warrant = makeWarrant(db, parentClaim.id, [subClaim.id]);
+    makeBacking(db, warrant.id);
+
+    const result = structuralQualityCheck(db, parentClaim.id);
+    expect(result.warnings.filter(w => w.includes(`Ground #${subClaim.id}`))).toHaveLength(0);
+    expect(result.warnings.filter(w => w.includes(`Warrant #${warrant.id}: all grounds have verification=pending`))).toHaveLength(0);
+  });
+});
+
+// =============================================================================
 // Case Study Integration Test (Warrant-57 pattern)
 // =============================================================================
 
 describe("Case Study — Warrant-57 pattern", () => {
-  test("fully speculative warrant detected: C3 + B4 + B5", () => {
+  test("all-pending warrant detected: C1 + B4 + B5", () => {
     const claim = makeClaim(db, "Method A outperforms Method B", "supported");
 
-    // Warrant A: fully speculative (Warrant-57 pattern)
-    const gA1 = makeGround(db, { source: "hypothesis", verification: "pending", content: "Future result A" });
-    const gA2 = makeGround(db, { source: "hypothesis", verification: "pending", content: "Future result B" });
+    // Warrant A: all grounds pending (Warrant-57 pattern)
+    const gA1 = makeGround(db, { source: "observed", verification: "pending", content: "Future result A" });
+    const gA2 = makeGround(db, { source: "observed", verification: "pending", content: "Future result B" });
     const warrantA = makeWarrant(db, claim.id, [gA1.id, gA2.id], "Speculative warrant");
     makeBacking(db, warrantA.id, "Theoretical framework");
 
@@ -319,8 +252,8 @@ describe("Case Study — Warrant-57 pattern", () => {
     // No errors (Warrant B provides clean path, so C4 passes)
     expect(result.errors).toHaveLength(0);
 
-    // C3 on Warrant A
-    expect(result.warnings.some(w => w.includes("fully speculative") && w.includes(`${warrantA.id}`))).toBe(true);
+    // C1 on Warrant A
+    expect(result.warnings.some(w => w.includes(`Warrant #${warrantA.id}`) && w.includes("all grounds have verification=pending"))).toBe(true);
 
     // B4: claim has 4 rebuttals
     expect(result.warnings.some(w => w.includes(`#${claim.id}`) && w.includes("rebuttal"))).toBe(true);
@@ -341,11 +274,94 @@ describe("accumulation", () => {
   test("multiple conditions → multiple warnings", () => {
     const claim = makeClaim(db, "Claim");
     const g1 = makeGround(db, { source: "observed", verification: "pending" }); // B1
-    const g2 = makeGround(db, { source: "hypothesis", verification: "verified" }); // B2
-    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]); // B3 (no backing)
+    const g2 = makeGround(db, { source: "literature", verification: "pending" }); // B1
+    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]); // B3 (no backing), C1 (all pending)
     makeRebuttal(db, claim.id, "claim", "Counter"); // B4
 
     const result = structuralQualityCheck(db, claim.id);
-    expect(result.warnings.length).toBeGreaterThanOrEqual(3); // B1, B2, B3, B4
+    expect(result.warnings.length).toBeGreaterThanOrEqual(4); // B1 x2, B3, B4 (+ C1)
+  });
+});
+
+// =============================================================================
+// Table-driven: all (source, verification) combinations
+// =============================================================================
+
+describe("source x verification combination matrix", () => {
+  const sources = ["literature", "observed"] as const;
+  const verifications = ["pending", "verified"] as const;
+
+  for (const source of sources) {
+    for (const verification of verifications) {
+      test(`per-ground: source=${source}, verification=${verification}`, () => {
+        const claim = makeClaim(db, "Claim");
+        const ground = makeGround(db, { source, verification });
+        makeWarrant(db, claim.id, [ground.id]);
+
+        const result = structuralQualityCheck(db, claim.id);
+        const b1Fired = result.warnings.some(w => w.includes(`Ground #${ground.id} has verification=pending`));
+        expect(b1Fired).toBe(verification === "pending");
+      });
+    }
+  }
+
+  for (const source of sources) {
+    for (const verification of verifications) {
+      test(`per-warrant (homogeneous): both grounds source=${source}, verification=${verification}`, () => {
+        const claim = makeClaim(db, "Claim");
+        const g1 = makeGround(db, { source, verification });
+        const g2 = makeGround(db, { source, verification });
+        const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
+        makeBacking(db, warrant.id);
+
+        const result = structuralQualityCheck(db, claim.id);
+        const c1Message = `Warrant #${warrant.id}: all grounds have verification=pending`;
+        const c1Warnings = result.warnings.filter(w => w === c1Message);
+        expect(c1Warnings).toEqual(verification === "pending" ? [c1Message] : []);
+      });
+    }
+  }
+
+  test("per-warrant: all pending → C1 fires regardless of source mix", () => {
+    const claim = makeClaim(db, "Claim");
+    const g1 = makeGround(db, { source: "literature", verification: "pending" });
+    const g2 = makeGround(db, { source: "observed", verification: "pending" });
+    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
+    makeBacking(db, warrant.id);
+
+    const result = structuralQualityCheck(db, claim.id);
+    const expectedWarnings = [
+      `Ground #${g1.id} has verification=pending`,
+      `Ground #${g2.id} has verification=pending`,
+      `Warrant #${warrant.id}: all grounds have verification=pending`,
+      `Claim #${claim.id} has no warrant where all grounds are verified`,
+    ];
+    expect(result.warnings).toEqual(expectedWarnings);
+  });
+
+  test("per-warrant: mixed pending/verified → C1 does not fire", () => {
+    const claim = makeClaim(db, "Claim");
+    const g1 = makeGround(db, { source: "literature", verification: "pending" });
+    const g2 = makeGround(db, { source: "observed", verification: "verified" });
+    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
+    makeBacking(db, warrant.id);
+
+    const result = structuralQualityCheck(db, claim.id);
+    expect(result.warnings).toEqual([
+      `Ground #${g1.id} has verification=pending`,
+      `Claim #${claim.id} has no warrant where all grounds are verified`,
+    ]);
+  });
+
+  test("per-warrant: all verified, any source mix → C1 does not fire, C4 satisfied", () => {
+    const claim = makeClaim(db, "Claim", "proposed");
+    const g1 = makeGround(db, { source: "literature", verification: "verified" });
+    const g2 = makeGround(db, { source: "observed", verification: "verified" });
+    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
+    makeBacking(db, warrant.id);
+
+    const result = structuralQualityCheck(db, claim.id);
+    expect(result.warnings.filter(w => w.includes("all grounds have verification=pending"))).toHaveLength(0);
+    expect(result.warnings.filter(w => w.includes("no warrant where all grounds are verified"))).toHaveLength(0);
   });
 });

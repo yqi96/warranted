@@ -347,7 +347,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
       description: TOOLS.create_statement.description,
       inputSchema: {
         content: z.string().describe(PARAMS.statement_content),
-        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(PARAMS.statement_source),
+        source: z.enum(["literature", "observed"]).optional().describe(PARAMS.statement_source),
         verification: z.enum(["verified", "pending"]).optional().describe(PARAMS.statement_verification),
         attachments: z.array(z.string()).optional().describe(PARAMS.statement_attachments),
         rebuttal_for: z.object({
@@ -389,8 +389,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         if (effectiveVerification === "pending") {
           const src = opts.source ?? "observed";
           if (src === "literature") lines.push("", HINTS.groundPendingLiterature);
-          else if (src === "observed") lines.push("", HINTS.groundPendingObserved);
-          else lines.push("", HINTS.groundPendingHypothesis);
+          else lines.push("", HINTS.groundPendingObserved);
         }
         if (!reviewConfig) lines.push("", HINTS.reviewSkipped);
         return ok(lines.join("\n"));
@@ -588,7 +587,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         content: z.string().optional().describe(PARAMS.new_content),
         attachments: z.array(z.string()).optional().describe(PARAMS.new_attachments),
         status: z.enum(["proposed", "supported", "disputed", "refuted"]).optional().describe(PARAMS.claim_status),
-        source: z.enum(["literature", "observed", "hypothesis"]).optional().describe(PARAMS.statement_source),
+        source: z.enum(["literature", "observed"]).optional().describe(PARAMS.statement_source),
         verification: z.enum(["verified", "pending"]).optional().describe(PARAMS.statement_verification),
         ground_ids: z.object({
           add: z.array(z.number()).optional(),
@@ -658,10 +657,9 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         let text = `Updated ${formatNodeBrief(node)}`;
         if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
         if (node.type === "statement" && opts.verification === "pending") {
-          const src = node.source ?? "hypothesis";
+          const src = node.source ?? "observed";
           if (src === "literature") text += "\n\n" + HINTS.groundPendingLiterature;
-          else if (src === "observed") text += "\n\n" + HINTS.groundPendingObserved;
-          else text += "\n\n" + HINTS.groundPendingHypothesis;
+          else text += "\n\n" + HINTS.groundPendingObserved;
         }
         return ok(appendInvalidateHint(text, invalidateWarnings));
       } catch (e) {

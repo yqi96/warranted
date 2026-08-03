@@ -42,6 +42,8 @@ import { WARNINGS, HINTS } from "./content/index.ts";
 // 辅助函数
 // =============================================================================
 
+const VALID_GROUND_SOURCES: string[] = ["literature", "observed"];
+
 /** 将 NodeRow 转换为具体类型的节点对象 */
 function toClaimNode(row: NodeRow): ClaimNode {
   const data = JSON.parse(row.data);
@@ -225,7 +227,7 @@ export function createStatement(
   if (!content || !content.trim()) {
     throw new ValidationError("Statement content cannot be empty");
   }
-  const validSources: string[] = ["literature", "observed", "hypothesis"];
+  const validSources = VALID_GROUND_SOURCES;
   if (!validSources.includes(source)) {
     throw new ValidationError(`Invalid source: ${source}. Must be one of: ${validSources.join(", ")}`);
   }
@@ -721,6 +723,10 @@ export function updateNode(
   if (params.source !== undefined) {
     if (row.type !== "statement") {
       throw new ValidationError("Only Ground nodes have source");
+    }
+    const validSources = VALID_GROUND_SOURCES;
+    if (!validSources.includes(params.source)) {
+      throw new ValidationError(`Invalid source: ${params.source}. Must be one of: ${validSources.join(", ")}`);
     }
     data.source = params.source;
   }

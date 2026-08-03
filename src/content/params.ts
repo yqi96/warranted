@@ -39,7 +39,7 @@ export const PARAMS = {
     "Filter by status (comma-separated: proposed,supported,disputed,refuted)",
   // list_statements.source
   statement_source_filter:
-    "Filter by source type (comma-separated: literature,observed,hypothesis). Omit to include all.",
+    "Filter by source type (comma-separated: literature,observed). Omit to include all.",
   // list_statements.verification
   statement_verification_filter:
     "Filter by verification status (comma-separated: verified,pending). Omit to include all.",

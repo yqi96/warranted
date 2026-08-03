@@ -11,7 +11,7 @@ You are handed a research goal plus reference material and data, and no fixed ar
 
 The first decision is where the Claims come from. Test each input proposition: **could it be shown false?**
 
-- **Weak Framing** — the input already states a specific question or a hypothesis to test. Cast the question's answer as a Claim; cast a user-stated hypothesis as a `source="hypothesis"` Statement (verification `pending`). Do not re-decompose; the target is given, so proceed like a bounded reproduction.
+- **Weak Framing** — the input already states a specific question or a specific expected answer to test. Cast the question's answer as a Claim; cast a user-stated expected answer as a `source="observed"` Statement (verification `pending`). Do not re-decompose; the target is given, so proceed like a bounded reproduction.
 - **Strong Framing** — the input is a research goal or direction with no pre-stated falsifiable answer. Decompose it into a small set of answerable research questions, then `create_claim` (status starts `proposed`) — one Claim per question whose verdict matters. Because nothing external fixes the target, the falsification obligation below is mandatory before any evidence run.
 - **Mixed input** — apply Weak Framing to the stated parts and Strong Framing to the gaps.
 
@@ -22,7 +22,7 @@ Keep the initial Claim set small and load-bearing. Over-proposing Claims you nev
 ```
 research goal / question                     -> one or more research questions
 a falsifiable answer to a question           -> Claim (status=proposed)
-a proposed or expected answer                -> Statement(source="hypothesis", verification="pending")
+a proposed or expected answer                -> Statement(source="observed", verification="pending")
 a result computed from the given data        -> Statement(source="observed") as Ground
 a citable proposition from a reference       -> Statement(source="literature") as Ground or Backing
 "what result would show this Claim false"    -> a pre-registered refutation condition, tested as a Rebuttal candidate
@@ -46,7 +46,7 @@ Object-layer work in this channel — data analysis, computation, coding, refere
 | Graph state | Required action |
 |---|---|
 | Input is a bare research goal | Framing (strong): derive research questions; `create_claim` (proposed) per question |
-| Input states a specific question or a hypothesis | Framing (weak): `create_claim` for the question's answer; `create_statement(source="hypothesis", verification="pending")` for a stated hypothesis |
+| Input states a specific question or a specific expected answer | Framing (weak): `create_claim` for the question's answer; `create_statement(source="observed", verification="pending")` for the stated expected answer |
 | A proposed Claim has no refutation condition | before any evidence run, register what result would falsify it (as a planned Rebuttal candidate); no supporting run may precede this |
 | A Claim needs evidence from the data | delegate to `code-experimenter`; result → `create_statement(source="observed")` |
 | A Claim needs support from a reference | read the reference; `create_statement(source="literature")` and attach the source |

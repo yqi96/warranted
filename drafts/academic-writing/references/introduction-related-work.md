@@ -4,7 +4,7 @@ Use this reference for Introduction, Background, Related Work, literature review
 
 ## Evidence Channel
 
-Apply `literature-survey` for all published-paper evidence.
+Apply `literature-writing` for all published-paper evidence.
 
 - Source-specific factual sentences cite `source="literature"` Grounds with `\cite{statement_N}`.
 - Paragraph theses are Claims, not citations.

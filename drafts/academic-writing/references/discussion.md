@@ -39,7 +39,7 @@ Do not introduce a limitation in prose without deciding whether it weakens a Cla
 
 When comparing with prior work:
 
-- use `literature-survey` for cited findings
+- use `literature-writing` for cited findings
 - create Rebuttals for genuine disagreement
 - create Warrants for convergence claims across methods, cohorts, or datasets
 - avoid explaining away conflicts unless the graph records the basis

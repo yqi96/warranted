@@ -11,7 +11,7 @@ Produce a research paper — or a literature survey — where every claim is tra
 - Every Claim has a verdict: `supported`, `disputed`, or `refuted`
 - The `.tex` is coherent: each citation's surrounding text faithfully represents its Statement
 
-Two skills drive this: run `/overleaf-setup` once to wire up auto-push and citation enforcement (below), then `/literature-survey` to draft — it grounds each external finding in the graph before it's cited and maintains the `.bib` file as you go.
+Two skills drive this: run `/overleaf-setup` once to wire up auto-push and citation enforcement (below), then `/literature-writing` to draft — it grounds each external finding in the graph before it's cited and maintains the `.bib` file as you go.
 
 ---
 

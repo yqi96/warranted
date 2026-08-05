@@ -12,7 +12,7 @@ Use this skill as the manuscript-writing umbrella. Before drafting or revising a
 - `references/discussion.md` for Discussion, Conclusion, limitations, implications, and mixed literature/result synthesis.
 - `references/methods-statistics.md` for Methods, Statistical Analysis, reproducibility, protocol, and analysis-authority prose.
 
-Apply `literature-survey` whenever a passage uses published papers as evidence. `literature-survey` governs the literature evidence channel inside academic writing; this umbrella governs manuscript-level projection and cross-section consistency.
+Apply `literature-writing` whenever a passage uses published papers as evidence. `literature-writing` governs the literature evidence channel inside academic writing; this umbrella governs manuscript-level projection and cross-section consistency.
 
 ## Graph Translation Contract
 

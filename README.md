@@ -36,7 +36,7 @@ New here? Read in this order:
 |-----|----------------|
 | [The Argument Graph](docs/en/concepts.md) | Core concepts — three node types and roles, `compile`, the status lifecycle, and how to talk to the agent in graph terms. **Start here.** |
 | [Reproducing a Paper](docs/en/reproduce-a-paper.md) | Scenario guide: verify a paper's claims with an independent argument graph (`/paper-reproduce`). |
-| [Writing a Paper](docs/en/write-a-paper.md) | Scenario guide: draft a paper or literature survey where every citation traces to a verified Ground (`/overleaf-setup`, `/literature-survey`). |
+| [Writing a Paper](docs/en/write-a-paper.md) | Scenario guide: draft a paper or literature survey where every citation traces to a verified Ground (`/overleaf-setup`, `/literature-writing`). |
 
 Release history: [CHANGELOG.md](CHANGELOG.md)
 
@@ -125,7 +125,7 @@ The visualizer server tracks the current selection. Once the plugin is running, 
 | Skill | Trigger | Role |
 |-------|---------|------|
 | `paper-reproduce` | `/paper-reproduce` | Paper reproduction workflow. Builds an independent argument graph and verifies paper claims step by step. |
-| `literature-survey` | `/literature-survey` | Literature survey workflow. Grounds external findings in the argument graph, writes the survey in LaTeX with `\cite{statement_N}` citations. Maintains a `.bib` file throughout. |
+| `literature-writing` | `/literature-writing` | Literature-backed writing workflow — related work, introductions, discussions, survey write-ups. Grounds each citable finding in the argument graph and writes LaTeX with `\cite{statement_N}` citations. Maintains a `.bib` file throughout. |
 | `cite-review` | `/cite-review` | Citation-faithfulness audit. Checks every `\cite{statement_N}` against its Statement in parallel, corrects mismatched LaTeX, and reconciles the graph. |
 | `academic-writing` | `/academic-writing` | Manuscript-writing umbrella. Projects graph-backed arguments into paper prose across all sections, figures, tables, and citations. |
 | `overleaf-setup` | `/overleaf-setup` | One-time setup skill. Installs `leaf`, authenticates, links a local LaTeX directory to an Overleaf project, and writes a Stop hook that auto-pushes on every conversation turn (skips if no files changed). |

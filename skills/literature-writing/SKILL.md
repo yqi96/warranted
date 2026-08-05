@@ -1,6 +1,6 @@
 ---
-name: literature-survey
-description: Use for literature-backed surveys, related work, introductions, discussions, or prose whose evidence comes from published papers. Translate citable propositions into verified literature Grounds and cite them as \cite{statement_N}.
+name: literature-writing
+description: Use when writing or revising LaTeX prose that cites published papers — related work, introductions, discussions, or the write-up phase of a survey. Translate citable propositions into verified literature Grounds and cite them as \cite{statement_N}.
 ---
 
 ## Graph Mapping

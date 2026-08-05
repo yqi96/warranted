@@ -60,7 +60,7 @@ Tools (tools.ts)        — MCP 工具注册、输入验证、错误处理（12 
 | `src/merkle-hash.ts` | 论证图 Merkle 哈希（staleness 检测） |
 | `sql/schema.sql` | SQLite schema |
 | `agents/` | Claude Code agent 定义（Toulmin 层：toulmin-researcher、toulmin-explorer；object 层：code-experimenter、discrepancy-auditor、code-optimizer） |
-| `skills/` | paper-reproduce、literature-survey、cite-review、overleaf-setup、academic-writing 技能 |
+| `skills/` | paper-reproduce、literature-writing、cite-review、overleaf-setup、academic-writing 技能 |
 | `visualizer/` | D3.js v7 模块化可视化（双阶段，14 JS 模块） |
 | `tests/` | 测试文件，bun test |
 

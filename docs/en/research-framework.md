@@ -16,7 +16,7 @@ Subagents return evidence reports. They do not own Claim status, mutate the grap
 | `toulmin-explorer` | read-only graph exploration | active |
 | `code-experimenter` | coding and experiment execution | placeholder |
 | `discrepancy-auditor` | mismatch and barrier audit before Rebuttal or blocker | placeholder |
-| `literature-survey` | literature evidence channel | active, under revision |
+| `literature-writing` | literature evidence channel | active, under revision |
 | `cite-review` | citation faithfulness audit | active, under revision |
 | `paper-reproduce` | reproduction channel | active, under revision |
 | `evidence-search` | search/discovery triage | active draft |

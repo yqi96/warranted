@@ -36,7 +36,7 @@
 |------|--------|
 | [论证图](docs/zh-CN/concepts.md) | 核心概念——三种节点类型与角色、`compile`、状态生命周期，以及如何用论证图的语言跟 Agent 沟通。**从这里开始。** |
 | [复现一篇论文](docs/zh-CN/reproduce-a-paper.md) | 场景指南：用一张独立的论证图验证论文主张（`/paper-reproduce`）。 |
-| [写一篇论文](docs/zh-CN/write-a-paper.md) | 场景指南：写论文或文献综述，让每处引用都能追溯到一个 verified 的 Ground（`/overleaf-setup`、`/literature-survey`）。 |
+| [写一篇论文](docs/zh-CN/write-a-paper.md) | 场景指南：写论文或文献综述，让每处引用都能追溯到一个 verified 的 Ground（`/overleaf-setup`、`/literature-writing`）。 |
 
 更新历史：[CHANGELOG.md](CHANGELOG.md)
 
@@ -123,7 +123,7 @@ bun run viz
 | Skill | 触发方式 | 作用 |
 |-------|----------|------|
 | `paper-reproduce` | `/paper-reproduce` | 论文复现工作流。构建独立论证图，逐步验证论文主张是否成立。 |
-| `literature-survey` | `/literature-survey` | 文献综述工作流。将外部发现接入论证图作为 Statement（Ground 角色），用 LaTeX 以 `\cite{statement_N}` 引用写作，全程维护 `.bib` 文件。 |
+| `literature-writing` | `/literature-writing` | 文献写作工作流——related work、引言、讨论、综述的写作阶段。把每条可引用的外部发现接入论证图作为 Statement（Ground 角色），用 LaTeX 以 `\cite{statement_N}` 引用写作，全程维护 `.bib` 文件。 |
 | `cite-review` | `/cite-review` | 引用忠实性审计。并行核对每个 `\cite{statement_N}` 与其 Statement 是否一致，修正不符的 LaTeX，并回填论证图。 |
 | `academic-writing` | `/academic-writing` | 论文写作总纲 skill。把有图支撑的论证投射到论文各章节、图、表与引用的正文表达中。 |
 | `overleaf-setup` | `/overleaf-setup` | 一次性配置 skill。安装 `leaf`、完成认证、把本地 LaTeX 目录关联到 Overleaf 项目，并写入一个 Stop hook，在每轮对话结束时自动推送（无文件改动则跳过）。 |

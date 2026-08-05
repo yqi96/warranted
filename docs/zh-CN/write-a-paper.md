@@ -11,7 +11,7 @@
 - 每个 Claim 都有判定：`supported`、`disputed` 或 `refuted`
 - `.tex` 是自洽的：每处引用周围的文字都忠实反映其 Statement
 
-两个 skill 支撑这套流程：先运行一次 `/overleaf-setup` 接好自动推送与引用强制（见下），再用 `/literature-survey` 起草——它在每条外部发现被引用之前先把它接入论证图，并随手维护 `.bib` 文件。
+两个 skill 支撑这套流程：先运行一次 `/overleaf-setup` 接好自动推送与引用强制（见下），再用 `/literature-writing` 起草——它在每条外部发现被引用之前先把它接入论证图，并随手维护 `.bib` 文件。
 
 ---
 

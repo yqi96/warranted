@@ -37,22 +37,16 @@ updated: 2026-07-22
 
 ## Reviewer 类型
 
-`ElementReviewResult.reviewer` 字段标识来源。注意两套独立的审查系统：
-
-**节点定义审查**（create/update content 时触发，同步阻断）：
-
-| reviewer | 触发时机 |
-|----------|---------|
-| `claim` | create_claim / update_node 修改 claim content |
-| `warrant` | create_warrant / update_node 修改 warrant content |
-| `statement` | create_statement / update_node 修改 statement content；**`source=literature` 跳过**（内容合法性由证据审查保证）；Claim 节点作为 ground 时同样跳过（占位内容） |
-
-**compile_arguments 审查**（显式调用触发）：
+`ElementReviewResult.reviewer` 字段标识来源。均在 `compile_arguments` 显式调用时并行触发（`Promise.all`）：
 
 | reviewer | 检查内容 |
 |----------|---------|
 | `structure` | 论证结构完整性（确定性规则，无 LLM） |
-| `chain` | 整体论证链路逻辑连贯性（LLM） |
+| `claim` | Claim content 是否符合 Toulmin 定义（LLM，`compile-service.reviewNodeDefinition`） |
+| `warrant` | 每个 Warrant content 是否符合 Toulmin 定义（LLM，`compile-service.reviewNodeDefinition`） |
+| `chain` | 整体论证链路逻辑连贯性（LLM，`compile-reviewers.runChainReview`） |
+
+`claim`/`warrant` 与 `chain` 并行执行；当两者对同一 compile 均有 error 时，`chain` 的结果会被标记 `advisory: true`（仍计入 verdict，仅渲染上作区分）。Ground/Backing/Rebuttal 的证据审查（`review-sync.ts`，`verification: pending/verified`）是独立系统，不产出 `ElementReviewResult`，也不在 compile 时触发。
 
 ### chain reviewer — Claim-type ground 内容展开
 

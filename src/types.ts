@@ -257,13 +257,15 @@ export interface ElementReviewResult {
   warnings: string[];
   infos?: string[];
   skipped?: boolean;
+  /** true 表示本结果的 errors 与其他 reviewer 的 error 重叠，已被降级为咨询性提示（不代表 compile 失败原因的唯一来源） */
+  advisory?: boolean;
 }
 
 export interface CompileResult {
   claimId: number;
   verdict: CompileVerdict;
   summary: string;
-  elementReviews: ElementReviewResult[]; // 仅 chain review
+  elementReviews: ElementReviewResult[];
   compiledAt: string;
 }
 

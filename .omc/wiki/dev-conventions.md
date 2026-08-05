@@ -53,11 +53,11 @@ updated: 2026-07-20
 
 ## 审查系统
 
-三种审查，均为同步阻断：
+三种审查：
 
 | 审查类型 | 触发时机 | 失败行为 |
 |---------|---------|---------|
-| 节点定义审查 | create/update content（claim/warrant/ground） | 操作拒绝 |
+| 节点定义审查（claim/warrant） | compile_arguments（显式调用），与逻辑链审查并行 | verdict=failed |
 | Ground 证据审查 | update_node verification=verified | 退回 pending |
 | 逻辑链审查 | compile_arguments（显式调用） | verdict=failed |
 
@@ -71,7 +71,6 @@ Ground content 变更时若已 verified，自动退回 pending。
 |--------|---------|
 | `literature` | 附上来源文件（PDF/网页），含作者/年份/DOI |
 | `observed` | 附上所有产出物：原始数据、结果文件、代码、日志等 |
-| `hypothesis` | 提供说明文档（描述内容和产出方式）+ 支持文件 |
 
 ## MCP 协议
 

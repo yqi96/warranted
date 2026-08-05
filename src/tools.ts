@@ -235,17 +235,23 @@ function formatStats(stats: Stats): string {
   return lines.join("\n");
 }
 
-/** 收集链式审查的所有 errors、warnings 和 infos */
-function collectChainReviewIssues(results: AutoVerifyResult[]): { errors: string[]; warnings: string[]; infos: string[] } {
+/** 收集 compile 期间所有 reviewer（structure/claim/warrant/chain）产生的 errors、warnings 和 infos */
+function collectReviewIssues(results: AutoVerifyResult[]): { errors: string[]; warnings: string[]; infos: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
   const infos: string[] = [];
   for (const r of results) {
     if (r.action === "auto-reviewed" && r.compileResult) {
       for (const er of r.compileResult.elementReviews) {
-        errors.push(...er.errors);
-        warnings.push(...er.warnings);
-        if (er.infos) infos.push(...er.infos);
+        // claim/warrant 定义审查结果按节点前缀，便于定位；chain/structure 的消息已自带节点引用，不重复加前缀
+        const label = er.reviewer === "claim" ? `Claim #${er.nodeId}: `
+          : er.reviewer === "warrant" ? `Warrant #${er.nodeId}: `
+          : "";
+        // advisory: 该 error 与另一 reviewer 的发现重叠，仅供参考，不代表独立的失败原因
+        const marker = er.advisory ? "[advisory] " : "";
+        for (const e of er.errors) errors.push(`${marker}${label}${e}`);
+        for (const w of er.warnings) warnings.push(`${label}${w}`);
+        if (er.infos) for (const i of er.infos) infos.push(`${label}${i}`);
       }
     }
   }
@@ -323,10 +329,6 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("create_claim", async ({ content, qualifier }: { content: string; qualifier?: string }) => {
       try {
-        if (reviewConfig) {
-          const review = await compileService.reviewNodeDefinition(reviewConfig, "claim", content, qualifier);
-          if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
-        }
         const claim = service.createClaim(db, content, qualifier);
         const lines = [`Created claim #${claim.id}`, "", HINTS.claimNoWarrants];
         if (!reviewConfig) lines.push("", HINTS.reviewSkipped);
@@ -415,10 +417,6 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("create_warrant", async ({ claim_id, content, ground_ids }: { claim_id: number; content: string; ground_ids?: number[] }) => {
       try {
-        if (reviewConfig) {
-          const review = await compileService.reviewNodeDefinition(reviewConfig, "warrant", content);
-          if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
-        }
         const warrant = service.createWarrant(db, { content, claimId: claim_id, groundIds: ground_ids });
         let text = appendInvalidateHint(
           `Created warrant #${warrant.id}`,
@@ -606,21 +604,6 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("update_node", async (opts: any) => {
       try {
-        // 阻断式定义审查（如果更新了 content）
-        // literature Ground 跳过：内容是文献引用，合法性由证据审查保证
-        if (reviewConfig && opts.content !== undefined) {
-          const existingNode = repo.getNodeById(db, opts.node_id);
-          if (existingNode && (existingNode.type === "claim" || existingNode.type === "warrant")) {
-            const review = await compileService.reviewNodeDefinition(
-              reviewConfig,
-              existingNode.type as "claim" | "warrant",
-              opts.content,
-              opts.qualifier
-            );
-            if (review.errors.length > 0) return fail(formatReviewIssues(review.errors, review.warnings));
-          }
-        }
-
         const { node, warnings: serviceWarnings } = service.updateNode(db, opts.node_id, {
           content: opts.content,
           attachments: opts.attachments,
@@ -711,7 +694,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
       const ids = claim_ids ?? repo.listNodesByType(db, "claim").map(r => r.id);
       if (ids.length === 0) return ok(MESSAGES.no_claims_to_compile);
       const results = await compileService.compileClaims(db, reviewConfig, ids);
-      const { errors, warnings, infos } = collectChainReviewIssues(results);
+      const { errors, warnings, infos } = collectReviewIssues(results);
 
       const lines: string[] = [];
       for (const r of results) {

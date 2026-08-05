@@ -25,10 +25,10 @@ export const HINTS = {
   compileAfterMutation:
     "Hint: Call compile_arguments to review the logical relationships.",
 
-  /** create 路径：reviewConfig 为空（审查未配置）时告知 agent 自行核验 */
+  /** reviewConfig 为空（审查完全未配置）时告知 agent 自行核验；element definition 审查始终延迟到 compile_arguments，与此 hint 的触发条件无关 */
   reviewSkipped:
-    "Hint: Automatic review is not configured, so no definition or evidence review ran for this node. " +
-    "Self-verify that the element matches its Toulmin definition and that any 'verified' statement is backed by real evidence.",
+    "Hint: Automatic review is not configured, so no evidence review ran for this node. " +
+    "Self-verify that any 'verified' statement is backed by real evidence.",
 
   /** update_node 修改 Statement content 后，verification 自动回退为 pending 时 */
   groundVerificationReverted: (nodeId: number) =>

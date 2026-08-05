@@ -9,6 +9,31 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { ReviewConfig } from "./review-config.ts";
 import { writeAuditRecord } from "./review-audit.ts";
 
+const DEFAULT_MAX_CONCURRENCY = 4;
+
+/**
+ * 全局并发上限信号量。所有 callAgent 调用（跨 compile-service、compile-reviewers、
+ * review-sync 的全部 LLM 调用路径）共享同一个模块级实例，而非按 claim 或按调用方分别限流 ——
+ * compileClaims 本身已对所有 claim 做 Promise.all，按 claim 限流无法真正限制总并发。
+ */
+let inFlight = 0;
+const waiters: Array<() => void> = [];
+
+async function acquirePermit(limit: number): Promise<void> {
+  if (inFlight < limit) {
+    inFlight++;
+    return;
+  }
+  await new Promise<void>((resolve) => waiters.push(resolve));
+  inFlight++;
+}
+
+function releasePermit(): void {
+  inFlight--;
+  const next = waiters.shift();
+  if (next) next();
+}
+
 /**
  * 调用 Agent 执行审查。
  * Agent 拥有 Read/Glob/Grep 工具，可以读取附件文件。
@@ -27,33 +52,38 @@ export async function callAgent(
     : prompt;
 
   const t0 = Date.now();
-  const result = await query({
-    prompt: fullPrompt,
-    options: {
-      model: config.model,
-      maxTurns: config.maxTurns ?? 10,
-      // 只给只读工具
-      allowedTools: ["Read", "Glob", "Grep"],
-      // 禁止写操作
-      disallowedTools: ["Edit", "Write", "Bash", "MultiEdit"],
-      // 从不询问：未预批准的操作直接拒绝，不会因为无 TTY 而卡死
-      permissionMode: "dontAsk",
-      // 工作目录（agent 在此目录下搜索和读取文件）
-      ...(cwd ? { cwd } : {}),
-      // 禁用所有 MCP 服务器（reviewer 不需要 MCP 工具）
-      mcpServers: {},
-    },
-  });
-
-  // 收集消息，提取最终结果
+  await acquirePermit(config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
   let finalResult = "";
   const deniedTools: string[] = [];
-  for await (const message of result) {
-    if (message.type === "result" && message.subtype === "success") {
-      finalResult = message.result || "";
-    } else if (message.type === "system" && message.subtype === "permission_denied") {
-      deniedTools.push(message.tool_name);
+  try {
+    const result = await query({
+      prompt: fullPrompt,
+      options: {
+        model: config.model,
+        maxTurns: config.maxTurns ?? 10,
+        // 只给只读工具
+        allowedTools: ["Read", "Glob", "Grep"],
+        // 禁止写操作
+        disallowedTools: ["Edit", "Write", "Bash", "MultiEdit"],
+        // 从不询问：未预批准的操作直接拒绝，不会因为无 TTY 而卡死
+        permissionMode: "dontAsk",
+        // 工作目录（agent 在此目录下搜索和读取文件）
+        ...(cwd ? { cwd } : {}),
+        // 禁用所有 MCP 服务器（reviewer 不需要 MCP 工具）
+        mcpServers: {},
+      },
+    });
+
+    // 收集消息，提取最终结果
+    for await (const message of result) {
+      if (message.type === "result" && message.subtype === "success") {
+        finalResult = message.result || "";
+      } else if (message.type === "system" && message.subtype === "permission_denied") {
+        deniedTools.push(message.tool_name);
+      }
     }
+  } finally {
+    releasePermit();
   }
   if (deniedTools.length > 0) {
     console.warn(`[review-llm] ${deniedTools.length} tool call(s) denied under dontAsk: ${deniedTools.join(", ")}`);

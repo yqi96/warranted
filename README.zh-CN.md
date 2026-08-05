@@ -72,7 +72,7 @@ claude plugin install warranted@warranted --scope local
 
 启动后自动以 `toulmin-researcher` 为主 Agent，MCP server 随之拉起。
 
-启用 LLM 审查后，创建节点时自动触发节点定义审查，`compile_arguments` 执行完整逻辑链审查。
+启用 LLM 审查后，`compile_arguments` 并行执行节点定义审查（Claim/Warrant 是否符合 Toulmin 定义）与完整逻辑链审查。
 
 > 安装或版本有问题？见 [已验证的依赖版本](docs/reference/known-working-versions.md)。
 

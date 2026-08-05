@@ -101,7 +101,7 @@ export const TOOLS = {
     description:
       "Compile a claim — review the argument graph for logical coherence, not final truth or net support. " +
       "Checks whether grounds are connected to the claim through appropriate warrants, whether rebuttals genuinely challenge their target claim or warrant, whether backings substantiate their warrant rather than merely restating the claim or summarizing the grounds, and whether any ground is circular (merely restates the claim). " +
-      "Individual element definitions are assumed already validated at create/update time; compile audits only the connections between elements, not whether each element matches its own definition. " +
+      "Compile also reviews the Claim's and each Warrant's own definitions (whether each matches its Toulmin element definition) concurrently with the logical-connection review — element content is not validated at create/update time. " +
       "Compile independently audits logical relationships; it does not decide whether the grounds defeat the rebuttals or whether the claim is ultimately supported. " +
       "If review passes, the claim's compile_status becomes 'passed'. " +
       "If any node in the argument is later modified, compile_status is reset to 'stale'. " +

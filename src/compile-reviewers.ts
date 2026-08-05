@@ -1,9 +1,10 @@
 /**
  * Warranted — Compile 审查执行器
  *
- * compile 包含多项检查，不同时机触发：
- * - 节点定义检查：节点 content 变化时触发（在 compile-service.reviewNodeDefinition 中实现）
- * - 逻辑链检查：agent 显式调用 compile_arguments 时触发（本文件实现）
+ * compile 包含多项检查，均在 agent 显式调用 compile_arguments 时触发：
+ * - 节点定义检查：对 Claim + 每个 Warrant 的 content 审查（在 compile-service.reviewNodeDefinition 中实现）
+ * - 逻辑链检查：对整个 argument 图的逻辑链条审查（本文件实现）
+ * 两者在 compile-service.compileArgument 中并行执行（Promise.all）。
  *
  * 本文件只负责逻辑链审查（reviewChain）。
  */

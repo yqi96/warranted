@@ -11,6 +11,7 @@
  *   "model": "claude-sonnet-4-...",   // 可选，默认 claude-sonnet-4-20250514
  *   "debounceMs": 30000,              // 可选，去重窗口（毫秒），默认 30000
  *   "maxTurns": 10,                   // 可选，agent 最大轮数，默认 10
+ *   "maxConcurrency": 4,              // 可选，全局并发上限（所有 callAgent 调用共享），默认 4
  *   "auditDir": "/path/to/audit"      // 可选，审计日志目录；null = 禁用；不设置 = dirname(dbPath)/audit
  * }
  */
@@ -26,6 +27,8 @@ export interface ReviewConfig {
   baseUrl?: string;
   debounceMs: number;
   maxTurns: number;
+  /** 所有 callAgent 调用共享的全局并发上限。默认 4（见 review-llm.ts DEFAULT_MAX_CONCURRENCY） */
+  maxConcurrency?: number;
   reviewDir: string | null;
   /** 审计日志目录。null = 禁用审计。默认 dirname(dbPath)/audit */
   auditDir: string | null;
@@ -38,6 +41,7 @@ interface ReviewConfigFile {
   model?: string;
   debounceMs?: number;
   maxTurns?: number;
+  maxConcurrency?: number;
   /** 审计日志目录。null = 禁用审计。不设置时默认 dirname(dbPath)/audit */
   auditDir?: string | null;
 }
@@ -85,6 +89,7 @@ export function loadReviewConfig(
   const model = fileConfig.model ?? "claude-sonnet-4-20250514";
   const debounceMs = fileConfig.debounceMs ?? 30000;
   const maxTurns = fileConfig.maxTurns ?? 10;
+  const maxConcurrency = fileConfig.maxConcurrency;
   const baseUrl = fileConfig.baseUrl ?? undefined;
   const reviewDir = dirname(dbPath) + "/reviews";
 
@@ -113,6 +118,7 @@ export function loadReviewConfig(
     baseUrl,
     debounceMs: isNaN(debounceMs) ? 30000 : debounceMs,
     maxTurns: isNaN(maxTurns) ? 10 : maxTurns,
+    ...(maxConcurrency !== undefined && !isNaN(maxConcurrency) ? { maxConcurrency } : {}),
     reviewDir,
     auditDir,
     dbPath,

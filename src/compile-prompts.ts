@@ -24,10 +24,10 @@ const OUTPUT_FORMAT = `Respond in JSON:
 }
 
 Rules:
-- "errors": Fundamental violations of the element's definition. The operation will be REJECTED.
-- "warnings": Minor issues that should be addressed but don't break the definition. The operation will PROCEED.
+- "errors": Fundamental violations of the element's definition. The compile will FAIL.
+- "warnings": Minor issues that should be addressed but don't break the definition. The compile will PASS with warnings.
 - If both arrays are empty, the element passes cleanly.
-- If errors is non-empty, the element is REJECTED regardless of warnings.`;
+- If errors is non-empty, the compile FAILS regardless of warnings.`;
 
 const CHAIN_OUTPUT_FORMAT = `Respond in JSON:
 {
@@ -180,7 +180,7 @@ export function buildChainReviewPrompt(data: ChainReviewData): string {
 
   return `You are a rigorous scientific argumentation reviewer. Your task is to audit whether the logical relationships in a Toulmin argument are coherent and sound.
 
-IMPORTANT: Assume each individual element (Claim, Warrant, Ground, Backing, Rebuttal) has already been validated for correct definition usage. Focus ONLY on the logical connections between elements. Do NOT decide whether the Grounds ultimately defeat the Rebuttals, and do NOT decide whether the Claim is ultimately supported or true.
+IMPORTANT: No element is pre-validated — a concurrently-running reviewer checks whether the Claim and each Warrant individually match their own Toulmin element definition, but that reviewer's findings are not available to you, and Ground/Backing/Rebuttal are never definition-reviewed at all. Focus ONLY on the logical connections between elements: whether the types of evidence and inference fit together, not whether any single element is internally well-formed. Do NOT decide whether the Grounds ultimately defeat the Rebuttals, and do NOT decide whether the Claim is ultimately supported or true.
 
 ## Argument to Review
 

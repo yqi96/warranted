@@ -667,30 +667,6 @@ describe("create_statement — literature 跳过定义审查", () => {
     cleanupDb(db2);
   });
 
-  test("update_node — literature statement 更新 content 跳过定义审查", async () => {
-    // create without reviewConfig, then update with fakeConfig
-    // if review were called during update, sk-fake would hang; success proves skip fired
-    const db2 = createTestDb();
-    const server2 = createMockServer();
-    registerTools(server2, db2); // no reviewConfig for create
-    const createResult = await server2._tools.create_statement.handler({
-      content: "Smith et al. (2020) baseline results.",
-      source: "literature",
-      verification: "pending",
-    });
-    const nodeId = parseInt(createResult.content[0].text.match(/#(\d+)/)?.[1] ?? "0");
-
-    // re-register with fakeConfig for update
-    const server3 = createMockServer();
-    registerTools(server3, db2, fakeConfig);
-    const updateResult = await server3._tools.update_node.handler({
-      node_id: nodeId,
-      content: "Smith et al. (2020) revised: accuracy 97% on dataset X.",
-    });
-    expect(updateResult.isError).toBeFalsy();
-    cleanupDb(db2);
-  });
-
   test("observed statement 无 reviewConfig 时直接创建成功（对照组）", async () => {
     // without reviewConfig both sources succeed; proves skip is source-conditional, not path-conditional
     const db2 = createTestDb();

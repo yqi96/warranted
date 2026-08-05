@@ -1,9 +1,11 @@
 /**
  * Warranted — Compile Service 层
  *
- * compile 包含多项检查，不同时机触发：
- * - 节点定义检查：节点 content 变化时触发（reviewNodeDefinition），同步阻断
- * - 逻辑链检查：agent 显式调用 compile_arguments 时触发（首次或哈希变化时运行 LLM 审查）
+ * compile 包含多项检查，均在 compile_arguments 被调用时触发：
+ * - 节点定义检查（reviewNodeDefinition / runDefinitionReviews）：对 Claim + 每个 Warrant 的 content 审查
+ * - 逻辑链检查（runChainReview）：对整个 argument 图的逻辑链条审查
+ * 两者在 compileArgument 中并行执行（Promise.all）。当两者的 errors 重叠时，
+ * 逻辑链结果会被降级为 advisory（见 compileArgument 中的降级逻辑）。
  *
  * 失效管理：节点修改时将受影响 Claim 的 compile_status 设为 stale
  */
@@ -59,19 +61,23 @@ function saveChainReviewFile(
 function saveNodeReviewFile(
   config: ReviewConfig,
   elementType: "claim" | "warrant",
+  nodeId: number,
+  claimId: number,
   content: string,
   result: { errors: string[]; warnings: string[] },
   reviewedAt: string
 ): void {
   if (!config.reviewDir) return;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `create_${elementType}_${timestamp}.json`;
+  const filename = `compile_${elementType}${nodeId}_definition_${timestamp}.json`;
   const filepath = join(config.reviewDir, filename);
 
   mkdirSync(config.reviewDir, { recursive: true });
   writeFileSync(filepath, JSON.stringify({
-    type: "create",
+    type: "definition",
     elementType,
+    claimId,
+    nodeId,
     content,
     reviewedAt,
     ...result,
@@ -84,27 +90,30 @@ function saveNodeReviewFile(
 
 /**
  * 对 content 执行节点定义审查。
- * content 变化时触发（create 和 update 均阻断：errors 非空 → 操作拒绝）。
+ * 由 runDefinitionReviews 在 compile 时对 Claim + 每个 Warrant 调用。
  * 审查结果保存到 reviews/ 目录。
  */
 export async function reviewNodeDefinition(
   config: ReviewConfig,
   elementType: "claim" | "warrant",
   content: string,
-  qualifier?: string | null
+  qualifier?: string | null,
+  options?: { nodeId?: number; claimId?: number }
 ): Promise<{ errors: string[]; warnings: string[] }> {
   const cwd = dirname(dirname(config.dbPath));
   const reviewedAt = new Date().toISOString().slice(0, 19);
+  const nodeId = options?.nodeId ?? 0;
+  const claimId = options?.claimId ?? 0;
   let prompt: string;
 
   if (elementType === "claim") {
     prompt = buildClaimReviewPrompt({
-      id: 0,
+      id: nodeId,
       content,
       qualifier: qualifier ?? null,
     });
   } else {
-    prompt = buildWarrantReviewPrompt({ id: 0, content });
+    prompt = buildWarrantReviewPrompt({ id: nodeId, content });
   }
 
   let result: { errors: string[]; warnings: string[] };
@@ -117,10 +126,36 @@ export async function reviewNodeDefinition(
 
   // 保存审查结果到 reviews/ 目录（--no-persist 时 reviewDir 为 null，跳过）
   if (config.reviewDir) {
-    saveNodeReviewFile(config, elementType, content, result, reviewedAt);
+    saveNodeReviewFile(config, elementType, nodeId, claimId, content, result, reviewedAt);
   }
 
   return result;
+}
+
+/**
+ * 对 Claim 及其所有 Warrant 并行执行节点定义审查。
+ * 由 compileArgument 与 runChainReview 并行调用（Promise.all）。
+ */
+export async function runDefinitionReviews(
+  config: ReviewConfig,
+  db: Database,
+  claimId: number
+): Promise<ElementReviewResult[]> {
+  const ctx = loadArgumentContext(db, claimId);
+  if (!ctx) return [];
+
+  const claimQualifier = ctx.claimData.qualifier as string | null | undefined;
+
+  const tasks: Array<Promise<ElementReviewResult>> = [
+    reviewNodeDefinition(config, "claim", ctx.claimRow.content, claimQualifier, { nodeId: ctx.claimRow.id, claimId })
+      .then(result => ({ reviewer: "claim" as const, nodeId: ctx.claimRow.id, ...result })),
+    ...ctx.warrantRows.map(w =>
+      reviewNodeDefinition(config, "warrant", w.content, undefined, { nodeId: w.id, claimId })
+        .then(result => ({ reviewer: "warrant" as const, nodeId: w.id, ...result }))
+    ),
+  ];
+
+  return Promise.all(tasks);
 }
 
 // =============================================================================
@@ -343,11 +378,25 @@ export async function compileArgument(
     };
   }
 
-  // 2. 运行逻辑链审查
-  const { elementReviews: chainReviews } = await runChainReview(config, db, claimId);
+  // 2. 并行运行节点定义审查 + 逻辑链审查
+  const [definitionReviews, { elementReviews: chainReviews }] = await Promise.all([
+    runDefinitionReviews(config, db, claimId),
+    runChainReview(config, db, claimId),
+  ]);
+
+  // 2.5 降级逻辑：定义审查与逻辑链审查的 error 有重叠风险时，链审查结果降级为 advisory
+  // （不影响 hasError/verdict，只影响渲染 —— 避免同一问题被报告两次造成困惑）
+  const hasDefinitionError = definitionReviews.some(r => r.errors.length > 0);
+  if (hasDefinitionError) {
+    for (const chainResult of chainReviews) {
+      if (chainResult.errors.length > 0) {
+        chainResult.advisory = true;
+      }
+    }
+  }
 
   // qualityResult is always elementReviews[0]
-  const allReviews: ElementReviewResult[] = [qualityResult, ...chainReviews];
+  const allReviews: ElementReviewResult[] = [qualityResult, ...definitionReviews, ...chainReviews];
 
   // 3. 汇总结果（infos never contribute to verdict）
   const hasError = allReviews.some(r => r.errors.length > 0);
@@ -375,8 +424,11 @@ export async function compileArgument(
   log("review_dispatch", "OK", elapsed, `END claim=#${claimId} → verdict=${verdict}, "${summary.slice(0, 80)}"`);
 
   // 6. 保存审查结果到 reviews/ 目录（--no-persist 时 reviewDir 为 null，跳过）
+  // claim/warrant 条目已在 reviewNodeDefinition 内部保存为 compile_{elementType}{nodeId}_definition_ 文件，
+  // 此处只需为 chain/structure 条目写入 compile_claim{id}_chain_ 文件，避免重复写入且命名错误。
   if (config.reviewDir) {
     for (const review of allReviews) {
+      if (review.reviewer === "claim" || review.reviewer === "warrant") continue;
       try {
         saveChainReviewFile(config, claimId, review, compiledAt);
       } catch {

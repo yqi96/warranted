@@ -30,7 +30,6 @@ Object-layer work in this channel — implementation, data download, computation
 |---|---|
 | A paper conclusion whose verdict matters has no Claim | `create_claim`, status `proposed` |
 | A paper-stated result must be tested | `create_statement(source="observed", verification="pending")` |
-| A Claim's Grounds have no inference principle | `create_warrant` |
 | A Warrant needs authority | `create_statement(...)` from the paper's method or standard, then `update_node(<warrant>, backing_ids={add:[...]})` |
 | The paper acknowledges an exception or limitation | `create_statement(rebuttal_for={target_id, target_type})` |
 | The initial Claim-Ground-Warrant structure exists | `compile_arguments` — coherence to test, not proof |
@@ -52,7 +51,6 @@ The graph represents the paper's argument, not an improved version that happens 
 - Pending Grounds are fixed in logical assertion: do not rewrite what the paper claimed was found. A minor numerical correction is allowed only when it preserves the same assertion and is documented.
 - Warrants reflect the paper's reasoning; do not swap them merely to make reproduction easier.
 - If the paper's formulation is ambiguous, record the ambiguity — do not silently pick the interpretation most convenient to your implementation.
-- A confirmed contradiction stays visible as a Rebuttal or status change; it is never erased by rewriting the Claim or Ground.
 
 ## Independence
 
@@ -72,7 +70,7 @@ If the paper produced it, it cannot verify the Ground. It may still be used for 
 
 ## Delegation
 
-Reproduction is long-running and demands isolated context, so delegate substantial object-layer work by default. All delegated workers report evidence only; none set Claim status nor create Rebuttals — you own those graph decisions.
+Reproduction runs are long and need isolated contexts; this scenario routes them to dedicated workers.
 
 Delegate experiment execution to `code-experimenter`, briefing it with the target pending Ground, the expected paper result, the method to implement, the paper-produced artifacts it must not use as verification (see Independence), and the raw artifacts to return.
 

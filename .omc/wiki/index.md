@@ -6,6 +6,7 @@
 
 ## environment
 - [Development Conventions](dev-conventions.md) — Bun工具链、测试结构、日志规范、MCP协议
+- [Prompt Layering](prompt-layering.md) — toulmin-researcher(判断层) vs SKILL.md(协议层)的信息归属规范、判据、paper-reproduce范例
 
 ---
-_Last updated: 2026-07-30 | Pages: 4_
+_Last updated: 2026-08-05 | Pages: 5_

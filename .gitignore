@@ -6,3 +6,4 @@ node_modules/
 review.json
 memory/
 operation.log
+tests/agent-eval/results/

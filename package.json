@@ -6,6 +6,7 @@
     "dev": "bun src/index.ts",
     "mcp": "bun src/index.ts",
     "test": "bun test",
+    "agent-eval": "bun tests/agent-eval/run.ts",
     "viz": "bun visualizer/server.ts",
     "viz:dev": "bun --watch visualizer/server.ts"
   },

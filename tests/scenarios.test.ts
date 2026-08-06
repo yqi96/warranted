@@ -317,6 +317,28 @@ describe("场景 4：链式推理", () => {
     const wgRows = (db as any).prepare("SELECT ground_id FROM warrant_grounds WHERE warrant_id = ?").all(arg.warrants[0].id) as { ground_id: number }[];
     const groundIds = wgRows.map((r: { ground_id: number }) => r.ground_id);
     expect(groundIds).toContain(claimA.id);
+
+    // claimA 已 supported → claimB 的 warrant 全部 grounds 均"已验证" → claimB 可被标记 supported
+    repo.saveCompileState(db, claimB.id, "passed", "ok", "hash2");
+    repo.setCompileStatus(db, claimB.id, "passed");
+    expect(() => service.updateNode(db, claimB.id, { status: "supported" })).not.toThrow();
+  });
+
+  test("Claim A 尚未 supported 时，以其为 Ground 的 Claim B 不能被标记 supported", () => {
+    const claimA = service.createClaim(db, "未经验证的中间结论");
+    const claimB = service.createClaim(db, "依赖 claimA 的下游结论");
+    service.createWarrant(db, {
+      content: "claimA 成立 → claimB 成立",
+      claimId: claimB.id,
+      groundIds: [claimA.id],
+    });
+    repo.saveCompileState(db, claimB.id, "passed", "ok", "hash");
+    repo.setCompileStatus(db, claimB.id, "passed");
+
+    // claimA 仍是 proposed（未被人工确认为 supported）
+    expect(() => service.updateNode(db, claimB.id, { status: "supported" })).toThrow(
+      /no Warrant has all Grounds verified/
+    );
   });
 });
 

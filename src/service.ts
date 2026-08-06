@@ -116,6 +116,25 @@ export function findWarrantsUsingGround(db: Database, groundId: number): NodeRow
   ).all(groundId) as NodeRow[];
 }
 
+/**
+ * 判断一个 Ground 节点是否"已验证"，供 A1 门禁和 compile 阶段共用。
+ * - statement 类型：verification === "verified"
+ * - claim 类型（链式推理）：该 claim 自身必须已是 "supported"，
+ *   未经确认（proposed）或已被反驳（disputed/refuted）的 claim 不能作为可信 ground。
+ */
+export function isGroundVerified(groundRow: NodeRow): boolean {
+  const data = JSON.parse(groundRow.data);
+  if (groundRow.type === "claim") return data.status === "supported";
+  return data.verification === "verified";
+}
+
+/** 简短标注一个未通过 isGroundVerified 的 ground，用于错误/警告文案定位具体节点。 */
+export function describeUnverifiedGround(groundRow: NodeRow): string {
+  return groundRow.type === "claim"
+    ? `Claim #${groundRow.id} not supported`
+    : `Ground #${groundRow.id} not verified`;
+}
+
 /** 查找某 Warrant 的 Backings（via warrant_backings 关系表） */
 function findAllBackingsByWarrant(db: Database, warrantId: number): NodeRow[] {
   return repo.findBackingsByWarrant(db, warrantId);
@@ -682,18 +701,17 @@ export function updateNode(
         );
       }
       let hasValidWarrant = false;
+      const blockers: string[] = [];
       for (const w of warrants) {
         const groundRows = repo.findGroundsByWarrant(db, w.id);
         if (groundRows.length === 0) continue;
-        const allVerified = groundRows.every(gRow => {
-          const gData = JSON.parse(gRow.data);
-          return gData.verification === "verified";
-        });
-        if (allVerified) hasValidWarrant = true;
+        const unverified = groundRows.filter(gRow => !isGroundVerified(gRow));
+        if (unverified.length === 0) { hasValidWarrant = true; break; }
+        blockers.push(`Warrant #${w.id}: ${unverified.map(describeUnverifiedGround).join(", ")}`);
       }
       if (!hasValidWarrant) {
         throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "supported": no Warrant has all Grounds verified. Verify the Grounds first.`
+          `Cannot mark Claim #${nodeId} as "supported": no Warrant has all Grounds verified — ${blockers.join("; ")}`
         );
       }
     }

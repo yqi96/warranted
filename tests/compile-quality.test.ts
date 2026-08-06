@@ -334,7 +334,7 @@ describe("source x verification combination matrix", () => {
       `Ground #${g1.id} has verification=pending`,
       `Ground #${g2.id} has verification=pending`,
       `Warrant #${warrant.id}: all grounds have verification=pending`,
-      `Claim #${claim.id} has no warrant where all grounds are verified`,
+      `Claim #${claim.id} has no warrant where all grounds are verified — Warrant #${warrant.id}: Ground #${g1.id} not verified, Ground #${g2.id} not verified`,
     ];
     expect(result.warnings).toEqual(expectedWarnings);
   });
@@ -349,7 +349,7 @@ describe("source x verification combination matrix", () => {
     const result = structuralQualityCheck(db, claim.id);
     expect(result.warnings).toEqual([
       `Ground #${g1.id} has verification=pending`,
-      `Claim #${claim.id} has no warrant where all grounds are verified`,
+      `Claim #${claim.id} has no warrant where all grounds are verified — Warrant #${warrant.id}: Ground #${g1.id} not verified`,
     ]);
   });
 

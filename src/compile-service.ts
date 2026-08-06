@@ -22,7 +22,7 @@ import type {
 import * as repo from "./repo.ts";
 import { runChainReview, loadArgumentContext } from "./compile-reviewers.ts";
 import { computeArgumentHash } from "./merkle-hash.ts";
-import { findWarrantsUsingGround } from "./service.ts";
+import { findWarrantsUsingGround, isGroundVerified, describeUnverifiedGround } from "./service.ts";
 import { WARNINGS } from "./content/index.ts";
 import { log } from "./logger.ts";
 import { writeFileSync, mkdirSync } from "fs";
@@ -270,9 +270,7 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
     return gIds.every(gid => {
       const gr = ctx!.groundRows.find(g => g.id === gid);
       if (!gr) return false;
-      if (gr.type === "claim") return true; // claim-type grounds count as verified
-      const gData = JSON.parse(gr.data) as { verification?: string };
-      return gData.verification === "verified";
+      return isGroundVerified(gr);
     });
   }
 
@@ -304,14 +302,24 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
   // C4: claim_no_verified_warrant (status-aware)
   const hasVerifiedWarrant = ctx.warrantRows.some((_, i) => allGroundsVerified(i));
   if (!hasVerifiedWarrant) {
+    const blockers = ctx.warrantRows.map((w, i) => {
+      const gIds = (ctx!.warrantDatas[i].ground_ids || []) as number[];
+      const unverified = gIds
+        .map(gid => ctx!.groundRows.find(g => g.id === gid))
+        .filter((g): g is NodeRow => !!g && !isGroundVerified(g));
+      return unverified.length > 0
+        ? `Warrant #${w.id}: ${unverified.map(describeUnverifiedGround).join(", ")}`
+        : null;
+    }).filter(Boolean).join("; ");
+
     const claimStatus = claimData.status as string | undefined;
     if (claimStatus === "supported") {
       errors.push(
-        `Claim #${claimId} is marked "${claimStatus}" but no warrant has all grounds verified — ` +
-        `status contradicts evidence (grounds may have been reverted to pending after status was set)`
+        `Claim #${claimId} is marked "${claimStatus}" but no warrant has all grounds verified — ${blockers}` +
+        ` (grounds may have been reverted to pending after status was set)`
       );
     } else {
-      warnings.push(`Claim #${claimId} has no warrant where all grounds are verified`);
+      warnings.push(`Claim #${claimId} has no warrant where all grounds are verified — ${blockers}`);
     }
   }
 

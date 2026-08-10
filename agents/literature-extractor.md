@@ -4,8 +4,8 @@ description: Extracts literature Statements from papers for a survey. Reads PDFs
 tools:
   - Read
   - Grep
-  - search_nodes
-  - create_statements
+  - mcp__plugin_warranted_toulmin__search_nodes
+  - mcp__plugin_warranted_toulmin__create_statements
 ---
 
 ## Obligation

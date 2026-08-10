@@ -156,9 +156,9 @@ export interface ChainReviewData {
     grounds: Array<{
       id: number;
       content: string;
+      // 节点类型是逻辑输入（靠下层结论 vs 靠原始证据是不同推理形状）；
+      // status / verification 不是 —— 状态归主 agent 与结构门，不进逻辑审查
       type: "claim" | "statement";
-      status?: string; // for claim-type grounds: proposed/supported/disputed/refuted
-      verification?: string; // for statement-type grounds: verified/pending
     }>;
     backings: Array<{ id: number; content: string }>;
   }>;
@@ -173,10 +173,7 @@ export function buildChainReviewPrompt(data: ChainReviewData): string {
   const warrantsText = data.warrants.map(w => {
     const groundsText = w.grounds
       .map(g => {
-        const tag = g.type === "claim"
-          ? `[claim, ${g.status ?? "proposed"}]`
-          : `[statement, ${g.verification ?? "pending"}]`;
-        return `    - Ground #${g.id} ${tag}: ${g.content}`;
+        return `    - Ground #${g.id} [${g.type}]: ${g.content}`;
       })
       .join("\n");
     const backingsText = w.backings.length > 0
@@ -191,7 +188,7 @@ export function buildChainReviewPrompt(data: ChainReviewData): string {
 
   return `You are a rigorous scientific argumentation reviewer. Your task is to audit whether the logical relationships in a Toulmin argument are coherent and sound.
 
-IMPORTANT: No element is pre-validated — a concurrently-running reviewer checks whether the Claim and each Warrant individually match their own Toulmin element definition, but that reviewer's findings are not available to you, and Ground/Backing/Rebuttal are never definition-reviewed at all. Grounds that are themselves Claims (marked [claim, status]) carry their own credibility status — the factually-true assumption below does NOT apply to them. Focus ONLY on the logical connections between elements: whether the types of evidence and inference fit together, not whether any single element is internally well-formed. Do NOT decide whether the Grounds ultimately defeat the Rebuttals, and do NOT decide whether the Claim is ultimately supported or true.
+IMPORTANT: No element is pre-validated — a concurrently-running reviewer checks whether the Claim and each Warrant individually match their own Toulmin element definition, but that reviewer's findings are not available to you, and Ground/Backing/Rebuttal are never definition-reviewed at all. Focus ONLY on the logical connections between elements: whether the types of evidence and inference fit together, not whether any single element is internally well-formed. Do NOT decide whether the Grounds ultimately defeat the Rebuttals, and do NOT decide whether the Claim is ultimately supported or true.
 
 ## Argument to Review
 
@@ -212,8 +209,6 @@ Evaluate the following, assuming all Grounds, Backings, and Rebuttals are factua
 4. **Warrant-Backing fit**: Does each Backing actually substantiate the Warrant's inference-licensing principle rather than restating the Claim or summarizing the Grounds?
 
 5. **Rebuttal-target fit**: Does each Rebuttal genuinely challenge the target Claim or Warrant by naming a counter-condition, exception, or contradiction? Do not weigh whether the rebuttal defeats the grounds; only check whether it logically attacks the stated target.
-
-6. **Claim-type Ground exception**: For any Ground that is itself a Claim (marked [claim, ...]), the factually-true assumption above does NOT apply to that Ground — its credibility is carried by its own status. Does the Warrant state what it draws from that lower conclusion? If that lower Claim is disputed, is what it draws unaffected by the dispute?
 
 ${CHAIN_OUTPUT_FORMAT}`;
 }

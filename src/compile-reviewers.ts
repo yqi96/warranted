@@ -29,7 +29,6 @@ export interface ArgumentContext {
   warrantRows: NodeRow[];
   warrantDatas: Array<Record<string, unknown>>;
   groundRows: NodeRow[];
-  groundDatas: Array<Record<string, unknown>>;
   backingRows: NodeRow[];
   rebuttalRows: Array<{ row: NodeRow; targetType: "claim" | "warrant"; targetId: number }>;
 }
@@ -51,12 +50,10 @@ export function loadArgumentContext(db: Database, claimId: number): ArgumentCont
   }
 
   const groundRows: NodeRow[] = [];
-  const groundDatas: Array<Record<string, unknown>> = [];
   for (const gid of groundIdSet) {
     const gRow = repo.getNodeById(db, gid);
     if (gRow && (gRow.type === "statement" || gRow.type === "claim")) {
       groundRows.push(gRow);
-      groundDatas.push(JSON.parse(gRow.data));
     }
   }
 
@@ -79,7 +76,6 @@ export function loadArgumentContext(db: Database, claimId: number): ArgumentCont
     warrantRows,
     warrantDatas,
     groundRows,
-    groundDatas,
     backingRows,
     rebuttalRows,
   };
@@ -110,22 +106,12 @@ async function reviewChain(
         content: w.content,
         grounds: groundIds.map(gid => {
           const gIdx = ctx.groundRows.findIndex(g => g.id === gid);
-          if (gIdx === -1) return { id: gid, content: "(not found)", type: "statement" as const, verification: "pending" };
+          if (gIdx === -1) return { id: gid, content: "(not found)", type: "statement" as const };
           const gRow = ctx.groundRows[gIdx];
-          const gData = ctx.groundDatas[gIdx];
-          if (gRow.type === "claim") {
-            return {
-              id: gid,
-              content: gRow.content,
-              type: "claim" as const,
-              status: (gData.status as string) || "proposed",
-            };
-          }
           return {
             id: gid,
             content: gRow.content,
-            type: "statement" as const,
-            verification: (gData.verification as string) || "pending",
+            type: gRow.type === "claim" ? ("claim" as const) : ("statement" as const),
           };
         }),
         backings: repo.findBackingsByWarrant(db, w.id)

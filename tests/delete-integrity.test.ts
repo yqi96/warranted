@@ -8,7 +8,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim } from "./helpers.ts";
+import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim, compileVerdictOf } from "./helpers.ts";
 import * as service from "../src/service.ts";
 import * as repo from "../src/repo.ts";
 import { WARNINGS } from "../src/content/warnings.ts";
@@ -61,16 +61,15 @@ describe("P1: Collateral deletion invalidates dependent Claims", () => {
     db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(W1.id, S.id);
     const W2 = makeWarrant(db, claim2.id, [S.id]);
 
-    repo.setCompileStatus(db, claim2.id, "passed");
+    repo.saveCompileState(db, claim2.id, "passed", "");
     repo.setClaimStatus(db, claim2.id, "supported");
-    expect(JSON.parse(repo.getNodeById(db, claim2.id)!.data).compile_status).toBe("passed");
+    expect(compileVerdictOf(db, claim2.id)).toBe("passed");
 
     const res = await callDeleteNode(claim1.id, true);
     expect(res.isError).toBeUndefined();
 
-    const c2After = JSON.parse(repo.getNodeById(db, claim2.id)!.data);
-    expect(c2After.compile_status).not.toBe("passed");
-    expect(c2After.status).toBe("proposed");
+    expect(compileVerdictOf(db, claim2.id)).not.toBe("passed");
+    expect(JSON.parse(repo.getNodeById(db, claim2.id)!.data).status).toBe("proposed");
   });
 });
 
@@ -122,8 +121,8 @@ describe("P3: Delete returns warnings naming collaterally invalidated Claims", (
     makeWarrant(db, claim2.id, [S.id]);
     makeWarrant(db, claim3.id, [S.id]);
 
-    repo.setCompileStatus(db, claim2.id, "passed");
-    repo.setCompileStatus(db, claim3.id, "passed");
+    repo.saveCompileState(db, claim2.id, "passed", "");
+    repo.saveCompileState(db, claim3.id, "passed", "");
 
     const res = await callDeleteNode(claim1.id, true);
     const text = res.content[0].text;
@@ -140,7 +139,7 @@ describe("P3: Delete returns warnings naming collaterally invalidated Claims", (
     const W1 = makeWarrant(db, claim1.id, [S.id]);
     db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(W1.id, S.id);
     makeWarrant(db, claim2.id, [S.id]);
-    repo.setCompileStatus(db, claim2.id, "passed");
+    repo.saveCompileState(db, claim2.id, "passed", "");
 
     const res = await callDeleteNode(claim1.id, true);
     const warning = WARNINGS.compileInvalidated(claim2.id, S.id);
@@ -157,7 +156,7 @@ describe("P3: Delete returns warnings naming collaterally invalidated Claims", (
     db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(W1.id, S.id);
     db.prepare("INSERT OR IGNORE INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, 'warrant')").run(S.id, W1.id);
     makeWarrant(db, claim2.id, [S.id]);
-    repo.setCompileStatus(db, claim2.id, "passed");
+    repo.saveCompileState(db, claim2.id, "passed", "");
 
     const res = await callDeleteNode(claim1.id, true);
     const warning = WARNINGS.compileInvalidated(claim2.id, S.id);
@@ -175,7 +174,7 @@ describe("P7: Failed delete is atomic with its invalidation", () => {
     const claim = makeClaim(db, "Guarded claim");
     const g = makeGround(db, { content: "G", source: "observed", verification: "verified" });
     makeWarrant(db, claim.id, [g.id]);
-    repo.setCompileStatus(db, claim.id, "passed");
+    repo.saveCompileState(db, claim.id, "passed", "");
     repo.setClaimStatus(db, claim.id, "supported");
     db.prepare(
       "INSERT OR REPLACE INTO compile_state (claim_id, verdict, summary, node_hashes, argument_hash) VALUES (?, 'passed', '', '{}', 'h1')"
@@ -185,10 +184,8 @@ describe("P7: Failed delete is atomic with its invalidation", () => {
     expect(res.isError).toBe(true);
 
     // The node is still there, and so is everything the invalidation would have stripped
-    const after = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(after.status).toBe("supported");
-    expect(after.compile_status).toBe("passed");
-    expect(repo.getCompileState(db, claim.id)).not.toBeNull();
+    expect(JSON.parse(repo.getNodeById(db, claim.id)!.data).status).toBe("supported");
+    expect(compileVerdictOf(db, claim.id)).toBe("passed");
   });
 });
 

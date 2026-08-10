@@ -1,5 +1,26 @@
 /** Warranted — 删除/变更后警告文本 */
 
+/**
+ * 「充分性依据垮了，但论证的形式没变」这一类回退的共用模板。
+ *
+ * 两个触发点（撤回一个 Statement 的核实、下层 Claim 改判）只在两句话上不同：
+ * 依据为什么没了，以及怎么把它补回来。中间"不要重跑 compile"那句必须字字相同——
+ * 它是这两条警告存在的唯一理由，写成两份就会有一天只改了其中一份。
+ */
+function sufficiencyLostRevert(
+  claimId: number,
+  previousStatus: string,
+  reason: string,
+  remedy: string
+): string {
+  return (
+    `Warning: Claim #${claimId} status reverted from "${previousStatus}" to "proposed" ` +
+    `because ${reason}, so the Claim no longer meets the structural requirement for "${previousStatus}". ` +
+    `Its compile verdict is deliberately left untouched: the argument's logic did not change, so ` +
+    `do NOT re-run compile_arguments. ${remedy}, then re-assess the status directly.`
+  );
+}
+
 export const WARNINGS = {
   /** D4: 删除被链式引用的 Claim */
   deleteClaimReferencedByGround: (nodeId: number, gids: string) =>
@@ -36,6 +57,40 @@ export const WARNINGS = {
     `Warning: Claim #${claimId} status reverted from "${previousStatus}" to "proposed" ` +
     `because node #${nodeId} in its argument chain was modified. ` +
     `Re-run compile_arguments and re-assess status when ready.`,
+
+  /**
+   * 撤回核实后回退 status —— 和 statusReverted 分开写，是因为要说的话正好相反：
+   * 那条要求重跑 compile，这条明确告诉 agent 不要重跑。论证的形式没变过，
+   * compile 的结论依然有效，重跑只是花一次模型调用拿回同一个答案。
+   */
+  statusRevertedVerificationWithdrawn: (claimId: number, previousStatus: string, nodeId: number) =>
+    sufficiencyLostRevert(
+      claimId,
+      previousStatus,
+      `statement #${nodeId}'s verification was withdrawn`,
+      `Re-verify #${nodeId} (or reground the argument)`
+    ),
+
+  /**
+   * D28: 下层 Claim 改判后回退上层 status。和上面那条同源——按规则 C′，一条 Claim
+   * 算不算"已核实的证据"取决于它自身的 status，所以下层改判会抽掉上层的依据，
+   * 而上层论证的形式一个字没变。
+   */
+  statusRevertedGroundClaimUnsettled: (claimId: number, previousStatus: string, nodeId: number) =>
+    sufficiencyLostRevert(
+      claimId,
+      previousStatus,
+      `Claim #${nodeId}, used as a Ground here, no longer counts as verified evidence`,
+      `Settle #${nodeId} to a status that counts as evidence, or reground the argument`
+    ),
+
+  /** G_CONTENT: Statement 正文变更 → verification 自动退回 pending。
+   *  文案自带 "Warning: " 前缀，与本模块其余条目一致：它经由 service 的 warnings
+   *  渠道进入 formatReviewIssues，写成 "Hint: ..." 会渲染成 "Warning: Hint: ..."。
+   *  这确实是一句警告而不是建议——系统已经改掉了一个状态，不是在提议什么。 */
+  verificationRevertedOnContentChange: (nodeId: number) =>
+    `Warning: Statement #${nodeId} content changed — verification reverted to pending. ` +
+    `Re-mark as verified when ready.`,
 
   /**
    * §4.2: `paper:` tag carried with source="observed".

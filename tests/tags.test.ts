@@ -20,7 +20,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking } from "./helpers.ts";
+import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, compileVerdictOf } from "./helpers.ts";
 import * as repo from "../src/repo.ts";
 import * as service from "../src/service.ts";
 import { computeArgumentHash } from "../src/merkle-hash.ts";
@@ -48,7 +48,6 @@ function dataOf(nodeId: number): any {
 
 function markCompiled(claimId: number): void {
   repo.saveCompileState(db, claimId, "passed", "test compile", computeArgumentHash(db, claimId));
-  repo.setCompileStatus(db, claimId, "passed");
 }
 
 /** 建一个已 compile 通过的完整论证，用于"tag 不失效 compile"组。 */
@@ -278,7 +277,7 @@ describe.skipIf(!TAGS_LANDED)("3. rename_tag 级联", () => {
     svc.renameTagService(db, "theme:old", "theme:new");
 
     expect(repo.getCompileState(db, claimId)).toEqual(before!);
-    expect(dataOf(claimId).compile_status).toBe("passed");
+    expect(compileVerdictOf(db, claimId)).toBe("passed");
   });
 });
 
@@ -341,17 +340,17 @@ describe.skipIf(!TAGS_LANDED)("5. tag 操作永不失效 compile", () => {
     svc.createTagService(db, "theme:a", "a");
     svc.createTagService(db, "theme:b", "b");
     service.updateNode(db, claimId, { tags: { add: ["theme:a", "theme:b"] } } as any);
-    expect(dataOf(claimId).compile_status).toBe("passed");
+    expect(compileVerdictOf(db, claimId)).toBe("passed");
 
     service.updateNode(db, claimId, { tags: { remove: ["theme:b"] } } as any);
-    expect(dataOf(claimId).compile_status).toBe("passed");
+    expect(compileVerdictOf(db, claimId)).toBe("passed");
 
     svc.renameTagService(db, "theme:a", "theme:a2");
-    expect(dataOf(claimId).compile_status).toBe("passed");
+    expect(compileVerdictOf(db, claimId)).toBe("passed");
 
     svc.createTagService(db, "theme:c", "c");
     svc.mergeTagsService(db, "theme:a2", "theme:c");
-    expect(dataOf(claimId).compile_status).toBe("passed");
+    expect(compileVerdictOf(db, claimId)).toBe("passed");
 
     // tag 不进 merkle hash：它不是论证结构
     expect(computeArgumentHash(db, claimId)).toBe(hashBefore);
@@ -374,7 +373,7 @@ describe.skipIf(!TAGS_LANDED)("5. tag 操作永不失效 compile", () => {
     service.updateNode(db, claimId, { tags: { add: ["theme:a"] } } as any);
 
     expect(dataOf(claimId).status).toBe("supported");
-    expect(dataOf(claimId).compile_status).toBe("passed");
+    expect(compileVerdictOf(db, claimId)).toBe("passed");
   });
 });
 

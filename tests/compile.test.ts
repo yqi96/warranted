@@ -14,6 +14,7 @@ import {
   makeBacking,
   makeRebuttal,
   seedBasicArgument,
+  compileVerdictOf,
 } from "./helpers.ts";
 import { structuralPreCheck, findAffectedClaimIds, invalidateCompiledClaims } from "../src/compile-service.ts";
 import { loadArgumentContext } from "../src/compile-reviewers.ts";
@@ -302,53 +303,56 @@ describe("compile_state CRUD", () => {
 // =============================================================================
 
 describe("invalidateCompiledClaims", () => {
-  test("修改 compiled Claim 的节点后清除 compiled 状态", () => {
+  test("修改 compiled Claim 的节点后，passed 降级为 stale 并清空结构指纹", () => {
     const { claim, ground1 } = seedBasicArgument(db);
 
-    // 手动设置 compile_status = "passed"
-    repo.setCompileStatus(db, claim.id, "passed");
-
-    // 保存 compile_state
-    repo.saveCompileState(db, claim.id, "passed", "OK");
+    const argHash = computeArgumentHash(db, claim.id);
+    repo.saveCompileState(db, claim.id, "passed", "OK", argHash);
 
     // 修改 ground → 触发失效
     const warnings = invalidateCompiledClaims(db, ground1.id);
     expect(warnings.length).toBe(1);
     expect(warnings[0]).toContain("compiled status has been cleared");
 
-    // 验证 compile_status 已变为 stale
-    const updatedClaim = repo.getNodeById(db, claim.id)!;
-    const updatedData = JSON.parse(updatedClaim.data);
-    expect(updatedData.compile_status).toBe("stale");
-
-    // 验证 compile_state 已删除
-    expect(repo.getCompileState(db, claim.id)).toBeNull();
+    // 行保留下来，verdict 降级为 stale —— 不删行，否则会被 get_stats 误算成"从未编译过"
+    const after = repo.getCompileState(db, claim.id);
+    expect(after).not.toBeNull();
+    expect(after!.verdict).toBe("stale");
+    // 关键：指纹必须清空，否则下次 compile 会走"哈希未变"短路，跳过重新审查
+    expect(after!.argumentHash ?? null).toBeNull();
   });
 
-  test("修改非 compiled Claim 的节点后无警告，但仍标记 compile_status=stale", () => {
+  test("从未编译过的 Claim：无警告，也不会被降级成 stale", () => {
     const { claim, ground1 } = seedBasicArgument(db);
     const warnings = invalidateCompiledClaims(db, ground1.id);
     expect(warnings.length).toBe(0);
-    const updatedClaim = repo.getNodeById(db, claim.id)!;
-    expect(JSON.parse(updatedClaim.data).compile_status).toBe("stale");
+    // 没通过过就没有可降级的东西，仍然是"从未编译"
+    expect(compileVerdictOf(db, claim.id)).toBeNull();
   });
 
-  test("【回归】API 失败后(compile_status=stale)移除 ground 应清除残留 compile_state", () => {
+  test("stale 状态下再次移除 ground：保持 stale，且始终不带指纹", () => {
     const { claim, ground1 } = seedBasicArgument(db);
 
-    // 模拟 API 失败场景：compile_state 存在但 compile_status=stale（无 argumentHash）
-    repo.saveCompileState(db, claim.id, "failed", "Reviewer error: API timeout");
-    repo.setCompileStatus(db, claim.id, "stale");
+    // 上一次审查因 API 报错未能完成，只留下 stale，没有指纹
+    repo.saveCompileState(db, claim.id, "stale", "Reviewer error: API timeout");
 
-    // 移除 ground（触发 invalidateCompiledClaims）
     invalidateCompiledClaims(db, ground1.id);
 
-    // compile_state 应被清除，否则下次 compile_arguments 可能误判
-    expect(repo.getCompileState(db, claim.id)).toBeNull();
-    expect(JSON.parse(repo.getNodeById(db, claim.id)!.data).compile_status).toBe("stale");
+    const after = repo.getCompileState(db, claim.id);
+    expect(after!.verdict).toBe("stale");
+    expect(after!.argumentHash ?? null).toBeNull();
   });
 
-  test("【回归】已通过 compile 后移除 ground，compile_state 正确清除", () => {
+  test("failed 不被降级为 stale —— failed 信息量更大，且一样挡住状态转换", () => {
+    const { claim, ground1 } = seedBasicArgument(db);
+    repo.saveCompileState(db, claim.id, "failed", "C4: ground not verified");
+
+    invalidateCompiledClaims(db, ground1.id);
+
+    expect(compileVerdictOf(db, claim.id)).toBe("failed");
+  });
+
+  test("【回归】已通过 compile 后移除链式 ground，父 Claim 的指纹被清空", () => {
     // 构造带 ground 的参数
     const subClaim = makeClaim(db, "Sub claim");
     const subGround = makeGround(db, { content: "Sub ground evidence" });
@@ -361,40 +365,38 @@ describe("invalidateCompiledClaims", () => {
 
     // 标记 parentClaim 为已 compiled
     const argHash = computeArgumentHash(db, parentClaim.id);
-    repo.setCompileStatus(db, parentClaim.id, "passed");
     repo.saveCompileState(db, parentClaim.id, "passed", "ok", argHash);
 
     // 移除 chain ground
     invalidateCompiledClaims(db, chainGround.id);
 
-    // compile_state 应被清除，compile_status 应变为 stale
-    expect(repo.getCompileState(db, parentClaim.id)).toBeNull();
-    const updatedData = JSON.parse(repo.getNodeById(db, parentClaim.id)!.data);
-    expect(updatedData.compile_status).toBe("stale");
+    const after = repo.getCompileState(db, parentClaim.id);
+    expect(after!.verdict).toBe("stale");
+    expect(after!.argumentHash ?? null).toBeNull();
   });
 
-  test("孤立节点不设置无关 Claim 的 compile_status", () => {
+  test("孤立节点不影响无关 Claim 的编译状态", () => {
     const claim = makeClaim(db);
     const orphanGround = makeGround(db, { content: "Orphan ground" });
     invalidateCompiledClaims(db, orphanGround.id);
-    const claimRow = repo.getNodeById(db, claim.id)!;
-    expect(JSON.parse(claimRow.data).compile_status).toBeUndefined();
+    expect(compileVerdictOf(db, claim.id)).toBeNull();
   });
 
   test("修改不相关节点不影响任何 Claim", () => {
     const { claim } = seedBasicArgument(db);
 
-    // 设置 compile_status = "passed"
-    repo.setCompileStatus(db, claim.id, "passed");
+    const argHash = computeArgumentHash(db, claim.id);
+    repo.saveCompileState(db, claim.id, "passed", "ok", argHash);
 
     // 创建一个独立的 ground（不属于任何 warrant）
     const orphanGround = makeGround(db, { content: "Orphan ground" });
     const warnings = invalidateCompiledClaims(db, orphanGround.id);
     expect(warnings.length).toBe(0);
 
-    // Claim 仍然 compile_status = "passed"
-    const updatedClaim = repo.getNodeById(db, claim.id)!;
-    expect(JSON.parse(updatedClaim.data).compile_status).toBe("passed");
+    // 仍然 passed，指纹也还在
+    const after = repo.getCompileState(db, claim.id);
+    expect(after!.verdict).toBe("passed");
+    expect(after!.argumentHash).toBe(argHash);
   });
 });
 
@@ -409,7 +411,6 @@ describe("BFS 链式传播 — claim-type ground", () => {
     // sub-claim 作为父 Claim warrant 的 ground
     makeWarrant(db, parentClaim.id, [subClaim.id], "Chain warrant");
 
-    repo.setCompileStatus(db, parentClaim.id, "passed");
     repo.saveCompileState(db, parentClaim.id, "passed", "ok");
 
     const affected = findAffectedClaimIds(db, subClaim.id);
@@ -425,7 +426,6 @@ describe("BFS 链式传播 — claim-type ground", () => {
     const parentClaim = makeClaim(db, "Parent claim");
     makeWarrant(db, parentClaim.id, [subClaim.id], "Chain warrant");
 
-    repo.setCompileStatus(db, parentClaim.id, "passed");
     repo.saveCompileState(db, parentClaim.id, "passed", "ok");
 
     // 修改 sub-claim 的 ground → sub-claim 失效 → BFS → 父 Claim 也失效
@@ -445,7 +445,6 @@ describe("BFS 链式传播 — claim-type ground", () => {
     const claimA = makeClaim(db, "Claim A");
     makeWarrant(db, claimA.id, [claimB.id], "Warrant A");
 
-    repo.setCompileStatus(db, claimA.id, "passed");
     repo.saveCompileState(db, claimA.id, "passed", "ok");
 
     const affected = findAffectedClaimIds(db, stmt.id);
@@ -454,17 +453,15 @@ describe("BFS 链式传播 — claim-type ground", () => {
     expect(affected).toContain(claimA.id);
   });
 
-  test("invalidateCompiledClaims: 修改 sub-claim → 父 Claim compile_state 被清除", () => {
+  test("invalidateCompiledClaims: 修改 sub-claim → 父 Claim 降级为 stale", () => {
     const subClaim = makeClaim(db, "Sub claim");
     const parentClaim = makeClaim(db, "Parent claim");
     makeWarrant(db, parentClaim.id, [subClaim.id], "Chain warrant");
 
-    repo.setCompileStatus(db, parentClaim.id, "passed");
     repo.saveCompileState(db, parentClaim.id, "passed", "ok");
 
     invalidateCompiledClaims(db, subClaim.id);
 
-    expect(repo.getCompileState(db, parentClaim.id)).toBeNull();
-    expect(JSON.parse(repo.getNodeById(db, parentClaim.id)!.data).compile_status).toBe("stale");
+    expect(compileVerdictOf(db, parentClaim.id)).toBe("stale");
   });
 });

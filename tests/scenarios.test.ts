@@ -84,7 +84,7 @@ describe("场景 1：论文复现", () => {
       attachments: ["/repro/logs/resnet.log"],
       rebuttal_for: { target_id: claim.id, target_type: "claim" },
     });
-    repo.setCompileStatus(db, claim.id, "passed");
+    repo.saveCompileState(db, claim.id, "passed", "");
     service.updateNode(db, claim.id, { status: "disputed" });
 
     service.updateNode(db, claim.id, {
@@ -171,7 +171,6 @@ describe("场景 2：假设验证", () => {
 
     // 判定（先标记 compiled，模拟已通过 compile）
     repo.saveCompileState(db, claim.id, "passed", "ok", "hash");
-    repo.setCompileStatus(db, claim.id, "passed");
     service.updateNode(db, claim.id, { status: "supported" });
 
     const stats = service.getStats(db);
@@ -249,7 +248,6 @@ describe("场景 3：文献综述", () => {
 
     // 判定（先标记 compiled）
     repo.saveCompileState(db, claim.id, "passed", "ok", "hash");
-    repo.setCompileStatus(db, claim.id, "passed");
     service.updateNode(db, claim.id, { status: "supported" });
 
     // 搜索验证
@@ -286,7 +284,6 @@ describe("场景 4：链式推理", () => {
     });
     // 标记 compiled，模拟已通过 compile
     repo.saveCompileState(db, claimA.id, "passed", "ok", "hash");
-    repo.setCompileStatus(db, claimA.id, "passed");
     service.updateNode(db, claimA.id, { status: "supported" });
 
     // 新 Claim
@@ -320,7 +317,6 @@ describe("场景 4：链式推理", () => {
 
     // claimA 已 supported → claimB 的 warrant 全部 grounds 均"已验证" → claimB 可被标记 supported
     repo.saveCompileState(db, claimB.id, "passed", "ok", "hash2");
-    repo.setCompileStatus(db, claimB.id, "passed");
     expect(() => service.updateNode(db, claimB.id, { status: "supported" })).not.toThrow();
   });
 
@@ -333,7 +329,6 @@ describe("场景 4：链式推理", () => {
       groundIds: [claimA.id],
     });
     repo.saveCompileState(db, claimB.id, "passed", "ok", "hash");
-    repo.setCompileStatus(db, claimB.id, "passed");
 
     // claimA 仍是 proposed（未被人工确认为 supported）
     expect(() => service.updateNode(db, claimB.id, { status: "supported" })).toThrow(

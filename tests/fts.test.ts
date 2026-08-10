@@ -605,7 +605,7 @@ describe("§13：过滤在分页之前完成，total 反映过滤后的集合", 
   test("compile_status 过滤先于分页，且 null 可筛（§2.6）", () => {
     for (let i = 0; i < 60; i++) makeClaim(db, `主张 ${i}`);
     const stale = makeClaim(db, "编译已失效的主张");
-    repo.updateNodeFields(db, stale.id, { data: { status: "proposed", compile_status: "stale" } } as any);
+    repo.saveCompileState(db, stale.id, "stale", "");
 
     const r = svc.listClaims(db, undefined, "stale", undefined, 50, 0);
     expect(r.rows.length).toBe(1);
@@ -828,8 +828,8 @@ describe.skipIf(!SCALE_LANDED)("§17：Statements / Claims 汇总行的量纲", 
     const b = makeClaim(db, "已裁决乙", "supported");
     makeClaim(db, "待办丙");
     for (const c of [a, b]) {
-      db.prepare("INSERT INTO compile_state (claim_id, verdict) VALUES (?, 'passed')").run(c.id);
-      repo.updateNodeFields(db, c.id, { data: { status: "supported", compile_status: "passed" } } as any);
+      repo.saveCompileState(db, c.id, "passed", "");
+      repo.setClaimStatus(db, c.id, "supported");
     }
 
     const stats = svc.getStats(db);

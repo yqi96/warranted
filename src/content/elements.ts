@@ -20,8 +20,9 @@ export const ELEMENTS = {
       "it only enforces structural preconditions: any non-'proposed' status requires compile to have passed. " +
       "'proposed' = initial state, no judgment asserted yet; " +
       "'supported' = you judge the evidence sufficient (requires a warrant whose grounds are all verified); " +
-      "'disputed' = you judge the claim under credible challenge (requires at least one rebuttal); " +
-      "'refuted' = you judge the claim disproven (same structural gate as 'disputed' — at least one rebuttal). " +
+      "'disputed' = you judge the claim under credible challenge (requires at least one verified rebuttal); " +
+      "'refuted' = you judge the claim disproven (same structural gate as 'disputed' — at least one verified rebuttal). " +
+      "A pending rebuttal does not satisfy either gate: asserting a claim is false costs no less evidence than asserting it is true. " +
       "'disputed' and 'refuted' share the same preconditions; choosing between them is your assessment of how decisively the rebuttals defeat the claim.",
   },
 

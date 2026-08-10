@@ -7,7 +7,7 @@
  * 两者在 compileArgument 中并行执行（Promise.all）。当两者的 errors 重叠时，
  * 逻辑链结果会被降级为 advisory（见 compileArgument 中的降级逻辑）。
  *
- * 失效管理：节点修改时将受影响 Claim 的 compile_status 设为 stale
+ * 失效管理：节点修改时把受影响 Claim 的 compile_state 从 passed 降级为 stale
  */
 
 import type { Database } from "bun:sqlite";
@@ -22,7 +22,7 @@ import type {
 import * as repo from "./repo.ts";
 import { runChainReview, loadArgumentContext } from "./compile-reviewers.ts";
 import { computeArgumentHash } from "./merkle-hash.ts";
-import { findWarrantsUsingGround, isGroundVerified, describeUnverifiedGround } from "./service.ts";
+import { findWarrantsUsingGround, isClaimOrStatementVerified, describeUnverifiedGround, hasVerifiedRebuttal, hasWarrantWithAllGroundsVerified } from "./service.ts";
 import { WARNINGS } from "./content/index.ts";
 import { log } from "./logger.ts";
 import { writeFileSync, mkdirSync } from "fs";
@@ -284,7 +284,7 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
     return gIds.every(gid => {
       const gr = ctx!.groundRows.find(g => g.id === gid);
       if (!gr) return false;
-      return isGroundVerified(gr);
+      return isClaimOrStatementVerified(gr);
     });
   }
 
@@ -320,7 +320,7 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
       const gIds = (ctx!.warrantDatas[i].ground_ids || []) as number[];
       const unverified = gIds
         .map(gid => ctx!.groundRows.find(g => g.id === gid))
-        .filter((g): g is NodeRow => !!g && !isGroundVerified(g));
+        .filter((g): g is NodeRow => !!g && !isClaimOrStatementVerified(g));
       return unverified.length > 0
         ? `Warrant #${w.id}: ${unverified.map(describeUnverifiedGround).join(", ")}`
         : null;
@@ -436,11 +436,12 @@ export async function compileArgument(
   }
   const summary = summaryParts.join(" ");
 
-  // 4. 存储 compile_state（argument_hash 仅在 passed 时保存，确保 hash 代表"已验证通过的结构"）
+  // 4. 存储 compile_state —— 编译状态的唯一存储。
+  //    verdict 直接落盘（passed / failed），不再翻译成第二套词汇。structuralPreCheck /
+  //    structuralQualityCheck 的 early return 也各自走 saveCompileState，因此"编译失败"
+  //    不存在漏记的路径可言。
+  //    argument_hash 仅在 passed 时保存，确保 hash 代表"已验证通过的结构"。
   repo.saveCompileState(db, claimId, verdict, summary, verdict === "passed" ? argHash : undefined);
-
-  // 5. 更新 compile_status 标志
-  repo.setCompileStatus(db, claimId, verdict === "passed" ? "passed" : "stale");
 
   const elapsed = Date.now() - t0;
   log("review_dispatch", "OK", elapsed, `END claim=#${claimId} → verdict=${verdict}, "${summary.slice(0, 80)}"`);
@@ -543,18 +544,20 @@ export function findAffectedClaimIds(db: Database, nodeId: number): number[] {
 
 /**
  * 清除受影响 Claim 的 compiled 状态。
- * 可选 skipNodeIds 用于排除某些节点（如要求 status 变更不自我失效）。
+ *
+ * 曾经有一个 skipNodeIds 参数，唯一的用途是让"下层 status 变更"那条路不要把起点自身
+ * 失效掉。D28 把 status 变更整条路挪到了 revertUnsupportedClaimStatuses，参数随之没有
+ * 调用者。走到这里的都是真的结构变动，起点自身该失效就是该失效，没有例外要开。
  */
-export function invalidateCompiledClaims(db: Database, nodeId: number, skipNodeIds?: Set<number>): string[] {
+export function invalidateCompiledClaims(db: Database, nodeId: number): string[] {
   const affectedIds = findAffectedClaimIds(db, nodeId);
   const warnings: string[] = [];
 
   for (const claimId of affectedIds) {
-    if (skipNodeIds?.has(claimId)) continue;
     const row = repo.getNodeById(db, claimId);
     if (!row || row.type !== "claim") continue;
     const data = JSON.parse(row.data);
-    if (data.compile_status === "passed") {
+    if (repo.getCompileState(db, claimId)?.verdict === "passed") {
       warnings.push(WARNINGS.compileInvalidated(claimId, nodeId));
     }
 
@@ -565,10 +568,105 @@ export function invalidateCompiledClaims(db: Database, nodeId: number, skipNodeI
       warnings.push(WARNINGS.statusReverted(claimId, currentStatus, nodeId));
     }
 
-    // Always clear compile_state on structural change — even after a failed compile,
-    // the cached argumentHash is now stale and must not block future hash comparisons.
-    repo.deleteCompileState(db, claimId);
-    repo.setCompileStatus(db, claimId, "stale");
+    // 结构变动 → passed 降级为 stale，同时清空缓存的 argumentHash，使其不再挡住后续哈希比对。
+    // 不再删整行：删掉会让这个主张被 get_stats 误算成"从未编译过"。failed 保持 failed
+    // ——它的 argumentHash 本就为空，不存在挡住比对的问题，而且比 stale 信息量更大。
+    repo.markCompileStale(db, claimId);
+  }
+
+  return warnings;
+}
+
+/**
+ * 一次「论证的形式没变、但 status 的结构依据可能垮了」的改动之后，回退受影响 Claim 的
+ * status —— **不动 compile 记录**。
+ *
+ * 两个触发点：撤回一个 Statement 的核实状态（D27）；一条 Claim 的 status 实际改变（D28，
+ * 按规则 C′，它作为上层 Ground 算不算已核实，取决于它自身的 status）。
+ *
+ * 为什么和 invalidateCompiledClaims 分成两条路：
+ *
+ * compile 审的是论证的形式（这些 Ground 经过这条 Warrant 能否推到这条 Claim），
+ * status 承载的是主 agent 对"证据够不够"的判断。撤回一条 Statement 的核实状态、
+ * 或者把一条下层 Claim 从 supported 改成 proposed，上层论证的形式一个字没变
+ * ——同一批节点、同一批指向关系全在——所以 compile 的 passed 依然是它当初审过的
+ * 那件事的真实结论。把它标成 stale 会是一句假话（论证没变过），还会让下一次 compile
+ * 白跑一趟去审同一条论证。
+ * 垮掉的只是 status 的结构依据（A1 要求某条 Warrant 的 Ground 全部已核实；
+ * A3/A4 要求存在已核实的 Rebuttal），所以只有 status 退回 proposed。
+ *
+ * 下层 status 只影响 compile 的 warnings，不影响 verdict，这一点是可查的：
+ * structuralQualityCheck 对 claim 型 Ground 的 proposed/refuted/disputed 三个分支
+ * 全部 warnings.push（本文件 §Category B），没有一个进 errors。所以下层改判确实不可能
+ * 翻转上层的 verdict，"需要重新审逻辑"这句话没有依据。
+ *
+ * 保留 verdict=passed 还有个具体好处：A0 要求非 proposed 的 status 必须有 passed 的
+ * compile 记录。记录留着，那个 Statement 重新核实、或者那条下层 Claim 重新定案之后，
+ * agent 可以直接把 status 标回去，不必为一条没变过的论证再跑一次 compile。
+ * 对照 invalidateCompiledClaims：结构变动同时废掉形式审查和充分性判断，两个都重置；
+ * 这条路只废掉充分性判断，所以只重置那一个。
+ *
+ * 复检而不是无条件回退：一条 Claim 可能有多条 Warrant，A1 只要求其中一条的 Ground
+ * 全部已核实，所以撤回其中一条 Ground 未必动摇它；被撤回的 Statement 也可能是
+ * Backing（今天没有任何门禁读 Backing 的核实状态）。无条件回退会抹掉 agent 一个
+ * 依然站得住的判断。因此对每条受影响的 Claim，按它**当前**的 status 复检对应的那道门，
+ * 只有确实不成立才回退。
+ *
+ * 向上传播同理：一条 Claim 退回 proposed 后，按规则 C′ 它作为上层 Claim 的 Ground
+ * 也不再算已核实，上层失去的同样是充分性依据而非逻辑；但只有真的退了的 Claim 才继续
+ * 往上传，没退的不传。
+ *
+ * `skipNodeIds` 用来排除起点自身：status 变更那条路的起点就是刚被 agent 定了状态的
+ * Claim，不该在同一次调用里把它自己的判断复检掉。排除它不影响向上传播——它的上层是
+ * 由 findAffectedClaimIdsDirect 直接播种进队列的，不经过它。
+ *
+ * 警告文案报的是**就近**的原因而不是最初的那个：对祖父层来说，"下层 Claim 不再算已核实的
+ * 证据"是真的，"某个 Statement 的核实被撤回了"隔了一层，落到具体某个 Warrant 上就成了
+ * 一句对不上的话。所以队列里带着每一跳的起因节点。
+ */
+export function revertUnsupportedClaimStatuses(
+  db: Database,
+  nodeId: number,
+  skipNodeIds?: Set<number>
+): string[] {
+  const warnings: string[] = [];
+  const queue: Array<{ claimId: number; causeId: number }> =
+    findAffectedClaimIdsDirect(db, nodeId).map(claimId => ({ claimId, causeId: nodeId }));
+  const visited = new Set<number>(queue.map(q => q.claimId));
+
+  while (queue.length > 0) {
+    const { claimId, causeId } = queue.shift()!;
+    if (skipNodeIds?.has(claimId)) continue;
+    const row = repo.getNodeById(db, claimId);
+    if (!row || row.type !== "claim") continue;
+    const currentStatus = (JSON.parse(row.data).status || "proposed") as string;
+    if (currentStatus === "proposed") continue;
+
+    const gateStillHolds =
+      currentStatus === "supported"
+        ? hasWarrantWithAllGroundsVerified(db, claimId).satisfied
+        : hasVerifiedRebuttal(db, claimId);
+    if (gateStillHolds) continue;
+
+    repo.setClaimStatus(db, claimId, "proposed");
+    const causeIsClaim = repo.getNodeById(db, causeId)?.type === "claim";
+    warnings.push(
+      causeIsClaim
+        ? WARNINGS.statusRevertedGroundClaimUnsettled(claimId, currentStatus, causeId)
+        : WARNINGS.statusRevertedVerificationWithdrawn(claimId, currentStatus, causeId)
+    );
+
+    // 只有真的退了才往上传：上层是通过"这条 Claim 算不算已核实的 Ground"受影响的。
+    const usingWarrants = db.prepare(
+      "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.warrant_id WHERE wg.ground_id = ?"
+    ).all(claimId) as NodeRow[];
+    for (const w of usingWarrants) {
+      const parentId = JSON.parse(w.data).claim_id;
+      if (parentId && !visited.has(parentId)) {
+        visited.add(parentId);
+        queue.push({ claimId: parentId, causeId: claimId });
+      }
+    }
   }
 
   return warnings;
@@ -621,13 +719,13 @@ export async function compileClaims(
         const structuralErrors = structuralPreCheck(db, claimId);
         if (structuralErrors.length > 0) {
           log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged but structural errors → marked-stale`);
-          repo.setCompileStatus(db, claimId, "stale");
+          repo.markCompileStale(db, claimId);
           return { claimId, action: "marked-stale", message: structuralErrors.join("; ") };
         }
         const qualityResult = structuralQualityCheck(db, claimId);
         if (qualityResult.errors.length > 0) {
           log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged but quality errors → marked-stale`);
-          repo.setCompileStatus(db, claimId, "stale");
+          repo.markCompileStale(db, claimId);
           return { claimId, action: "marked-stale", message: `Structural quality check failed: ${qualityResult.errors.join("; ")}` };
         }
 
@@ -637,7 +735,7 @@ export async function compileClaims(
       // 哈希变化 → 需要重新审查
       if (!config) {
         log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash changed, no config → marked-stale`);
-        repo.setCompileStatus(db, claimId, "stale");
+        repo.markCompileStale(db, claimId);
         return { claimId, action: "marked-stale", message: "Review not configured" };
       }
       log("auto_review", "OK", 0, `claim=#${claimId}: hash changed → auto-review`);
@@ -654,16 +752,13 @@ export async function compileClaims(
         return { claimId, action: "auto-reviewed", compileResult };
       }
       log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: structure complete, no config → marked-stale`);
-      repo.setCompileStatus(db, claimId, "stale");
+      repo.markCompileStale(db, claimId);
       return { claimId, action: "marked-stale", message: "Review not configured" };
     }
 
     // 结构不完整 → 标记 stale
     log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: structure incomplete → marked-stale`);
-    const claimData = JSON.parse(claimRow.data);
-    if (claimData.compile_status !== "stale") {
-      repo.setCompileStatus(db, claimId, "stale");
-    }
+    repo.markCompileStale(db, claimId);
     return { claimId, action: "marked-stale" };
   });
 

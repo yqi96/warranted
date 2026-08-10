@@ -111,7 +111,6 @@ export type ToulminNode =
 export interface ClaimData {
   status: ClaimStatus;
   qualifier?: string | null;
-  compile_status?: "passed" | "stale" | null;
 }
 
 export interface WarrantData {
@@ -190,7 +189,8 @@ export interface ClaimArgument {
     content: string;
     status: ClaimStatus;
     qualifier: string | null;
-    compile_status?: "passed" | "stale" | null;
+    /** 来自 compile_state 表；null 表示从未编译过 */
+    compile_status?: CompileStateVerdict | null;
   };
   warrants: ArgumentWarrant[];
   rebuttals: ArgumentRebuttal[];
@@ -272,11 +272,22 @@ export const CompileVerdict = {
 
 export type CompileVerdict = (typeof CompileVerdict)[keyof typeof CompileVerdict];
 
+/**
+ * compile_state.verdict 的取值 —— 比 CompileVerdict 多一个 "stale"。
+ *
+ * CompileVerdict 是"一次检查得出的结论"，只有 passed/failed；stale 不是任何一次检查的
+ * 结论，而是"曾经 passed，但通过的那个结构已经被改掉了"。两者不可混用：
+ * CompileResult.verdict 出现 stale 是错的。
+ *
+ * 没有行 = 从未编译过。这三个值加"没有行"共四种状态互斥且穷尽。
+ */
+export type CompileStateVerdict = CompileVerdict | "stale";
+
 export interface CompileState {
   claimId: number;
-  verdict: CompileVerdict;
+  verdict: CompileStateVerdict;
   summary: string;
-  argumentHash?: string; // Merkle Root 哈希
+  argumentHash?: string; // Merkle Root 哈希；仅 verdict === "passed" 时非空
   createdAt: string;
 }
 

@@ -7,7 +7,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
-import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim, seedBasicArgument } from "./helpers.ts";
+import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim, seedBasicArgument, compileVerdictOf } from "./helpers.ts";
 import { registerTools } from "../src/tools.ts";
 import type { ReviewConfig } from "../src/review-config.ts";
 import * as repo from "../src/repo.ts";
@@ -292,7 +292,7 @@ describe("compile_arguments 工具", () => {
 describe("get_argument 工具 — stale 标识", () => {
   test("stale Claim 的输出包含 STALE 标识", async () => {
     const claim = makeClaim(db, "核心主张");
-    repo.setCompileStatus(db, claim.id, "stale");
+    repo.saveCompileState(db, claim.id, "stale", "");
 
     const result = await tools.get_argument.handler({ node_id: claim.id });
     expect(result.content[0].text).toContain("⚠ STALE");
@@ -320,7 +320,7 @@ describe("get_stats 工具 — stale_count", () => {
 
   test("有 stale Claim 时统计含 stale 后缀", async () => {
     const claim = makeClaim(db, "C1");
-    repo.setCompileStatus(db, claim.id, "stale");
+    repo.saveCompileState(db, claim.id, "stale", "");
 
     const result = await tools.get_stats.handler({});
     expect(result.content[0].text).toContain("Claims: 1 (1 stale)");
@@ -943,14 +943,14 @@ describe("update_node — status 转换", () => {
     const claim = makeClaim(db, "未编译主张");
     const result = await tools.update_node.handler({ node_id: claim.id, status: "supported" });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("argument has not been compiled or is stale");
+    expect(result.content[0].text).toContain("argument has not been compiled yet");
   });
 
   test("→disputed 未 compile 返回错误", async () => {
     const claim = makeClaim(db, "未编译主张");
     const result = await tools.update_node.handler({ node_id: claim.id, status: "disputed" });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("argument has not been compiled or is stale");
+    expect(result.content[0].text).toContain("argument has not been compiled yet");
   });
 
   test("→supported compile 通过但 ground 未验证返回错误", async () => {
@@ -978,10 +978,10 @@ describe("update_node — status 转换", () => {
     const claim = makeCompiledClaim(db, "已编译主张");
     const result = await tools.update_node.handler({ node_id: claim.id, status: "disputed" });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("no Rebuttals exist");
+    expect(result.content[0].text).toContain("no verified Rebuttals");
   });
 
-  test("→disputed compile 通过且存在 rebuttal 成功", async () => {
+  test("→disputed compile 通过且存在已核实 rebuttal 成功", async () => {
     const claim = makeCompiledClaim(db, "已编译主张");
     makeRebuttal(db, claim.id, "claim", "反驳条件");
 
@@ -997,12 +997,18 @@ describe("update_node — status 转换", () => {
 // =============================================================================
 
 describe("update_node — statement content 自动退回 verification", () => {
-  test("更新 verified statement 内容 → verification 退回 pending + hint", async () => {
+  test("更新 verified statement 内容 → verification 退回 pending，且渲染成一句警告", async () => {
     const stmt = makeGround(db, { content: "原始内容", verification: "verified", attachments: ["/data.csv"] });
 
     const result = await tools.update_node.handler({ node_id: stmt.id, content: "修改内容" });
     expect(result.isError).toBeFalsy();
-    expect(result.content[0].text).toContain("content changed — verification reverted to pending");
+    expect(result.content[0].text).toContain(
+      `Warning: Statement #${stmt.id} content changed — verification reverted to pending`
+    );
+    // 这条文案曾经写在 HINTS 里，进的却是 service 的 warnings 渠道，
+    // 于是被 formatReviewIssues 前缀成 "Warning: Hint: ..."。
+    // 它本来就是警告（系统已经改掉了一个状态，不是在提议什么），文案自带前缀。
+    expect(result.content[0].text).not.toContain("Warning: Hint:");
     const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(stmt.id) as { data: string };
     expect(JSON.parse(row.data).verification).toBe("pending");
   });
@@ -1232,11 +1238,6 @@ describe("compile 失效 — 非结构性字段变更不触发失效", () => {
     return { claim, ground, warrant };
   }
 
-  function compileStatus(db: any, claimId: number): string | null {
-    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claimId) as { data: string };
-    return JSON.parse(row.data).compile_status ?? null;
-  }
-
   test("修改 statement verification → compile_status 保持 passed，无失效警告", async () => {
     const { claim, ground } = makeCompiledChain(db);
 
@@ -1247,7 +1248,7 @@ describe("compile 失效 — 非结构性字段变更不触发失效", () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.content[0].text).not.toContain("compiled status has been cleared");
-    expect(compileStatus(db, claim.id)).toBe("passed");
+    expect(compileVerdictOf(db, claim.id)).toBe("passed");
   });
 
   test("修改 statement source → compile_status 保持 passed，无失效警告", async () => {
@@ -1265,7 +1266,7 @@ describe("compile 失效 — 非结构性字段变更不触发失效", () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.content[0].text).not.toContain("compiled status has been cleared");
-    expect(compileStatus(db, claim.id)).toBe("passed");
+    expect(compileVerdictOf(db, claim.id)).toBe("passed");
   });
 
   test("修改 claim qualifier → compile_status 保持 passed，无失效警告", async () => {
@@ -1278,7 +1279,7 @@ describe("compile 失效 — 非结构性字段变更不触发失效", () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.content[0].text).not.toContain("compiled status has been cleared");
-    expect(compileStatus(db, claim.id)).toBe("passed");
+    expect(compileVerdictOf(db, claim.id)).toBe("passed");
   });
 });
 
@@ -1299,8 +1300,7 @@ describe("compile 失效 — backing_ids 变更触发失效", () => {
     });
 
     expect(result.content[0].text).toContain("compiled status has been cleared");
-    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
-    expect(JSON.parse(row.data).compile_status).toBe("stale");
+    expect(compileVerdictOf(db, claim.id)).toBe("stale");
   });
 
   test("backing_ids remove → compiled claim 失效", async () => {
@@ -1315,8 +1315,7 @@ describe("compile 失效 — backing_ids 变更触发失效", () => {
     });
 
     expect(result.content[0].text).toContain("compiled status has been cleared");
-    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
-    expect(JSON.parse(row.data).compile_status).toBe("stale");
+    expect(compileVerdictOf(db, claim.id)).toBe("stale");
   });
 });
 
@@ -1333,8 +1332,7 @@ describe("compile 失效 — rebuttal_ids 变更触发失效", () => {
     });
 
     expect(result.content[0].text).toContain("compiled status has been cleared");
-    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
-    expect(JSON.parse(row.data).compile_status).toBe("stale");
+    expect(compileVerdictOf(db, claim.id)).toBe("stale");
   });
 
   test("rebuttal_ids remove → compiled claim 失效", async () => {
@@ -1349,8 +1347,7 @@ describe("compile 失效 — rebuttal_ids 变更触发失效", () => {
     });
 
     expect(result.content[0].text).toContain("compiled status has been cleared");
-    const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string };
-    expect(JSON.parse(row.data).compile_status).toBe("stale");
+    expect(compileVerdictOf(db, claim.id)).toBe("stale");
     // 验证关系行实际被删除
     const rel = db.prepare(
       "SELECT * FROM rebuttal_targets WHERE statement_id = ? AND target_id = ?"

@@ -15,6 +15,7 @@ import {
   seedBasicArgument,
   makeCompiledClaim,
   makeChainReasoning,
+  compileVerdictOf,
 } from "./helpers.ts";
 import { compileClaims, findAffectedClaimIds } from "../src/compile-service.ts";
 import { computeArgumentHash } from "../src/merkle-hash.ts";
@@ -41,7 +42,6 @@ describe("compileClaims", () => {
     const argHash = computeArgumentHash(db, claim.id);
 
     // 将 claim 标记为 compiled 并存储正确的 argument_hash
-    repo.setCompileStatus(db, claim.id, "passed");
     repo.saveCompileState(db, claim.id, "passed", "ok", argHash);
 
     const results = await compileClaims(db, null, [claim.id]);
@@ -50,18 +50,18 @@ describe("compileClaims", () => {
     expect(results[0].action).toBe("no-change");
   });
 
-  test("未 compiled 的 Claim → marked-stale", async () => {
+  test("未 compiled 的 Claim → marked-stale，但不留下 stale 记录", async () => {
     const claim = makeClaim(db, "Uncompiled claim");
-    // Don't set compile_status, don't save compile_state
+    // 不写 compile_state
 
     const results = await compileClaims(db, null, [claim.id]);
 
     expect(results.length).toBe(1);
     expect(results[0].action).toBe("marked-stale");
 
-    // Verify compile_status is set to stale
-    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(data.compile_status).toBe("stale");
+    // 从没通过过，就不会被降级成 stale —— 仍然是"从未编译"。
+    // A0 照样挡得住（不是 passed 就过不去），信息还比 stale 准确。
+    expect(compileVerdictOf(db, claim.id)).toBeNull();
   });
 
   test("已 compiled 但哈希变化且无 config → marked-stale", async () => {
@@ -69,7 +69,6 @@ describe("compileClaims", () => {
     const argHash = computeArgumentHash(db, claim.id);
 
     // Mark as compiled with old hash
-    repo.setCompileStatus(db, claim.id, "passed");
     repo.saveCompileState(db, claim.id, "passed", "ok", argHash);
 
     // Modify content → hash will change
@@ -81,9 +80,8 @@ describe("compileClaims", () => {
     expect(results[0].action).toBe("marked-stale");
     expect(results[0].message).toContain("Review not configured");
 
-    // Verify compile_status is now stale
-    const updatedData = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(updatedData.compile_status).toBe("stale");
+    // 通过过、结构又变了 → 降级为 stale
+    expect(compileVerdictOf(db, claim.id)).toBe("stale");
   });
 
   test("不存在的 Claim → skipped", async () => {
@@ -106,14 +104,13 @@ describe("compileClaims", () => {
 
   test("stale 已设置时不重复设置", async () => {
     const claim = makeClaim(db, "Already stale");
-    repo.setCompileStatus(db, claim.id, "stale");
+    repo.saveCompileState(db, claim.id, "stale", "");
 
     const results = await compileClaims(db, null, [claim.id]);
 
     expect(results[0].action).toBe("marked-stale");
-    // compile_status should still be stale
-    const updatedData = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(updatedData.compile_status).toBe("stale");
+    // 本来就是 stale，保持 stale
+    expect(compileVerdictOf(db, claim.id)).toBe("stale");
   });
 
   // ===========================================================================
@@ -122,15 +119,14 @@ describe("compileClaims", () => {
 
   test("未审查 + 结构完整 + 无 config → marked-stale", async () => {
     const { claim } = seedBasicArgument(db);
-    // 不设置 compile_state，不设置 compile_status
+    // 不写 compile_state
 
     const results = await compileClaims(db, null, [claim.id]);
 
     expect(results[0].action).toBe("marked-stale");
     expect(results[0].message).toContain("Review not configured");
 
-    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(data.compile_status).toBe("stale");
+    expect(compileVerdictOf(db, claim.id)).toBeNull();
   });
 
   test("未审查 + 结构不完整（无 warrant）→ marked-stale", async () => {
@@ -140,8 +136,7 @@ describe("compileClaims", () => {
 
     expect(results[0].action).toBe("marked-stale");
 
-    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(data.compile_status).toBe("stale");
+    expect(compileVerdictOf(db, claim.id)).toBeNull();
   });
 
   test("未审查 + 结构不完整（warrant 无 ground）→ marked-stale", async () => {
@@ -199,9 +194,9 @@ describe("compileClaims", () => {
     expect(results[0].action).toBe("marked-stale");
     expect(results[0].message).toContain("Review not configured");
 
-    // verdict=failed 时 compile_status 设置为 stale
-    const data = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(data.compile_status).toBe("stale");
+    // failed 保持 failed，不降级为 stale：failed 信息量更大（重跑也不会变），
+    // 而且一样挡得住状态转换。
+    expect(compileVerdictOf(db, claim.id)).toBe("failed");
   });
 
   test("passed review + 哈希变化 + 无 config → 清除 compiled + marked-stale", async () => {
@@ -209,7 +204,6 @@ describe("compileClaims", () => {
     const argHash = computeArgumentHash(db, claim.id);
 
     // 存储 passed compile_state
-    repo.setCompileStatus(db, claim.id, "passed");
     repo.saveCompileState(db, claim.id, "passed", "ok", argHash);
 
     // 修改 content → 哈希变化
@@ -219,9 +213,8 @@ describe("compileClaims", () => {
 
     expect(results[0].action).toBe("marked-stale");
 
-    // passed review 时应将 compile_status 设置为 stale
-    const updatedData = JSON.parse(repo.getNodeById(db, claim.id)!.data);
-    expect(updatedData.compile_status).toBe("stale");
+    // 通过过 → 降级为 stale
+    expect(compileVerdictOf(db, claim.id)).toBe("stale");
   });
 });
 

@@ -126,20 +126,23 @@ export function findWarrantsUsingGround(db: Database, groundId: number): NodeRow
 }
 
 /**
- * 判断一个 Ground 节点是否"已验证"，供 A1 门禁和 compile 阶段共用。
+ * 判断一个节点是否"已核实"，供 A1/A3/A4 门禁和 compile 阶段共用。
+ * 名字不带 Ground 是因为 Ground 不是唯一的消费者：A3/A4 用同一个判据检查
+ * Rebuttal（见 hasVerifiedRebuttal）。角色由关系表决定，判据只看节点本身。
  * - statement 类型：verification === "verified"
  * - claim 类型（链式推理）：该 claim 自身 status ∈ {supported, disputed}。
  *   proposed 未经确认、refuted 已被推翻，均不能作为可信 ground。
- *   disputed 包含在内是因为证据冲突本身就是一种经过审查的结论状态，
+ *   disputed 包含在内是因为证据冲突本身就是一种经过审查的结论状态
+ *   （A3 要求已核实的 Rebuttal，所以走到 disputed 必然经过核实），
  *   且 disputed 没有退路（无法像 refuted 那样改挂窄 Claim）。
  */
-export function isGroundVerified(groundRow: NodeRow): boolean {
-  const data = JSON.parse(groundRow.data);
-  if (groundRow.type === "claim") return data.status === "supported" || data.status === "disputed";
+export function isClaimOrStatementVerified(nodeRow: NodeRow): boolean {
+  const data = JSON.parse(nodeRow.data);
+  if (nodeRow.type === "claim") return data.status === "supported" || data.status === "disputed";
   return data.verification === "verified";
 }
 
-/** 简短标注一个未通过 isGroundVerified 的 ground，用于错误/警告文案定位具体节点。 */
+/** 简短标注一个未通过 isClaimOrStatementVerified 的 ground，用于错误/警告文案定位具体节点。 */
 export function describeUnverifiedGround(groundRow: NodeRow): string {
   if (groundRow.type === "claim") {
     const data = JSON.parse(groundRow.data);
@@ -165,16 +168,46 @@ function findAllRebuttalsByTarget(db: Database, targetId: number, targetType?: s
   return repo.findRebuttalsByTarget(db, targetId, targetType);
 }
 
-/** 检查 Claim 或其 Warrants 是否有 Rebuttal */
-function hasRebuttals(db: Database, claimId: number): boolean {
-  const claimRebuttals = findAllRebuttalsByTarget(db, claimId, "claim");
-  if (claimRebuttals.length > 0) return true;
-  const warrantRows = repo.findWarrantsByClaim(db, claimId);
-  for (const w of warrantRows) {
-    const warrantRebuttals = findAllRebuttalsByTarget(db, w.id, "warrant");
-    if (warrantRebuttals.length > 0) return true;
+/**
+ * 检查 Claim 或其 Warrants 是否有**已核实**的 Rebuttal。
+ *
+ * 只看有没有反驳存在是不够的：那样一条 verification="pending"、零附件的
+ * Statement 就足以把一个主张标成 refuted，而标成 supported 却要求整条推理
+ * 下面的 Ground 全部已核实 —— 说一个主张是假的比说它是真的更省证据。
+ * 判据与 Ground 共用（isClaimOrStatementVerified），避免第二份实现漂移。
+ */
+export function hasVerifiedRebuttal(db: Database, claimId: number): boolean {
+  if (findAllRebuttalsByTarget(db, claimId, "claim").some(isClaimOrStatementVerified)) return true;
+  for (const w of repo.findWarrantsByClaim(db, claimId)) {
+    if (findAllRebuttalsByTarget(db, w.id, "warrant").some(isClaimOrStatementVerified)) return true;
   }
   return false;
+}
+
+/**
+ * A1 的判据：该 Claim 是否有某个 Warrant，其 Grounds 全部已核实。
+ *
+ * 从 A1 门禁里抽出来，因为撤回核实后的复检需要同一个判据
+ * （见 compile-service.ts revertUnsupportedClaimStatuses）。抽出而不是复制一份，
+ * 是 PR6 §D7 的教训：同一条政策写两遍，改动一处不会传到另一处，而且两边各自的
+ * 测试都会继续通过，漂移从任何一个文件里都看不出来。
+ *
+ * `blockers` 只服务 A1 的错误文案（要指出是哪条 Warrant 的哪个 Ground 没核实）；
+ * 复检只看 `satisfied`。
+ */
+export function hasWarrantWithAllGroundsVerified(
+  db: Database,
+  claimId: number
+): { satisfied: boolean; blockers: string[] } {
+  const blockers: string[] = [];
+  for (const w of repo.findWarrantsByClaim(db, claimId)) {
+    const groundRows = repo.findGroundsByWarrant(db, w.id);
+    if (groundRows.length === 0) continue;
+    const unverified = groundRows.filter(gRow => !isClaimOrStatementVerified(gRow));
+    if (unverified.length === 0) return { satisfied: true, blockers: [] };
+    blockers.push(`Warrant #${w.id}: ${unverified.map(describeUnverifiedGround).join(", ")}`);
+  }
+  return { satisfied: false, blockers };
 }
 
 /**
@@ -428,7 +461,7 @@ export function listClaims(
   limit: number = 50,
   offset: number = 0
 ): { rows: ClaimNode[]; total: number } {
-  let sql = "SELECT n.* FROM nodes n WHERE n.type = 'claim'";
+  let sql = "SELECT n.* FROM nodes n LEFT JOIN compile_state cs ON cs.claim_id = n.id WHERE n.type = 'claim'";
   const params: (string | number)[] = [];
 
   const tagClause = repo.tagFilterClause(tag, false, "n");
@@ -443,7 +476,9 @@ export function listClaims(
 
   if (compileStatusFilter) {
     const statuses = compileStatusFilter.split(",").map(s => s.trim());
-    sql += ` AND COALESCE(json_extract(n.data, '$.compile_status'), 'null') IN (${statuses.map(() => "?").join(", ")})`;
+    // compile_state 是编译状态的唯一存储；没有行 = 从未编译过，用字面量 'null' 过滤。
+    // claim_id 是主键，join 走索引；原先的 json_extract 用不上索引。
+    sql += ` AND COALESCE(cs.verdict, 'null') IN (${statuses.map(() => "?").join(", ")})`;
     params.push(...statuses);
   }
 
@@ -603,7 +638,11 @@ function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
     };
   });
 
-  return { claim: { ...claim, qualifier, compile_status: claimData.compile_status ?? null }, warrants, rebuttals } as ClaimArgument;
+  return {
+    claim: { ...claim, qualifier, compile_status: repo.getCompileState(db, claim.id)?.verdict ?? null },
+    warrants,
+    rebuttals,
+  } as ClaimArgument;
 }
 
 function getWarrantArgument(db: Database, warrantRow: NodeRow): WarrantArgument {
@@ -762,6 +801,7 @@ export function getStats(db: Database): Stats {
 
   // Claims by status and stale count
   const claimRows = repo.listNodesByType(db, "claim");
+  const compileVerdicts = repo.getAllCompileVerdicts(db);
   const byStatus: Record<string, number> = {};
   let staleCount = 0;
   const staleIds: number[] = [];
@@ -769,22 +809,20 @@ export function getStats(db: Database): Stats {
     const data = JSON.parse(row.data);
     const status = data.status || "proposed";
     byStatus[status] = (byStatus[status] || 0) + 1;
-    if (data.compile_status === "stale") {
+    if (compileVerdicts.get(row.id) === "stale") {
       staleCount++;
       staleIds.push(row.id);
     }
   }
 
-  // Never compiled count: claims with no compile_state record
-  const neverCompiled = claimRows.filter(r => {
-    const cs = db.prepare("SELECT 1 FROM compile_state WHERE claim_id = ?").get(r.id);
-    return !cs;
-  }).length;
+  // Never compiled count: claims with no compile_state record. 与 stale / passed / failed
+  // 互斥 —— 结构变动只把 verdict 降级为 stale，不再删行，所以改过的主张不会被同时算进这里。
+  const neverCompiled = claimRows.filter(r => !compileVerdicts.has(r.id)).length;
 
-  // Passed-awaiting-verdict: claims with compile_status "passed" but status "proposed"
+  // Passed-awaiting-verdict: compile 通过但 agent 还没下判断的主张
   const passedAwaiting = claimRows.filter(r => {
     const data = JSON.parse(r.data);
-    return data.compile_status === "passed" && (data.status || "proposed") === "proposed";
+    return compileVerdicts.get(r.id) === "passed" && (data.status || "proposed") === "proposed";
   }).length;
 
   // Grounds: all statement nodes that are used as grounds (in warrant_grounds) or have source field
@@ -922,15 +960,16 @@ function buildScaleBlock(db: Database): ScaleBlock {
 
   // Claims detail
   const claimRows = repo.listNodesByType(db, "claim");
+  const compileVerdicts = repo.getAllCompileVerdicts(db);
   const staleIds: number[] = [];
   let neverCompiled = 0;
   let passedAwaiting = 0;
   for (const row of claimRows) {
     const data = JSON.parse(row.data);
-    if (data.compile_status === "stale") staleIds.push(row.id);
-    const hasCs = db.prepare("SELECT 1 FROM compile_state WHERE claim_id = ?").get(row.id);
-    if (!hasCs) neverCompiled++;
-    if (data.compile_status === "passed" && (data.status || "proposed") === "proposed") passedAwaiting++;
+    const verdict = compileVerdicts.get(row.id);
+    if (verdict === "stale") staleIds.push(row.id);
+    if (verdict === undefined) neverCompiled++;
+    if (verdict === "passed" && (data.status || "proposed") === "proposed") passedAwaiting++;
   }
 
   // Attachments: collect all attachment paths from statement nodes
@@ -998,7 +1037,7 @@ export function updateNode(
     // G_CONTENT: verified ground 内容变更 → 退回 pending
     if (row.type === "statement" && data.verification === "verified") {
       data.verification = "pending";
-      warnings.push(HINTS.groundVerificationReverted(nodeId));
+      warnings.push(WARNINGS.verificationRevertedOnContentChange(nodeId));
     }
   }
 
@@ -1022,9 +1061,18 @@ export function updateNode(
 
     // A0: →supported/disputed/refuted 必须已通过 compile
     if (params.status === "supported" || params.status === "disputed" || params.status === "refuted") {
-      if (data.compile_status !== "passed") {
+      const cs = repo.getCompileState(db, nodeId);
+      if (cs?.verdict !== "passed") {
+        // 四种状态各给各自的出路 —— 尤其是 "failed"，再 compile 一百次结果不变，
+        // 要改的是论证本身。原先这四种情况共用一句 "compile first"，会把 agent 引进死循环。
+        const reason =
+          cs === null
+            ? `argument has not been compiled yet. Run compile_arguments on Claim #${nodeId} first.`
+            : cs.verdict === "stale"
+              ? `the argument changed after it last passed compile. Run compile_arguments on Claim #${nodeId} again.`
+              : `compile rejected this argument — re-running compile will not change that. Fix the argument first. Compile said: ${cs.summary}`;
         throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "${params.status}": argument has not been compiled or is stale. Run compile_arguments first.`
+          `Cannot mark Claim #${nodeId} as "${params.status}": ${reason}`
         );
       }
     }
@@ -1037,15 +1085,7 @@ export function updateNode(
           `Cannot mark Claim #${nodeId} as "supported": Claim has no Warrants. Create a Warrant with verified Grounds first.`
         );
       }
-      let hasValidWarrant = false;
-      const blockers: string[] = [];
-      for (const w of warrants) {
-        const groundRows = repo.findGroundsByWarrant(db, w.id);
-        if (groundRows.length === 0) continue;
-        const unverified = groundRows.filter(gRow => !isGroundVerified(gRow));
-        if (unverified.length === 0) { hasValidWarrant = true; break; }
-        blockers.push(`Warrant #${w.id}: ${unverified.map(describeUnverifiedGround).join(", ")}`);
-      }
+      const { satisfied: hasValidWarrant, blockers } = hasWarrantWithAllGroundsVerified(db, nodeId);
       if (!hasValidWarrant) {
         throw new StatusTransitionError(
           `Cannot mark Claim #${nodeId} as "supported": no Warrant has all Grounds verified — ${blockers.join("; ")}`
@@ -1053,20 +1093,20 @@ export function updateNode(
       }
     }
 
-    // A3: →disputed 需存在 Rebuttal
+    // A3: →disputed 需存在已核实的 Rebuttal
     if (params.status === "disputed") {
-      if (!hasRebuttals(db, nodeId)) {
+      if (!hasVerifiedRebuttal(db, nodeId)) {
         throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "disputed": no Rebuttals exist targeting this Claim or its Warrants. Create a Rebuttal first.`
+          `Cannot mark Claim #${nodeId} as "disputed": no verified Rebuttals target this Claim or its Warrants. A pending Rebuttal is not enough — verify it, or create one that is.`
         );
       }
     }
 
-    // A4: →refuted 需存在 Rebuttal
+    // A4: →refuted 需存在已核实的 Rebuttal
     if (params.status === "refuted") {
-      if (!hasRebuttals(db, nodeId)) {
+      if (!hasVerifiedRebuttal(db, nodeId)) {
         throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "refuted": no Rebuttals exist to justify refutation.`
+          `Cannot mark Claim #${nodeId} as "refuted": no verified Rebuttals exist to justify refutation. A pending Rebuttal is not enough — verify it, or create one that is.`
         );
       }
     }

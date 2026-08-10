@@ -95,7 +95,7 @@ function formatNodeDetail(row: NodeRow, db: Database): string {
     case "claim":
       lines.push(`status: ${data.status ?? "proposed"}`);
       if (data.qualifier != null && data.qualifier !== "") lines.push(`qualifier: ${data.qualifier}`);
-      lines.push(`compile_status: ${data.compile_status ?? null}`);
+      lines.push(`compile_status: ${repo.getCompileState(db, row.id)?.verdict ?? null}`);
       break;
     case "statement": {
       lines.push(`source: ${data.source}`);
@@ -147,6 +147,8 @@ function formatArgument(result: ArgumentResult): string {
     lines.push(`## Claim #${result.claim.id}`);
     if (result.claim.compile_status === "stale") {
       lines.push(HINTS.staleClaimBanner);
+    } else if (result.claim.compile_status === "failed") {
+      lines.push(HINTS.failedClaimBanner);
     }
     lines.push(`Content: ${result.claim.content}`);
     lines.push(`Status: ${result.claim.status}`);
@@ -322,7 +324,11 @@ function collectReviewIssues(results: AutoVerifyResult[]): { errors: string[]; w
 function formatReviewIssues(errors: string[], warnings: string[], infos?: string[]): string {
   const parts: string[] = [];
   for (const e of errors) parts.push(`Error: ${e}`);
-  for (const w of warnings) parts.push(`Warning: ${w}`);
+  // WARNINGS.* 里的文案自带 "Warning: " 前缀——因为有些渠道（appendInvalidateHint、
+  // pathCheck.warnings）是原样拼进输出的，不经过这里。经过这里的就会被前缀两次，
+  // 输出成 "Warning: Warning: ..."。判断实际字符串而不是让各条文案分两派，
+  // 是为了不让"这条文案走哪个渠道"变成一个必须记住的隐含约定。
+  for (const w of warnings) parts.push(w.startsWith("Warning: ") ? w : `Warning: ${w}`);
   if (infos) for (const i of infos) parts.push(`Info: ${i}`);
   return parts.join("\n");
 }
@@ -858,15 +864,8 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         if (rows.length < total) {
           lines.push(`Showing ${rows.length} of ${total} (offset ${offset ?? 0}) — narrow with tag/status filters or search_nodes`);
         }
-        // Pre-compute compile_status for each claim
-        const csMap = new Map<number, string | null>();
-        for (const c of rows) {
-          const row = repo.getNodeById(db, c.id);
-          if (row) {
-            const data = JSON.parse(row.data);
-            csMap.set(c.id, data.compile_status ?? null);
-          }
-        }
+        // compile 状态一次查全，避免每个主张一次查询
+        const csMap = repo.getAllCompileVerdicts(db);
         lines.push(...rows.map(c => {
           const cs = csMap.get(c.id);
           const csStr = cs ? ` compile:${cs}` : "";
@@ -1049,13 +1048,20 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     },
     withLog("update_node", async (opts: any) => {
       try {
-        // Companion 1: 读取 status 旧值，用于判断是否为实际值变更（非 presence 语义）
+        // 读取 status 旧值：只有实际值变更才算变更（不按参数 presence 判断）。
+        // 同时读 verification 旧值：撤回核实要回退依赖它的 Claim 的 status，而这个判断
+        // 需要"从 verified 变成了别的"这个事实——只看新值分不出是撤回还是本来就 pending。
         let oldStatus: string | undefined;
-        if (opts.status !== undefined) {
+        let oldVerification: string | undefined;
+        if (opts.status !== undefined || opts.verification !== undefined) {
           const preRow = repo.getNodeById(db, opts.node_id);
-          if (preRow?.type === "claim") {
+          if (preRow?.type === "claim" && opts.status !== undefined) {
             const preData = JSON.parse(preRow.data);
             oldStatus = preData.status || "proposed";
+          }
+          if (preRow?.type === "statement" && opts.verification !== undefined) {
+            const preData = JSON.parse(preRow.data);
+            oldVerification = preData.verification;
           }
         }
 
@@ -1103,24 +1109,44 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         }
 
         // 改变论证结构（内容或关系）才使已通过的 compile 失效；
-        // verification/source/qualifier 不影响逻辑链，不触发失效
-        // Companion 1: status 变更纳入向上失效，但仅在 value 实际改变时触发（非 presence 语义）
-        const statusChanged = opts.status !== undefined && oldStatus !== undefined && opts.status !== oldStatus;
+        // verification/source/qualifier/status 都不改变逻辑链，不触发失效。
         const otherStructuralChange =
           opts.content !== undefined ||
           opts.ground_ids !== undefined ||
           opts.backing_ids !== undefined ||
           opts.rebuttal_ids !== undefined;
-        const structuralChange = otherStructuralChange || statusChanged;
-        // 排除起点自身只对"纯 status 变更"成立：同一次调用里若还改了 content/关系，
-        // 起点自己的 compile 依据已经失效，必须照常失效，否则它会带着 passed 活下来。
-        const skipStartNode = statusChanged && !otherStructuralChange;
-        const invalidateWarnings = structuralChange
-          ? compileService.invalidateCompiledClaims(db, opts.node_id, skipStartNode ? new Set([opts.node_id]) : undefined)
+        const invalidateWarnings = otherStructuralChange
+          ? compileService.invalidateCompiledClaims(db, opts.node_id)
           : [];
+
+        // 论证的形式没变、但上层"证据够不够"的依据可能垮掉的两种改动，都走只退 status
+        // 那条路（理由见 compileService.revertUnsupportedClaimStatuses 的注释）：
+        //   D27 撤回一个 Statement 的核实；
+        //   D28 一条 Claim 的 status 实际改变——按规则 C′，它作为上层 Ground 算不算
+        //       已核实，取决于它自身的 status。
+        // status 一律按新旧值实际变更判断，不按参数 presence：重述同一个值图没变，
+        // 不该惊动任何人。
+        //
+        // 放在 invalidateCompiledClaims 之后：同一次调用若还改了结构，那条路已经把
+        // status 退成 proposed 了，这里的复检会直接跳过，不会重复报警。
+        // 排除起点自身：status 那条路的起点就是刚被定了状态的 Claim，不能在同一次调用里
+        // 把它自己的判断复检掉；撤回核实那条路的起点是 Statement，本来就不在队列里。
+        const verificationWithdrawn =
+          node.type === "statement" &&
+          oldVerification === "verified" &&
+          opts.verification !== undefined &&
+          opts.verification !== "verified";
+        const statusChanged = opts.status !== undefined && oldStatus !== undefined && opts.status !== oldStatus;
+        const statusRevertWarnings = verificationWithdrawn || statusChanged
+          ? compileService.revertUnsupportedClaimStatuses(db, opts.node_id, new Set([opts.node_id]))
+          : [];
+
         let text = `Updated ${formatNodeBrief(node)}`;
         if (serviceWarnings.length > 0) text += "\n" + formatReviewIssues([], serviceWarnings);
         for (const w of pathCheck.warnings) text += "\n" + w;
+        // 不走 appendInvalidateHint：那个会追加"记得重跑 compile"的提示，而这条路的
+        // 结论正相反——论证没变，compile 结论仍然有效，不需要重跑。
+        for (const w of statusRevertWarnings) text += "\n" + w;
         if (node.type === "statement" && opts.verification === "pending") {
           const src = node.source ?? "observed";
           if (src === "literature") text += "\n\n" + HINTS.groundPendingLiterature;

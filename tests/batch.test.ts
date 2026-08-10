@@ -38,7 +38,7 @@ import { tmpdir } from "os";
 import * as service from "../src/service.ts";
 import * as repo from "../src/repo.ts";
 import { registerTools } from "../src/tools.ts";
-import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant } from "./helpers.ts";
+import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, compileVerdictOf } from "./helpers.ts";
 import { reviewCwd as _reviewCwd } from "../src/review-config.ts";
 
 const svc = service as any;
@@ -559,11 +559,11 @@ describe.skipIf(!TAG_NODES)("§9.12–13：tag_nodes", () => {
     const g = makeGround(db, { content: "证据" });
     const c = makeClaim(db, "一条主张");
     makeWarrant(db, c.id, [g.id], "理由");
-    repo.setCompileStatus(db, c.id, "passed");
+    repo.saveCompileState(db, c.id, "passed", "");
 
     const r = await call("tag_nodes", { node_ids: [g.id], add: ["theme:cache"] });
     expect(r.isError).toBe(false);
-    expect(dataOf(c.id).compile_status).toBe("passed");
+    expect(compileVerdictOf(db, c.id)).toBe("passed");
     expect(dataOf(c.id).status).not.toBe("proposed_by_invalidation");
   });
 
@@ -816,9 +816,9 @@ describe.skipIf(!UPDATE_TAG)("§6：update_tag", () => {
     const c = makeClaim(db, "一条主张");
     const g = makeGround(db, { content: "证据" });
     makeWarrant(db, c.id, [g.id], "理由");
-    repo.setCompileStatus(db, c.id, "passed");
+    repo.saveCompileState(db, c.id, "passed", "");
     await call("update_tag", { name: "theme:cache", claim_id: c.id });
-    expect(dataOf(c.id).compile_status).toBe("passed");
+    expect(compileVerdictOf(db, c.id)).toBe("passed");
   });
 });
 

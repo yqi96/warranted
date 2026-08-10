@@ -7,7 +7,8 @@ import type { Database } from "bun:sqlite";
 import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim } from "./helpers.ts";
 import * as service from "../src/service.ts";
 import * as repo from "../src/repo.ts";
-import { structuralPreCheck } from "../src/compile-service.ts";
+import { structuralPreCheck, invalidateCompiledClaims } from "../src/compile-service.ts";
+import { computeArgumentHash } from "../src/merkle-hash.ts";
 import {
   NotFoundError,
   ValidationError,
@@ -841,10 +842,30 @@ describe("getStats", () => {
     const c1 = makeClaim(db, "C1");
     const c2 = makeClaim(db, "C2");
     makeClaim(db, "C3");
-    repo.setCompileStatus(db, c1.id, "stale");
-    repo.setCompileStatus(db, c2.id, "stale");
+    repo.saveCompileState(db, c1.id, "stale", "");
+    repo.saveCompileState(db, c2.id, "stale", "");
     const stats = service.getStats(db);
     expect(stats.claims.stale_count).toBe(2);
+  });
+
+  // 这条测试守的是"一个主张被数两遍"这个 bug。以前失效的做法是把 compile_state
+  // 那一行删掉，于是这个主张既算"从未检查过"（因为没有行）又算"检查结果已过期"，
+  // 两个计数加起来比主张总数还多。现在改成把行留下、只把结论降级，就只算一次。
+  test("检查通过后又失效的主张，只算过期，不算从未检查", () => {
+    const claim = makeClaim(db, "先通过后失效");
+    const ground = makeGround(db, { content: "证据" });
+    makeWarrant(db, claim.id, [ground.id], "推理");
+    makeClaim(db, "真的从未检查过");
+
+    repo.saveCompileState(db, claim.id, "passed", "ok", computeArgumentHash(db, claim.id));
+    invalidateCompiledClaims(db, ground.id);
+
+    const scale = service.getStats(db).scale;
+    expect(scale).toBeDefined();
+    const d = scale!.claims_detail;
+    expect(d.stale.ids).toContain(claim.id);
+    expect(d.never_compiled).toBe(1); // 只有那个真的从未检查过的
+    expect(d.never_compiled + d.stale.count).toBe(2); // 两个主张，两次计数
   });
 });
 
@@ -882,7 +903,7 @@ describe("审查规则: Claim 状态转换", () => {
     const ground = makeGround(db, { content: "G", verification: "verified" });
     makeWarrant(db, claim.id, [ground.id]);
     // 设置 compile_status = "stale"
-    repo.setCompileStatus(db, claim.id, "stale");
+    repo.saveCompileState(db, claim.id, "stale", "");
     expect(() =>
       service.updateNode(db, claim.id, { status: "supported" })
     ).toThrow(StatusTransitionError);
@@ -900,7 +921,7 @@ describe("审查规则: Claim 状态转换", () => {
 
   test("A0: stale Claim 不能标记 disputed (有 Rebuttal)", () => {
     const claim = makeClaim(db);
-    repo.setCompileStatus(db, claim.id, "stale");
+    repo.saveCompileState(db, claim.id, "stale", "");
     makeRebuttal(db, claim.id);
     expect(() =>
       service.updateNode(db, claim.id, { status: "disputed" })
@@ -917,7 +938,7 @@ describe("审查规则: Claim 状态转换", () => {
 
   test("A0: stale Claim 不能标记 refuted (有 Rebuttal)", () => {
     const claim = makeClaim(db);
-    repo.setCompileStatus(db, claim.id, "stale");
+    repo.saveCompileState(db, claim.id, "stale", "");
     makeRebuttal(db, claim.id);
     expect(() =>
       service.updateNode(db, claim.id, { status: "refuted" })
@@ -971,9 +992,9 @@ describe("审查规则: Claim 状态转换", () => {
     ).toThrow(StatusTransitionError);
   });
 
-  test("A3: 有 Rebuttal 时可以标记 disputed", () => {
+  test("A3: 有已核实的 Rebuttal 时可以标记 disputed", () => {
     const claim = makeClaim(db);
-    repo.setCompileStatus(db, claim.id, "passed");
+    repo.saveCompileState(db, claim.id, "passed", "");
     makeRebuttal(db, claim.id);
     const { node } = service.updateNode(db, claim.id, { status: "disputed" });
     expect((node as any).status).toBe("disputed");
@@ -981,16 +1002,47 @@ describe("审查规则: Claim 状态转换", () => {
 
   test("A4: 无 Rebuttal 时不能标记 refuted", () => {
     const claim = makeClaim(db);
-    repo.setCompileStatus(db, claim.id, "passed");
+    repo.saveCompileState(db, claim.id, "passed", "");
     expect(() =>
       service.updateNode(db, claim.id, { status: "refuted" })
     ).toThrow(StatusTransitionError);
   });
 
-  test("A4: 有 Rebuttal 时可以标记 refuted", () => {
+  test("A4: 有已核实的 Rebuttal 时可以标记 refuted", () => {
     const claim = makeClaim(db);
-    repo.setCompileStatus(db, claim.id, "passed");
+    repo.saveCompileState(db, claim.id, "passed", "");
     makeRebuttal(db, claim.id);
+    const { node } = service.updateNode(db, claim.id, { status: "refuted" });
+    expect((node as any).status).toBe("refuted");
+  });
+
+  // 下面三条守的是"反驳也要核实"这件事。以前只要有一条反驳挂在那里，不管它自己
+  // 核没核实，都能把主张标成 refuted；而标成 supported 却要求整条推理下面的证据
+  // 全部已核实。等于说一个主张是假的，比说它是真的更省证据。现在两边一样严。
+  test("A3: 未核实的 Rebuttal 不足以标记 disputed", () => {
+    const claim = makeClaim(db);
+    repo.saveCompileState(db, claim.id, "passed", "");
+    makeRebuttal(db, claim.id, "claim", "光有说法，没核实", [], "pending");
+    expect(() =>
+      service.updateNode(db, claim.id, { status: "disputed" })
+    ).toThrow(/no verified Rebuttals/);
+  });
+
+  test("A4: 未核实的 Rebuttal 不足以标记 refuted", () => {
+    const claim = makeClaim(db);
+    repo.saveCompileState(db, claim.id, "passed", "");
+    makeRebuttal(db, claim.id, "claim", "光有说法，没核实", [], "pending");
+    expect(() =>
+      service.updateNode(db, claim.id, { status: "refuted" })
+    ).toThrow(/no verified Rebuttals/);
+  });
+
+  test("A3/A4: 挂在 Warrant 上的已核实 Rebuttal 也算", () => {
+    const claim = makeClaim(db);
+    repo.saveCompileState(db, claim.id, "passed", "");
+    const ground = makeGround(db, { content: "G" });
+    const warrant = makeWarrant(db, claim.id, [ground.id]);
+    makeRebuttal(db, warrant.id, "warrant", "推理本身有问题", [], "verified");
     const { node } = service.updateNode(db, claim.id, { status: "refuted" });
     expect((node as any).status).toBe("refuted");
   });

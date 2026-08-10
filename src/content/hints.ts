@@ -28,6 +28,10 @@ export const HINTS = {
   staleClaimBanner:
     "⚠ STALE — logical chain review pending. Call compile_arguments.",
 
+  /** get_argument 返回 compile 失败的 Claim 时 —— 与 stale 不同，重跑 compile 不会改变结果 */
+  failedClaimBanner:
+    "⚠ COMPILE FAILED — re-running compile_arguments will not change this. Fix the argument itself, then compile again.",
+
   /** mutation 使 Claim compile 状态失效时追加 */
   compileAfterMutation:
     "Hint: Call compile_arguments to review the logical relationships.",
@@ -36,10 +40,6 @@ export const HINTS = {
   reviewSkipped:
     "Hint: Automatic review is not configured, so no evidence review ran for this node. " +
     "Self-verify that any 'verified' statement is backed by real evidence.",
-
-  /** update_node 修改 Statement content 后，verification 自动回退为 pending 时 */
-  groundVerificationReverted: (nodeId: number) =>
-    `Hint: Statement #${nodeId} content changed — verification reverted to pending. Re-mark as verified when ready.`,
 
   /** assertTagsRegistered 失败时的错误提示模板 */
   tagNotRegistered: (tag: string, suggestions: string) =>

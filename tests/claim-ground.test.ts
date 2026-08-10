@@ -31,6 +31,7 @@ import {
   makeWarrant,
   makeBacking,
   makeRebuttal,
+  compileVerdictOf,
 } from "./helpers.ts";
 import * as repo from "../src/repo.ts";
 import * as service from "../src/service.ts";
@@ -77,7 +78,6 @@ function dataOf(nodeId: number): any {
 /** 把一个 Claim 置为"已 compile 通过"（含与当前图一致的 argumentHash）。 */
 function markCompiled(claimId: number): void {
   repo.saveCompileState(db, claimId, "passed", "test compile", computeArgumentHash(db, claimId));
-  repo.setCompileStatus(db, claimId, "passed");
 }
 
 interface TwoLayer {
@@ -151,10 +151,10 @@ describe("S1：子 Claim 全 supported，根可以 supported", () => {
     expect(dataOf(root.id).status).toBe("supported");
   });
 
-  test("isGroundVerified 对 supported 的 claim 型 Ground 返回 true", () => {
+  test("isClaimOrStatementVerified 对 supported 的 claim 型 Ground 返回 true", () => {
     const { subA } = buildTwoLayer();
     settleSupported(subA.id);
-    expect(service.isGroundVerified(repo.getNodeById(db, subA.id)!)).toBe(true);
+    expect(service.isClaimOrStatementVerified(repo.getNodeById(db, subA.id)!)).toBe(true);
   });
 
   test("子 Claim 还是 proposed 时根不能 supported", () => {
@@ -183,10 +183,10 @@ describe("S2：一个子 Claim disputed、其余 supported（rule C′ 的分道
     expect(dataOf(root.id).status).toBe("supported");
   });
 
-  test("【rule C′】isGroundVerified 对 disputed 的 claim 型 Ground 返回 true", () => {
+  test("【rule C′】isClaimOrStatementVerified 对 disputed 的 claim 型 Ground 返回 true", () => {
     const { subB } = buildTwoLayer();
     settleContested(subB.id, "disputed");
-    expect(service.isGroundVerified(repo.getNodeById(db, subB.id)!)).toBe(true);
+    expect(service.isClaimOrStatementVerified(repo.getNodeById(db, subB.id)!)).toBe(true);
   });
 
   test("根自身没有 Rebuttal 时不能 disputed（A3 不因下层争议而放松）", () => {
@@ -196,12 +196,12 @@ describe("S2：一个子 Claim disputed、其余 supported（rule C′ 的分道
     markCompiled(root.id);
 
     expect(() => service.updateNode(db, root.id, { status: "disputed" })).toThrow(
-      /no Rebuttals exist targeting this Claim/
+      /no verified Rebuttals target this Claim/
     );
     expect(dataOf(root.id).status).toBe("proposed");
   });
 
-  test("根自身有 Rebuttal 时才能 disputed", () => {
+  test("根自身有已核实的 Rebuttal 时才能 disputed", () => {
     const { root, subA, subB } = buildTwoLayer();
     settleSupported(subA.id);
     settleContested(subB.id, "disputed");
@@ -228,10 +228,10 @@ describe("S3：一个子 Claim refuted，根不能 supported", () => {
     expect(dataOf(root.id).status).toBe("proposed");
   });
 
-  test("isGroundVerified 对 refuted 的 claim 型 Ground 返回 false", () => {
+  test("isClaimOrStatementVerified 对 refuted 的 claim 型 Ground 返回 false", () => {
     const { subB } = buildTwoLayer();
     settleContested(subB.id, "refuted");
-    expect(service.isGroundVerified(repo.getNodeById(db, subB.id)!)).toBe(false);
+    expect(service.isClaimOrStatementVerified(repo.getNodeById(db, subB.id)!)).toBe(false);
   });
 
   test("改挂一条能存活的窄 Claim 之后根可以 supported（refuted 的替代结构存在）", () => {
@@ -260,11 +260,18 @@ describe("S3：一个子 Claim refuted，根不能 supported", () => {
 });
 
 // =============================================================================
-// S4 — 配套 1：claim status 变更纳入向上失效
+// S4 — 配套 1：下层 Claim 改判后，上层 status 复检回退（compile 记录不动）
+//
+// D28 改掉了这一项原来的做法。原来的做法是把下层 status 变更当成结构变动，去把上层的
+// compile 记录标 stale。那是句假话：下层改判之后，上层论证的形式一个字没变——同一批
+// 节点、同一批指向关系全在——compile 也确实翻不了盘（structuralQualityCheck 对
+// claim 型 Ground 的三个 status 分支全是 warnings，没有一个进 errors）。垮掉的只是
+// 上层 status 的结构依据，所以现在只退 status，compile 记录留着。
+// 与 D27（撤回 Statement 的核实）同一条路、同一个判据。
 // =============================================================================
 
-describe("S4：根 supported 之后下层降级，根退回 proposed（配套 1）", () => {
-  test("下层 supported → proposed 会把根打回 proposed + stale", async () => {
+describe("S4：下层改判 → 上层 status 复检回退，compile 记录不动（配套 1 / D28）", () => {
+  test("下层 supported → proposed，根退回 proposed，但根的 compile 记录保持 passed", async () => {
     const { root, subA, subB } = buildTwoLayer();
     settleSupported(subA.id);
     settleSupported(subB.id);
@@ -274,11 +281,30 @@ describe("S4：根 supported 之后下层降级，根退回 proposed（配套 1�
 
     await tools.update_node.handler({ node_id: subA.id, status: "proposed" });
 
+    // 根的 W_root 要求 subA 和 subB 都算已核实；subA 退了，A1 不成立
     expect(dataOf(root.id).status).toBe("proposed");
-    expect(dataOf(root.id).compile_status).toBe("stale");
+    // 但根的论证没变过，compile 的结论仍然是它当初审过的那件事
+    expect(compileVerdictOf(db, root.id)).toBe("passed");
   });
 
-  test("排除起点自身：被改状态的那个 Claim 自己的 compile 不被撤销", async () => {
+  test("警告说清是哪条下层 Claim 抽走了依据，并明确不要重跑 compile", async () => {
+    const { root, subA, subB } = buildTwoLayer();
+    settleSupported(subA.id);
+    settleSupported(subB.id);
+    markCompiled(root.id);
+    service.updateNode(db, root.id, { status: "supported" });
+
+    const result = await tools.update_node.handler({ node_id: subA.id, status: "proposed" });
+    const text = result.content[0].text;
+
+    expect(text).toContain(`Claim #${root.id} status reverted from "supported" to "proposed"`);
+    expect(text).toContain(`Claim #${subA.id}, used as a Ground here, no longer counts as verified evidence`);
+    expect(text).toContain("do NOT re-run compile_arguments");
+    // 结构失效那条路的文案不该出现——它要求重跑 compile，正好相反
+    expect(text).not.toContain("compiled status has been cleared");
+  });
+
+  test("起点自身：被改状态的那个 Claim 自己的 compile 和 status 都不被这条路碰", async () => {
     const { root, subA, subB } = buildTwoLayer();
     settleSupported(subA.id);
     settleSupported(subB.id);
@@ -287,32 +313,31 @@ describe("S4：根 supported 之后下层降级，根退回 proposed（配套 1�
 
     await tools.update_node.handler({ node_id: subA.id, status: "proposed" });
 
-    // 起点自身若不排除，"定状态"这个动作会把刚设好的 status 自我撤销
+    // 复检的起点被排除：否则"定状态"这个动作会把刚设好的判断自我撤销
     expect(dataOf(subA.id).status).toBe("proposed");
-    expect(dataOf(subA.id).compile_status).toBe("passed");
+    expect(compileVerdictOf(db, subA.id)).toBe("passed");
   });
 
-  test("排除起点只对纯 status 变更成立：同一次调用还改了 content 时起点照常失效", async () => {
+  test("同一次调用还改了 content 时，起点照常失效——因为 content 变了论证的形式就变了", async () => {
     const { root, subA, subB } = buildTwoLayer();
     settleSupported(subA.id);
     settleSupported(subB.id);
     markCompiled(root.id);
     service.updateNode(db, root.id, { status: "supported" });
 
-    // content 与 status 同批改动：content 改了就说明 subA 自己的 compile 依据已作废，
-    // "排除起点"的豁免不能顺带把它一起放过。
+    // content 与 status 同批改动：content 改了，subA 自己的 compile 依据确实作废了，
+    // 这时该 stale——它跟 status 变更无关，是 content 变更带来的。
     await tools.update_node.handler({
       node_id: subA.id,
       status: "proposed",
       content: "子结论 A（改写）：方法在数据集 1 上有效",
     });
 
-    expect(dataOf(subA.id).compile_status).toBe("stale");
-    expect(repo.getCompileState(db, subA.id)).toBeNull();
-    expect(dataOf(root.id).compile_status).toBe("stale");
+    expect(compileVerdictOf(db, subA.id)).toBe("stale");
+    expect(compileVerdictOf(db, root.id)).toBe("stale");
   });
 
-  test("排除起点只对纯 status 变更成立：同一次调用还改了 ground_ids 时起点照常失效", async () => {
+  test("同一次调用还改了 ground_ids 时，起点照常失效", async () => {
     const { root, subA, subB } = buildTwoLayer();
     settleSupported(subA.id);
     settleSupported(subB.id);
@@ -347,8 +372,7 @@ describe("S4：根 supported 之后下层降级，根退回 proposed（配套 1�
       }).id] },
     });
 
-    expect(dataOf(subA.id).compile_status).toBe("stale");
-    expect(repo.getCompileState(db, subA.id)).toBeNull();
+    expect(compileVerdictOf(db, subA.id)).toBe("stale");
   });
 
   test("按新旧值实际变更触发，不按参数 presence：同值重述不失效根", async () => {
@@ -362,30 +386,44 @@ describe("S4：根 supported 之后下层降级，根退回 proposed（配套 1�
     await tools.update_node.handler({ node_id: subA.id, status: "supported" });
 
     expect(dataOf(root.id).status).toBe("supported");
-    expect(dataOf(root.id).compile_status).toBe("passed");
+    expect(compileVerdictOf(db, root.id)).toBe("passed");
   });
 
-  test("下层升级（proposed → supported）同样触发向上失效", async () => {
+  test("下层降级又升回来：根不必重跑 compile 就能重新定案", async () => {
     const { root, subA, subB } = buildTwoLayer();
     settleSupported(subA.id);
     settleSupported(subB.id);
     markCompiled(root.id);
     service.updateNode(db, root.id, { status: "supported" });
 
-    // 先降级再升级：第二次也是实际值变更，根必须重新 compile 才能再定案
     await tools.update_node.handler({ node_id: subA.id, status: "proposed" });
-    markCompiled(subA.id);
+    expect(dataOf(root.id).status).toBe("proposed");
+
     await tools.update_node.handler({ node_id: subA.id, status: "supported" });
 
-    expect(dataOf(root.id).compile_status).toBe("stale");
-    expect(() => service.updateNode(db, root.id, { status: "supported" })).toThrow(
-      /has not been compiled or is stale/
-    );
+    // 全程没有任何一步动过根的 compile 记录，A0 就过得去：这正是只退 status 的好处
+    expect(compileVerdictOf(db, root.id)).toBe("passed");
+    expect(() => service.updateNode(db, root.id, { status: "supported" })).not.toThrow();
+    expect(dataOf(root.id).status).toBe("supported");
   });
 
-  test("多层传播：孙层降级会一路失效到根", async () => {
+  test("下层升回来时不会顺手把已经是 proposed 的根再报一次警", async () => {
     const { root, subA, subB } = buildTwoLayer();
-    // 在 subA 下面再插一层：subA ← W_A2 ← grandchild
+    settleSupported(subA.id);
+    settleSupported(subB.id);
+    markCompiled(root.id);
+    service.updateNode(db, root.id, { status: "supported" });
+    await tools.update_node.handler({ node_id: subA.id, status: "proposed" });
+
+    const result = await tools.update_node.handler({ node_id: subA.id, status: "supported" });
+
+    expect(result.content[0].text).not.toContain("status reverted");
+  });
+
+  test("多层传播：孙层是唯一支撑时，它降级会一路退到根，两层 compile 记录都留着", async () => {
+    const { root, subA, subB } = buildTwoLayer();
+    // 把孙层挂进 subA 已有的那条 Warrant，让 subA 只有这一条 Warrant——
+    // A1 于是要求 gA 和孙层结论同时算已核实，孙层一退，subA 的依据就真的没了。
     const grand = makeClaim(db, "孙层结论");
     const gG = makeGround(db, {
       content: "孙层证据",
@@ -394,7 +432,8 @@ describe("S4：根 supported 之后下层降级，根退回 proposed（配套 1�
       attachments: ["/data/g.csv"],
     });
     makeWarrant(db, grand.id, [gG.id], "孙层论证");
-    makeWarrant(db, subA.id, [grand.id], "subA 由孙层结论支撑");
+    const wA = repo.findWarrantsByClaim(db, subA.id)[0];
+    await tools.update_node.handler({ node_id: wA.id, ground_ids: { add: [grand.id] } });
 
     settleSupported(grand.id);
     settleSupported(subA.id);
@@ -402,10 +441,45 @@ describe("S4：根 supported 之后下层降级，根退回 proposed（配套 1�
     markCompiled(root.id);
     service.updateNode(db, root.id, { status: "supported" });
 
-    await tools.update_node.handler({ node_id: grand.id, status: "proposed" });
+    const result = await tools.update_node.handler({ node_id: grand.id, status: "proposed" });
 
     expect(dataOf(subA.id).status).toBe("proposed");
     expect(dataOf(root.id).status).toBe("proposed");
+    expect(compileVerdictOf(db, subA.id)).toBe("passed");
+    expect(compileVerdictOf(db, root.id)).toBe("passed");
+    // 报给根的原因是就近的那一跳（subA），不是最初的孙层：对根的 Warrant 来说，
+    // 孙层结论根本不是它的 Ground，那样写就是一句对不上的话。
+    expect(result.content[0].text).toContain(
+      `Claim #${subA.id}, used as a Ground here, no longer counts as verified evidence`
+    );
+  });
+
+  test("孙层降级但下层另有独立支撑 → 谁都不退", async () => {
+    // buildTwoLayer 里 subA 本来就有 W_A（gA 已核实）；孙层另挂一条新 Warrant。
+    // A1 只要求"某一条 Warrant 的 Ground 全部已核实"，W_A 依然满足，subA 站得住，
+    // 根也就不该被牵连。无条件回退会在这里抹掉一个仍然成立的判断。
+    const { root, subA, subB } = buildTwoLayer();
+    const grand = makeClaim(db, "孙层结论");
+    const gG = makeGround(db, {
+      content: "孙层证据",
+      source: "observed",
+      verification: "verified",
+      attachments: ["/data/g.csv"],
+    });
+    makeWarrant(db, grand.id, [gG.id], "孙层论证");
+    makeWarrant(db, subA.id, [grand.id], "subA 也可由孙层结论支撑");
+
+    settleSupported(grand.id);
+    settleSupported(subA.id);
+    settleSupported(subB.id);
+    markCompiled(root.id);
+    service.updateNode(db, root.id, { status: "supported" });
+
+    const result = await tools.update_node.handler({ node_id: grand.id, status: "proposed" });
+
+    expect(dataOf(subA.id).status).toBe("supported");
+    expect(dataOf(root.id).status).toBe("supported");
+    expect(result.content[0].text).not.toContain("status reverted");
   });
 });
 
@@ -548,7 +622,7 @@ describe("§1.6.1 不变式：config === null 的 compileClaims 不产生 compil
     const results = await compileService.compileClaims(db, null, [claim.id]);
 
     expect(results[0].action).toBe("marked-stale");
-    expect(dataOf(claim.id).compile_status).not.toBe("passed");
+    expect(compileVerdictOf(db, claim.id)).not.toBe("passed");
   });
 
   test("结构不完整且无 reviewConfig → 同样不是 passed", async () => {
@@ -556,7 +630,7 @@ describe("§1.6.1 不变式：config === null 的 compileClaims 不产生 compil
     const results = await compileService.compileClaims(db, null, [claim.id]);
 
     expect(results[0].action).toBe("marked-stale");
-    expect(dataOf(claim.id).compile_status).not.toBe("passed");
+    expect(compileVerdictOf(db, claim.id)).not.toBe("passed");
   });
 
   test("多层 DAG 上，null config 不会让任何一层变成 passed", async () => {
@@ -567,7 +641,7 @@ describe("§1.6.1 不变式：config === null 的 compileClaims 不产生 compil
       expect(r.action).not.toBe("auto-reviewed");
     }
     for (const id of [root.id, subA.id, subB.id]) {
-      expect(dataOf(id).compile_status).not.toBe("passed");
+      expect(compileVerdictOf(db, id)).not.toBe("passed");
     }
   });
 
@@ -576,7 +650,23 @@ describe("§1.6.1 不变式：config === null 的 compileClaims 不产生 compil
     await compileService.compileClaims(db, null, [root.id]);
 
     expect(() => service.updateNode(db, root.id, { status: "supported" })).toThrow(
-      /has not been compiled or is stale/
+      /has not been compiled yet/
+    );
+  });
+
+  // 检查没通过和"检查结果过期"要给不同的话。过期的意思是"再跑一次检查就好"，
+  // 没通过的意思是"再跑一百次还是这个结果，得先改论证"。两句说反了，agent 就会
+  // 一直重跑检查等一个永远不会变的结果。
+  test("A0：检查没通过时，提示改论证，不提示重跑检查", () => {
+    const { root } = buildTwoLayer();
+    repo.saveCompileState(db, root.id, "failed", "C4: ground not verified");
+
+    expect(() => service.updateNode(db, root.id, { status: "supported" })).toThrow(
+      /compile rejected this argument/
+    );
+    // 不能把它说成"过期"，否则等于叫 agent 去重跑
+    expect(() => service.updateNode(db, root.id, { status: "supported" })).not.toThrow(
+      /changed after it last passed compile/
     );
   });
 });
@@ -686,7 +776,7 @@ describe("§2：create_statement(rebuttal_for=) 与 update_node 入口行为一�
       rebuttal_for: { target_id: claim.id, target_type: "claim" },
     });
 
-    expect(dataOf(claim.id).compile_status).toBe("stale");
+    expect(compileVerdictOf(db, claim.id)).toBe("stale");
   });
 
   test("已 supported 的 Claim 挂 Rebuttal → status 退回 proposed，不能基于旧 compile 标 disputed", async () => {
@@ -712,7 +802,7 @@ describe("§2：create_statement(rebuttal_for=) 与 update_node 入口行为一�
     expect(dataOf(claim.id).status).toBe("proposed");
     // 最狠的一条：链审查从未看见这条 Rebuttal，却可以据此把 Claim 标成 disputed
     expect(() => service.updateNode(db, claim.id, { status: "disputed" })).toThrow(
-      /has not been compiled or is stale/
+      /changed after it last passed compile/
     );
   });
 
@@ -734,7 +824,7 @@ describe("§2：create_statement(rebuttal_for=) 与 update_node 入口行为一�
       rebuttal_for: { target_id: w.id, target_type: "warrant" },
     });
 
-    expect(dataOf(claim.id).compile_status).toBe("stale");
+    expect(compileVerdictOf(db, claim.id)).toBe("stale");
   });
 
   test("多层 DAG：挂在下层 Claim 上的 Rebuttal 一路失效到根", async () => {
@@ -751,7 +841,7 @@ describe("§2：create_statement(rebuttal_for=) 与 update_node 入口行为一�
       rebuttal_for: { target_id: subA.id, target_type: "claim" },
     });
 
-    expect(dataOf(root.id).compile_status).toBe("stale");
+    expect(compileVerdictOf(db, root.id)).toBe("stale");
     expect(dataOf(root.id).status).toBe("proposed");
   });
 
@@ -773,7 +863,7 @@ describe("§2：create_statement(rebuttal_for=) 与 update_node 入口行为一�
 
     await tools.update_node.handler({ node_id: claim.id, rebuttal_ids: { add: [reb.id] } });
 
-    expect(dataOf(claim.id).compile_status).toBe("stale");
+    expect(compileVerdictOf(db, claim.id)).toBe("stale");
   });
 });
 

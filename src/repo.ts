@@ -5,7 +5,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import type { NodeRow, NodeType, NodeData, CompileState, TagRow, NamespaceCardinality } from "./types.ts";
+import type { NodeRow, NodeType, NodeData, CompileState, CompileStateVerdict, TagRow, NamespaceCardinality } from "./types.ts";
 
 // =============================================================================
 // 基础 CRUD
@@ -509,13 +509,19 @@ export function setNamespaceCardinality(db: Database, namespace: string, cardina
 
 // =============================================================================
 // Compile 状态操作
+//
+// compile_state 是 Claim 编译状态的唯一存储。四种互斥状态：
+//   没有行            = 从未编译过
+//   verdict='passed'  = 编译通过，argument_hash 是通过时的结构指纹
+//   verdict='failed'  = 编译未通过（argument_hash 为 NULL）
+//   verdict='stale'   = 曾经通过，但通过的那个结构已被改动（argument_hash 已清空）
 // =============================================================================
 
-/** 保存 compile 状态（INSERT OR REPLACE） */
+/** 记录一次编译结果（INSERT OR REPLACE）。argumentHash 只应在 verdict === "passed" 时传入。 */
 export function saveCompileState(
   db: Database,
   claimId: number,
-  verdict: string,
+  verdict: CompileStateVerdict,
   summary: string,
   argumentHash?: string
 ): void {
@@ -526,34 +532,46 @@ export function saveCompileState(
   stmt.run(claimId, verdict, summary, "{}", argumentHash ?? null, now);
 }
 
-/** 获取 compile 状态 */
+/** 获取 compile 状态；null 表示从未编译过 */
 export function getCompileState(db: Database, claimId: number): CompileState | null {
   const stmt = db.prepare("SELECT * FROM compile_state WHERE claim_id = ?");
   const row = stmt.get(claimId) as { claim_id: number; verdict: string; summary: string; node_hashes: string; argument_hash: string | null; created_at: string } | null;
   if (!row) return null;
   return {
     claimId: row.claim_id,
-    verdict: row.verdict as "passed" | "failed",
+    verdict: row.verdict as CompileStateVerdict,
     summary: row.summary,
     argumentHash: row.argument_hash ?? undefined,
     createdAt: row.created_at,
   };
 }
 
-/** 删除 compile 状态 */
+/** 批量获取 compile 状态，键为 claimId。用于避免 get_stats / list_claims 里的逐个查询。 */
+export function getAllCompileVerdicts(db: Database): Map<number, CompileStateVerdict> {
+  const rows = db.prepare("SELECT claim_id, verdict FROM compile_state").all() as Array<{ claim_id: number; verdict: string }>;
+  return new Map(rows.map(r => [r.claim_id, r.verdict as CompileStateVerdict]));
+}
+
+/** 删除 compile 状态（回到"从未编译过"） */
 export function deleteCompileState(db: Database, claimId: number): void {
   const stmt = db.prepare("DELETE FROM compile_state WHERE claim_id = ?");
   stmt.run(claimId);
 }
 
-/** 设置 ClaimData 的 compile_status 字段 */
-export function setCompileStatus(db: Database, claimId: number, status: "passed" | "stale" | null): void {
-  const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claimId) as { data: string } | null;
-  if (!row) return;
-  const data = JSON.parse(row.data);
-  data.compile_status = status;
-  db.prepare("UPDATE nodes SET data = ?, updated_at = ? WHERE id = ?")
-    .run(JSON.stringify(data), new Date().toISOString().slice(0, 19), claimId);
+/**
+ * 把"通过"降级为"过期"，并清空结构指纹。
+ *
+ * 只有 passed 会被改动 —— 只有通过过的东西才谈得上过期。failed 保持 failed（信息量更大，
+ * 且同样挡住状态转换）；没有行则保持没有行（从未编译过不该变成过期）。
+ *
+ * 清空 argument_hash 而非删掉整行：compileClaims 用 `prevState.argumentHash` 判断能否
+ * 走"哈希未变就跳过"的捷径（compile-service.ts），置 NULL 即可让它正确地落到重新审查
+ * 的分支；同时保留了"这个主张编译过"这一事实，不会被 get_stats 误算成从未编译过。
+ */
+export function markCompileStale(db: Database, claimId: number): void {
+  db.prepare(
+    "UPDATE compile_state SET verdict = 'stale', argument_hash = NULL WHERE claim_id = ? AND verdict = 'passed'"
+  ).run(claimId);
 }
 
 /** 设置 ClaimData 的 status 字段 */

@@ -163,16 +163,23 @@ export function makeBacking(
   };
 }
 
-/** 创建 Rebuttal/Statement 节点 */
+/**
+ * 创建 Rebuttal/Statement 节点。
+ *
+ * verification 默认 "verified"，和 makeGround 一致：夹具的默认值要让
+ * `makeRebuttal(db, claim.id)` 在测试里的字面意思——"有一条算数的反驳"——成立。
+ * A3/A4 只认已核实的反驳，所以想验证"未核实的反驳挡不住门"的用例必须显式传 "pending"。
+ */
 export function makeRebuttal(
   db: Database,
   targetId: number,
   targetType: TargetType = "claim",
   content: string = "Test rebuttal",
-  attachments: string[] = []
+  attachments: string[] = [],
+  verification: VerificationStatus = "verified"
 ): StatementNode {
   const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({ attachments });
+  const data = JSON.stringify({ attachments, verification });
   const stmt = db.prepare(
     "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('statement', ?, ?, ?, ?)"
   );
@@ -184,6 +191,7 @@ export function makeRebuttal(
     id,
     type: "statement",
     content,
+    verification,
     attachments,
     createdAt: now,
     updatedAt: now,
@@ -255,15 +263,22 @@ export function makeCompiledClaim(
 ): ClaimNode {
   const claim = makeClaim(db, content);
   const now = new Date().toISOString().slice(0, 19);
-  // Set compile_status = "passed" in data
-  const data = JSON.parse((db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string }).data);
-  data.compile_status = "passed";
-  db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(data), claim.id);
-  // Save compile_state
+  // compile_state 是编译状态的唯一存储 —— 节点 data 里不再有副本。
   db.prepare(
     "INSERT OR REPLACE INTO compile_state (claim_id, verdict, summary, node_hashes, argument_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)"
   ).run(claim.id, "passed", "Test compiled claim", "{}", argumentHash ?? null, now);
   return { ...claim, status: "proposed" };
+}
+
+/**
+ * 读取某个 Claim 的编译状态，没有记录时返回 null。
+ * 测试里到处要断言这个值，集中在一处免得各文件各写一遍 SQL。
+ */
+export function compileVerdictOf(db: Database, claimId: number): string | null {
+  const row = db
+    .prepare("SELECT verdict FROM compile_state WHERE claim_id = ?")
+    .get(claimId) as { verdict: string } | null;
+  return row?.verdict ?? null;
 }
 
 /**

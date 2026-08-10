@@ -604,11 +604,18 @@ describe("配套 4：A1 报错对 claim 型 Ground 给可执行的处方", () =>
 });
 
 // =============================================================================
-// §1.6.1 — 不变式守卫：未经链审查的 compile 不可能通过
+// §1.6.1 — 没配审查模型时：结构照挡，逻辑没人审
+//
+// 这一组原先守的是相反的规则（没配模型 ⇒ 一律标 stale ⇒ 谁都过不了）。改成默认通过
+// 是一个有意的取舍：没有 API key 的用户照常能用，代价是"证据经这条推理到底支不支撑
+// 主张"这件事没人看过。挡得住的只剩结构：少推理、少证据、Ground 指向不存在的节点、
+// 以及 C4（说自己 supported 却没有一条推理的证据全部核实）。
+//
+// 所以这里测的是"哪些还挡得住"，而不是"什么都挡得住"。
 // =============================================================================
 
-describe("§1.6.1 不变式：config === null 的 compileClaims 不产生 compile_status = passed", () => {
-  test("结构完整但无 reviewConfig → marked-stale，不是 passed", async () => {
+describe("§1.6.1 无 reviewConfig：只有结构检查挡得住", () => {
+  test("结构完整但无 reviewConfig → 默认通过，并在摘要里写明没审过逻辑", async () => {
     const claim = makeClaim(db, "结构完整的结论");
     const g = makeGround(db, {
       content: "证据",
@@ -621,35 +628,38 @@ describe("§1.6.1 不变式：config === null 的 compileClaims 不产生 compil
 
     const results = await compileService.compileClaims(db, null, [claim.id]);
 
-    expect(results[0].action).toBe("marked-stale");
-    expect(compileVerdictOf(db, claim.id)).not.toBe("passed");
+    expect(results[0].action).toBe("passed-unreviewed");
+    expect(compileVerdictOf(db, claim.id)).toBe("passed");
+    // 记录必须自带"没审过"的字样：否则这条 passed 和模型真审出来的 passed 分不开
+    expect(repo.getCompileState(db, claim.id)?.summary).toContain("without logic review");
   });
 
-  test("结构不完整且无 reviewConfig → 同样不是 passed", async () => {
+  test("结构不完整且无 reviewConfig → 挡下来，不是 passed", async () => {
     const claim = makeClaim(db, "没有 Warrant 的结论");
     const results = await compileService.compileClaims(db, null, [claim.id]);
 
-    expect(results[0].action).toBe("marked-stale");
+    expect(results[0].action).toBe("structure-incomplete");
     expect(compileVerdictOf(db, claim.id)).not.toBe("passed");
   });
 
-  test("多层 DAG 上，null config 不会让任何一层变成 passed", async () => {
+  test("多层 DAG 上，null config 一层都不算真审过（都是 passed-unreviewed）", async () => {
     const { root, subA, subB } = buildTwoLayer();
     const results = await compileService.compileClaims(db, null, [root.id, subA.id, subB.id]);
 
+    // 通过了，但没有一层经过模型 —— action 必须如实说出这件事
     for (const r of results) {
-      expect(r.action).not.toBe("auto-reviewed");
-    }
-    for (const id of [root.id, subA.id, subB.id]) {
-      expect(compileVerdictOf(db, id)).not.toBe("passed");
+      expect(r.action).toBe("passed-unreviewed");
+      expect(r.compileResult).toBeUndefined();
     }
   });
 
-  test("A0 兜底：未 compile 的 Claim 无论如何过不了 status 迁移", async () => {
-    const { root } = buildTwoLayer();
-    await compileService.compileClaims(db, null, [root.id]);
+  test("A0 兜底：结构不完整的 Claim 跑完 compile 仍然过不了 status 迁移", async () => {
+    // 结构完整的 Claim 现在会被默认通过，挡不住了；A0 挡的是"根本没有通过记录"这件事，
+    // 所以这里必须用一个连结构都不齐的 Claim 才测得到它。
+    const claim = makeClaim(db, "没有 Warrant 的结论");
+    await compileService.compileClaims(db, null, [claim.id]);
 
-    expect(() => service.updateNode(db, root.id, { status: "supported" })).toThrow(
+    expect(() => service.updateNode(db, claim.id, { status: "supported" })).toThrow(
       /has not been compiled yet/
     );
   });

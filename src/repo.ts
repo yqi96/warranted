@@ -567,11 +567,15 @@ export function deleteCompileState(db: Database, claimId: number): void {
  * 清空 argument_hash 而非删掉整行：compileClaims 用 `prevState.argumentHash` 判断能否
  * 走"哈希未变就跳过"的捷径（compile-service.ts），置 NULL 即可让它正确地落到重新审查
  * 的分支；同时保留了"这个主张编译过"这一事实，不会被 get_stats 误算成从未编译过。
+ *
+ * 返回是否真的改动了一行。调用点报告"降级了"必须用这个返回值，不能从"走到了哪个分支"
+ * 推断：同一个分支在 failed / 没有记录 的 Claim 上什么都不改（见 D26）。
  */
-export function markCompileStale(db: Database, claimId: number): void {
-  db.prepare(
+export function markCompileStale(db: Database, claimId: number): boolean {
+  const result = db.prepare(
     "UPDATE compile_state SET verdict = 'stale', argument_hash = NULL WHERE claim_id = ? AND verdict = 'passed'"
   ).run(claimId);
+  return result.changes > 0;
 }
 
 /** 设置 ClaimData 的 status 字段 */

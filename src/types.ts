@@ -316,7 +316,35 @@ export interface CompileResult {
 
 export interface AutoVerifyResult {
   claimId: number;
-  action: "auto-reviewed" | "marked-stale" | "no-change" | "skipped";
+  /**
+   * 这次对该 Claim 实际发生了什么。
+   *
+   * D25/D26：这里曾经只有一个 "marked-stale"，同时表示五种不同结局，渲染层只能猜，
+   * 于是把"结构齐全但某条检查没过"也印成 "incomplete structure"。按结局拆开之后
+   * 渲染层不必猜，每个词只对应一件事：
+   *
+   * - auto-reviewed        模型审查跑了，结论在 compileResult 里
+   * - no-change            结构指纹没变，不必重审
+   * - structure-incomplete 结构缺东西（少推理、少证据、Ground 指向不存在的节点）
+   * - check-failed         结构齐全，但确定性检查没通过（structuralQualityCheck）
+   * - passed-unreviewed    没有配审查模型，只跑了不需要模型的检查就记为通过
+   * - skipped              节点不存在或不是 Claim
+   */
+  action:
+    | "auto-reviewed"
+    | "no-change"
+    | "structure-incomplete"
+    | "check-failed"
+    | "passed-unreviewed"
+    | "skipped";
+  /**
+   * 这次是否真的把一条 passed 记录降级成了 stale。
+   *
+   * 与 action 无关，是独立的一件事：markCompileStale 只动 passed 的行，所以同一个
+   * 分支在 failed / 没有记录 的 Claim 上什么都不会改。取的是 SQL 实际改动的行数，
+   * 不是从分支位置推断的——D26 就是把"叫 marked-stale"当成"真的标了"。
+   */
+  staled?: boolean;
   compileResult?: CompileResult;
   message?: string;
 }

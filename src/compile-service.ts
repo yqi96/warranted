@@ -14,6 +14,7 @@ import type { Database } from "bun:sqlite";
 import type { ReviewConfig } from "./review-config.ts";
 import type {
   CompileResult,
+  CompileStateVerdict,
   CompileVerdict,
   ElementReviewResult,
   AutoVerifyResult,
@@ -677,19 +678,85 @@ export function revertUnsupportedClaimStatuses(
 // =============================================================================
 
 /**
+ * 只跑不需要模型的那些检查。返回 null 表示都通过了。
+ *
+ * 三条路共用它，是为了让"哪条检查失败对应哪个 action"只有一处定义：
+ * 结构预检失败 = 结构缺东西，质量检查失败 = 结构齐全但检查没过。
+ * 曾经这两种结局共用一个 marked-stale，渲染层只能猜，于是统一印成
+ * "incomplete structure"，对后者是假话（D25）。
+ */
+function nonModelCheck(
+  db: Database,
+  claimId: number
+): { action: "structure-incomplete" | "check-failed"; message: string } | null {
+  const structuralErrors = structuralPreCheck(db, claimId);
+  if (structuralErrors.length > 0) {
+    return { action: "structure-incomplete", message: structuralErrors.join("; ") };
+  }
+  const qualityResult = structuralQualityCheck(db, claimId);
+  if (qualityResult.errors.length > 0) {
+    return {
+      action: "check-failed",
+      message: `Structural quality check failed: ${qualityResult.errors.join("; ")}`,
+    };
+  }
+  return null;
+}
+
+/** compile_state 里给"未经模型审查直接通过"记录的摘要。 */
+const UNREVIEWED_PASS_SUMMARY =
+  "Passed without logic review: no review model configured, only the deterministic structural checks ran.";
+
+/**
+ * 没有配审查模型时的结局：不需要模型的检查照跑照挡，全过就记为通过。
+ *
+ * 这是一个有意的取舍。A0 只看"有没有一条通过的 compile 记录"，不看那条记录是模型审
+ * 出来的还是这里默认给的，所以没配模型的用户能照常把主张推进到 supported，代价是逻辑
+ * 本身（证据经这条推理到底支不支撑主张）没人看过。挡得住的只有结构。
+ *
+ * 一个例外：已经存着 failed 的不覆盖。failed 是模型真审过、真否掉了，是实打实的结论；
+ * 默认通过是"没人审过"时的兜底。拿兜底盖掉一个真结论等于把信息抹了。
+ */
+function passWithoutReviewModel(
+  db: Database,
+  claimId: number,
+  prevVerdict: CompileStateVerdict | null,
+  argHash: string,
+  t0: number
+): AutoVerifyResult {
+  const failure = nonModelCheck(db, claimId);
+  if (failure) {
+    const staled = repo.markCompileStale(db, claimId);
+    log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: no config, ${failure.action}`);
+    return { claimId, action: failure.action, message: failure.message, staled };
+  }
+  if (prevVerdict === "failed") {
+    log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: no config, stored failed verdict kept`);
+    return {
+      claimId,
+      action: "check-failed",
+      message:
+        "a previous compile rejected this argument, and no review model is configured to re-review it",
+      staled: false,
+    };
+  }
+  repo.saveCompileState(db, claimId, "passed", UNREVIEWED_PASS_SUMMARY, argHash);
+  log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: no config, structural checks passed → passed-unreviewed`);
+  return { claimId, action: "passed-unreviewed" };
+}
+
+/**
  * Compile 调度器。由 compile_arguments 工具显式调用，不是 mutation 自动触发。
  * 按需决定是否重新 compile：
  *
- * - 有 compile_state + argumentHash 未变 → no-change（argumentHash 只在 passed 时保存）
+ * - 有 compile_state + argumentHash 未变 → 复查不需模型的检查，全过则 no-change
  * - 有 compile_state + argumentHash 变了 → 触发逻辑链审查
  * - 无 compile_state + 结构完整 → 触发首次逻辑链审查
- * - 无 compile_state + 结构不完整 → 标记 stale
- * - 无 reviewConfig → 标记 stale
+ * - 无 compile_state + 结构不完整 → structure-incomplete
+ * - 无 reviewConfig → 跑完不需模型的检查后默认通过（passWithoutReviewModel）
  *
- * ⚠️ 不变式守卫：当 config === null 时，本函数走 marked-stale 路径而非报错。
- * 该路径目前仅在 tools.ts:693 reviewConfig 先失败的前提下方可达；任何新调用者
- * 必须自行决定 null-config 行为，否则 rule C′ 的判定无人执行。
- * 见 tests/claim-ground.test.ts §1.6.1 的不变式断言。
+ * config === null 不再报错也不再一律标 stale。原先 tools.ts 在调用前就先失败返回，
+ * 使这条路只有测试能走到；现在它是正式路径：没配模型的用户照常能用，只是逻辑没人审。
  */
 export async function compileClaims(
   db: Database,
@@ -716,50 +783,44 @@ export async function compileClaims(
       if (prevState.argumentHash === newArgHash) {
         // §3: hash 未变不代表结构未变（verification 不入 hash），
         // 运行结构检查确保 Ground 退回 pending 等场景不被短路掩盖
-        const structuralErrors = structuralPreCheck(db, claimId);
-        if (structuralErrors.length > 0) {
-          log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged but structural errors → marked-stale`);
-          repo.markCompileStale(db, claimId);
-          return { claimId, action: "marked-stale", message: structuralErrors.join("; ") };
-        }
-        const qualityResult = structuralQualityCheck(db, claimId);
-        if (qualityResult.errors.length > 0) {
-          log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged but quality errors → marked-stale`);
-          repo.markCompileStale(db, claimId);
-          return { claimId, action: "marked-stale", message: `Structural quality check failed: ${qualityResult.errors.join("; ")}` };
+        const failure = nonModelCheck(db, claimId);
+        if (failure) {
+          const staled = repo.markCompileStale(db, claimId);
+          log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged but ${failure.action}`);
+          return { claimId, action: failure.action, message: failure.message, staled };
         }
 
         log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged → no-change`);
         return { claimId, action: "no-change" };
       }
       // 哈希变化 → 需要重新审查
-      if (!config) {
-        log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash changed, no config → marked-stale`);
-        repo.markCompileStale(db, claimId);
-        return { claimId, action: "marked-stale", message: "Review not configured" };
-      }
+      if (!config) return passWithoutReviewModel(db, claimId, prevState.verdict, newArgHash, t0);
       log("auto_review", "OK", 0, `claim=#${claimId}: hash changed → auto-review`);
       const compileResult = await compileArgument(db, config, claimId);
       return { claimId, action: "auto-reviewed", compileResult };
     }
 
-    // Case 2: 从未审查过
+    // Case 2: 从未审查过（或审过但没留下结构指纹）
+    if (!config) return passWithoutReviewModel(db, claimId, prevState?.verdict ?? null, newArgHash, t0);
+
+    // 有模型时这里只跑结构预检，不跑质量检查：质量检查失败该由 compileArgument 处理，
+    // 它会把 verdict='failed' 落盘，比在这里拦下、compile_state 一片空白信息量更大。
     const structuralErrors = structuralPreCheck(db, claimId);
     if (structuralErrors.length === 0) {
-      if (config) {
-        log("auto_review", "OK", 0, `claim=#${claimId}: structure complete → first review`);
-        const compileResult = await compileArgument(db, config, claimId);
-        return { claimId, action: "auto-reviewed", compileResult };
-      }
-      log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: structure complete, no config → marked-stale`);
-      repo.markCompileStale(db, claimId);
-      return { claimId, action: "marked-stale", message: "Review not configured" };
+      log("auto_review", "OK", 0, `claim=#${claimId}: structure complete → first review`);
+      const compileResult = await compileArgument(db, config, claimId);
+      return { claimId, action: "auto-reviewed", compileResult };
     }
 
-    // 结构不完整 → 标记 stale
-    log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: structure incomplete → marked-stale`);
-    repo.markCompileStale(db, claimId);
-    return { claimId, action: "marked-stale" };
+    // 结构不完整 → 不花模型调用
+    log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: structure incomplete`);
+    const staled = repo.markCompileStale(db, claimId);
+    return {
+      claimId,
+      action: "structure-incomplete",
+      message: structuralErrors.join("; "),
+      staled,
+    };
   });
 
   const summary = results.map(r => `claim=#${r.claimId}:${r.action}`).join(", ");

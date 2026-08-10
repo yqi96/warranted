@@ -1203,7 +1203,6 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
       },
     },
     withLog("compile_arguments", async ({ claim_ids }: { claim_ids?: number[] }) => {
-      if (!reviewConfig) return fail(MESSAGES.review_not_configured);
       const ids = claim_ids ?? repo.listNodesByType(db, "claim").map(r => r.id);
       if (ids.length === 0) return ok(MESSAGES.no_claims_to_compile);
       const results = await compileService.compileClaims(db, reviewConfig, ids);
@@ -1211,15 +1210,37 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
 
       const lines: string[] = [];
       for (const r of results) {
+        const claimRef = `Claim #${r.claimId}`;
+        // 每行统一写成 "Claim #N: <结局> — <细节>"。细节里有时自带 "Claim #N"
+        // （structuralPreCheck / structuralQualityCheck 进 error 渠道时那是唯一的定位
+        // 信息，不能从消息里删），所以在这里去掉重复的那一次，而不是让编号印两遍。
+        // 同 PR7 里 formatReviewIssues 处理 "Warning: Warning:" 的做法。
+        const detail = (msg: string) =>
+          msg.startsWith(`${claimRef} `) ? msg.slice(claimRef.length + 1) : msg;
+        const staleNote = r.staled ? " (previously-passed verdict expired)" : "";
+
         if (r.action === "auto-reviewed" && r.compileResult) {
-          lines.push(`Claim #${r.claimId}: ${r.compileResult.verdict} — ${r.compileResult.summary}`);
+          lines.push(`${claimRef}: ${r.compileResult.verdict} — ${r.compileResult.summary}`);
         } else if (r.action === "no-change") {
-          lines.push(`Claim #${r.claimId}: no-change (argument hash unchanged)`);
-        } else if (r.action === "marked-stale") {
-          lines.push(`Claim #${r.claimId}: incomplete structure — ${r.message ?? "add Warrant and Ground(s) first"}`);
+          lines.push(`${claimRef}: no-change (argument hash unchanged)`);
+        } else if (r.action === "structure-incomplete") {
+          const msg = detail(r.message ?? "add Warrant and Ground(s) first");
+          lines.push(`${claimRef}: structure incomplete — ${msg}${staleNote}`);
+        } else if (r.action === "check-failed") {
+          const msg = detail(r.message ?? "a check rejected this argument");
+          lines.push(`${claimRef}: check failed — ${msg}${staleNote}`);
+        } else if (r.action === "passed-unreviewed") {
+          lines.push(`${claimRef}: passed without logic review (no review model configured)`);
         } else {
-          lines.push(`Claim #${r.claimId}: ${r.action}`);
+          lines.push(`${claimRef}: ${r.action}`);
         }
+      }
+
+      const unreviewed = results.filter(r => r.action === "passed-unreviewed");
+      if (unreviewed.length > 0) {
+        warnings.push(
+          WARNINGS.compiledWithoutReviewModel(unreviewed.map(r => `Claim #${r.claimId}`).join(", "))
+        );
       }
 
       let text = lines.join("\n");

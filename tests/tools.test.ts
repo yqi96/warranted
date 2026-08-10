@@ -257,10 +257,35 @@ describe("delete_node 工具", () => {
 // =============================================================================
 
 describe("compile_arguments 工具", () => {
-  test("未配置 reviewConfig 时返回错误", async () => {
+  // 原先这里断言"没配 reviewConfig → 直接返回错误"。那条守卫已经去掉：没配模型不再是
+  // 硬错误，而是跑完不需要模型的检查后默认通过，并用一条 warning 说清逻辑没人审。
+  test("未配置 reviewConfig 时默认通过，并提醒配置模型", async () => {
+    seedBasicArgument(db);
     const result = await tools.compile_arguments.handler({});
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("Review not configured");
+    const text = result.content[0].text;
+
+    expect(result.isError).toBeFalsy();
+    expect(text).toContain("passed without logic review");
+    // 提醒必须说到怎么补上，否则用户只知道少了东西、不知道少什么
+    expect(text).toContain("no review model is");
+    expect(text).toContain("ANTHROPIC_API_KEY");
+  });
+
+  test("未配置 reviewConfig 时，结构不全照样挡下来", async () => {
+    const claim = makeClaim(db, "没有 Warrant 的结论");
+    const result = await tools.compile_arguments.handler({ claim_ids: [claim.id] });
+
+    expect(result.content[0].text).toContain("structure incomplete");
+    expect(compileVerdictOf(db, claim.id)).not.toBe("passed");
+  });
+
+  test("多条 Claim 都默认通过时，提醒只发一条", async () => {
+    seedBasicArgument(db);
+    seedBasicArgument(db);
+    const text = (await tools.compile_arguments.handler({})).content[0].text;
+
+    // 说的是"环境缺配置"这一件事，按 Claim 重复 N 遍只会把针对具体 Claim 的话挤掉
+    expect(text.match(/no review model is configured/g)?.length).toBe(1);
   });
 
   test("有 reviewConfig 但无 Claim 时返回提示", async () => {

@@ -109,4 +109,16 @@ export const WARNINGS = {
   attachmentOutOfRoot: (path: string) =>
     `Warning: attachment "${path}" resolves outside the review working directory. ` +
     `It is not portable, and whether a review session can read it depends on the runtime environment.`,
+
+  /**
+   * compile_arguments 在没有配审查模型时的一次性提醒。
+   *
+   * 一次调用只发一条，不是每条 Claim 发一条：说的是环境缺配置这一件事，重复 N 遍
+   * 只会把真正针对某条 Claim 的话挤掉。
+   */
+  compiledWithoutReviewModel: (claimRefs: string) =>
+    `Warning: ${claimRefs} recorded as passed without any logic review — no review model is ` +
+    `configured, so only the deterministic structural checks ran. Whether the Grounds actually ` +
+    `support the Claim through the Warrant has not been examined. Set ANTHROPIC_API_KEY and ` +
+    `re-run compile_arguments to have the logic reviewed.`,
 } as const;

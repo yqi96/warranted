@@ -1,12 +1,18 @@
-# Wiki Index — warranted
+# Wiki Index
+
+> 6 pages | Last updated: 2026-08-07T06:46:36.511Z
 
 ## architecture
-- [Architecture Overview](architecture.md) — 技术栈、三层架构、12个MCP工具、级联删除规则、agents与skills清单
-- [Compile System](compile-system.md) — compile_arguments工具、Merkle哈希、staleness检测、reviewer类型
+
+- [Architecture Overview](architecture.md) — # warranted 架构总览
+- [Compile System](compile-system.md) — # Compile 系统
+- [Visualizer Architecture](visualizer.md) — # Visualizer 架构
 
 ## environment
-- [Development Conventions](dev-conventions.md) — Bun工具链、测试结构、日志规范、MCP协议
-- [Prompt Layering](prompt-layering.md) — toulmin-researcher(判断层) vs SKILL.md(协议层)的信息归属规范、判据、paper-reproduce范例
 
----
-_Last updated: 2026-08-05 | Pages: 5_
+- [Development Conventions](dev-conventions.md) — # 开发规范
+- [Prompt Layering — base agent vs SKILL.md](prompt-layering.md) — # Prompt 分层规范:toulmin-researcher(判断层) vs SKILL.md(协议层)
+
+## session-log
+
+- [Session Log 2026-08-07](session-log-2026-08-07-53167506.md) — # Session Log 2026-08-07

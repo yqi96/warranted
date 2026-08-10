@@ -9,9 +9,16 @@ export const HINTS = {
     "  3. compile_arguments — review the logical relationships before advancing the claim status",
   ].join("\n"),
 
-  /** create_statement / update_node：source=literature 且 verification=pending 时 */
+  /**
+   * create_statement / update_node：source=literature 且 verification=pending 时。
+   * The reference files are already attached by the time this fires — literature
+   * statements cannot be created without them — so what is still outstanding is
+   * the review, not the archiving. Telling the caller to "attach the source file"
+   * here would be the last text in the repository implying that a pending
+   * literature statement with no attachment is a normal state.
+   */
   groundPendingLiterature:
-    "Hint: This statement cites published work. To mark it verified, attach the source file or reference material (PDF, webpage capture, or equivalent) with specific citation details such as author, year, title, DOI, or page.",
+    "Hint: This statement cites published work and its reference files are attached. It is recorded but not yet reviewed — verify it (individually, or in bulk via verify_statements) before anything rests on it or cites it. Make sure the attachments carry specific citation details such as author, year, title, DOI, or page.",
 
   /** create_statement / update_node：source=observed 且 verification=pending 时 */
   groundPendingObserved:
@@ -33,4 +40,8 @@ export const HINTS = {
   /** update_node 修改 Statement content 后，verification 自动回退为 pending 时 */
   groundVerificationReverted: (nodeId: number) =>
     `Hint: Statement #${nodeId} content changed — verification reverted to pending. Re-mark as verified when ready.`,
+
+  /** assertTagsRegistered 失败时的错误提示模板 */
+  tagNotRegistered: (tag: string, suggestions: string) =>
+    `Tag "${tag}" is not registered.\nSimilar existing: ${suggestions}\nUse it, or register a new tag first with create_tag.`,
 } as const;

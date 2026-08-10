@@ -42,8 +42,8 @@ afterEach(() => {
 // =============================================================================
 
 describe("工具注册", () => {
-  test("注册了 12 个工具", () => {
-    expect(Object.keys(tools).length).toBe(12);
+  test("注册了 21 个工具", () => {
+    expect(Object.keys(tools).length).toBe(21);
   });
 
   test("所有必需工具已注册", () => {
@@ -52,6 +52,7 @@ describe("工具注册", () => {
       "list_claims", "list_statements", "get_argument", "get_node", "search_nodes",
       "get_stats", "update_node", "delete_node",
       "compile_arguments",
+      "create_tag", "create_tags", "list_tags", "rename_tag", "merge_tags",
     ];
     for (const name of expected) {
       expect(tools[name]).toBeTruthy();
@@ -661,6 +662,7 @@ describe("create_statement — literature 跳过定义审查", () => {
       content: "Smith et al. (2023) report method A achieves 95% accuracy on benchmark B.",
       source: "literature",
       verification: "pending",
+      attachments: ["package.json"],
     });
     expect(result.isError).toBeFalsy();
     expect(result.content[0].text).toContain("Created statement");
@@ -729,6 +731,7 @@ describe("create_statement — source pending hints", () => {
       content: "文献引用内容",
       source: "literature",
       verification: "pending",
+      attachments: ["/tmp/paper.pdf"],
     });
     expect(result.isError).toBeFalsy();
     expect(result.content[0].text).toContain("cites published work");
@@ -1249,6 +1252,11 @@ describe("compile 失效 — 非结构性字段变更不触发失效", () => {
 
   test("修改 statement source → compile_status 保持 passed，无失效警告", async () => {
     const { claim, ground } = makeCompiledChain(db);
+    // Add attachments first: literature source requires them
+    const gRow = repo.getNodeById(db, ground.id);
+    const gData = JSON.parse(gRow!.data);
+    gData.attachments = ["/paper.pdf"];
+    repo.updateNodeFields(db, ground.id, { data: gData });
 
     const result = await tools.update_node.handler({
       node_id: ground.id,

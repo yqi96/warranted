@@ -199,7 +199,7 @@ describe("rebuttal target resolution (connection-derived)", () => {
       warrants: ctx.warrantRows.map(w => ({
         id: w.id,
         content: w.content,
-        grounds: [{ id: ground.id, content: ground.content }],
+        grounds: [{ id: ground.id, content: ground.content, type: "statement" as const, verification: "verified" }],
         backings: [],
       })),
       rebuttals: ctx.rebuttalRows.map(rr => ({

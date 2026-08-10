@@ -5,7 +5,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import type { NodeRow, NodeType, NodeData, CompileState } from "./types.ts";
+import type { NodeRow, NodeType, NodeData, CompileState, TagRow, NamespaceCardinality } from "./types.ts";
 
 // =============================================================================
 // 基础 CRUD
@@ -121,21 +121,106 @@ export function findRebuttalsByTarget(
   return stmt.all(...params) as NodeRow[];
 }
 
-/** 搜索节点（LIKE 模糊匹配） */
+/**
+ * Build tag filter SQL clause and params for EXISTS/NOT EXISTS subquery.
+ * Shared between searchNodes (LIKE) and searchNodesFts (FTS) to avoid duplication.
+ */
+export function tagFilterClause(tag: string | undefined, negate: boolean, alias: string): { clause: string; params: string[] } {
+  if (!tag) return { clause: "", params: [] };
+  const op = negate ? "NOT EXISTS" : "EXISTS";
+  if (tag.includes("*")) {
+    return {
+      clause: ` AND ${op} (SELECT 1 FROM node_tags nt WHERE nt.node_id = ${alias}.id AND nt.tag LIKE ?)`,
+      params: [tag.replace(/\*/g, "%")],
+    };
+  }
+  return {
+    clause: ` AND ${op} (SELECT 1 FROM node_tags nt WHERE nt.node_id = ${alias}.id AND nt.tag = ?)`,
+    params: [tag],
+  };
+}
+
+/** 搜索节点（LIKE 模糊匹配，支持分页和标签过滤） */
 export function searchNodes(
   db: Database,
   keyword: string,
-  typeFilter?: NodeType
-): NodeRow[] {
-  let sql = "SELECT * FROM nodes WHERE content LIKE ?";
-  const params: (string | number)[] = [`%${keyword}%`];
+  typeFilter?: NodeType,
+  opts?: { tag?: string; without_tag?: string; limit?: number; offset?: number }
+): { rows: NodeRow[]; total: number } {
+  const { tag, without_tag, limit = 20, offset = 0 } = opts ?? {};
+  const like = `%${keyword}%`;
+
+  // Count query
+  let countSql = "SELECT COUNT(*) AS cnt FROM nodes n WHERE n.content LIKE ?";
+  const countParams: (string | number)[] = [like];
+
+  // Data query
+  let sql = "SELECT n.* FROM nodes n WHERE n.content LIKE ?";
+  const params: (string | number)[] = [like];
+
   if (typeFilter) {
-    sql += " AND type = ?";
+    countSql += " AND n.type = ?";
+    sql += " AND n.type = ?";
+    countParams.push(typeFilter);
     params.push(typeFilter);
   }
-  sql += " ORDER BY id";
-  const stmt = db.prepare(sql);
-  return stmt.all(...params) as NodeRow[];
+
+  const t1 = tagFilterClause(tag, false, "n");
+  countSql += t1.clause; countParams.push(...t1.params);
+  sql += t1.clause; params.push(...t1.params);
+
+  const t2 = tagFilterClause(without_tag, true, "n");
+  countSql += t2.clause; countParams.push(...t2.params);
+  sql += t2.clause; params.push(...t2.params);
+
+  const total = (db.prepare(countSql).get(...countParams) as { cnt: number }).cnt;
+
+  sql += " ORDER BY n.id LIMIT ? OFFSET ?";
+  params.push(limit, offset);
+  const rows = db.prepare(sql).all(...params) as NodeRow[];
+
+  return { rows, total };
+}
+
+/** 搜索节点（FTS5 全文检索，支持分页和标签过滤） */
+export function searchNodesFts(
+  db: Database,
+  query: string,
+  opts: { type?: string; tag?: string; without_tag?: string; limit: number; offset: number }
+): { rows: NodeRow[]; total: number } {
+  const { type, tag, without_tag, limit, offset } = opts;
+  const escaped = `"${query.replaceAll('"', '""')}"`;
+
+  // Count query
+  let countSql = "SELECT COUNT(*) AS cnt FROM nodes_fts f JOIN nodes n ON n.id = f.rowid WHERE nodes_fts MATCH ?";
+  const countParams: (string | number)[] = [escaped];
+
+  // Data query
+  let sql = "SELECT n.* FROM nodes_fts f JOIN nodes n ON n.id = f.rowid WHERE nodes_fts MATCH ?";
+  const params: (string | number)[] = [escaped];
+
+  if (type) {
+    countSql += " AND n.type = ?";
+    sql += " AND n.type = ?";
+    countParams.push(type);
+    params.push(type);
+  }
+
+  const t1 = tagFilterClause(tag, false, "n");
+  countSql += t1.clause; countParams.push(...t1.params);
+  sql += t1.clause; params.push(...t1.params);
+
+  const t2 = tagFilterClause(without_tag, true, "n");
+  countSql += t2.clause; countParams.push(...t2.params);
+  sql += t2.clause; params.push(...t2.params);
+
+  const total = (db.prepare(countSql).get(...countParams) as { cnt: number }).cnt;
+
+  sql += " ORDER BY f.rank LIMIT ? OFFSET ?";
+  params.push(limit, offset);
+  const rows = db.prepare(sql).all(...params) as NodeRow[];
+
+  return { rows, total };
 }
 
 /** 统计各类型节点数量 */
@@ -272,6 +357,154 @@ export function removeRebuttalTargets(db: Database, nodeId: number, ids: number[
   for (const id of ids) {
     db.prepare("DELETE FROM rebuttal_targets WHERE statement_id = ? AND target_id = ?").run(nodeId, id);
   }
+}
+
+// =============================================================================
+// Tag operations
+// =============================================================================
+
+/** Insert a tag */
+export function insertTag(db: Database, name: string, description: string, claimId?: number): TagRow {
+  const stmt = db.prepare(
+    "INSERT INTO tags (name, description, claim_id) VALUES (?, ?, ?)"
+  );
+  stmt.run(name, description, claimId ?? null);
+  return {
+    name,
+    description,
+    claim_id: claimId ?? null,
+    created_at: new Date().toISOString().slice(0, 19),
+  };
+}
+
+/** Get a tag by name */
+export function getTag(db: Database, name: string): TagRow | null {
+  const row = db.prepare("SELECT * FROM tags WHERE name = ?").get(name) as TagRow | null;
+  return row ?? null;
+}
+
+/**
+ * List all tags with their node counts, with optional filtering and pagination.
+ * `limit` omitted means unbounded — internal callers that aggregate over the whole
+ * vocabulary must not silently see only the first page.
+ */
+export function listTagsWithCount(
+  db: Database,
+  opts?: { prefix?: string; min_count?: number; limit?: number; offset?: number }
+): (TagRow & { count: number })[] {
+  const { sql: filtered, params } = tagCountQuery(opts);
+  let sql = `${filtered} ORDER BY t.name`;
+
+  if (opts?.limit !== undefined) {
+    sql += " LIMIT ? OFFSET ?";
+    params.push(opts.limit, opts.offset ?? 0);
+  }
+
+  return db.prepare(sql).all(...params) as (TagRow & { count: number })[];
+}
+
+/** Total tags matching the same filters as listTagsWithCount, ignoring pagination. */
+export function countTags(db: Database, opts?: { prefix?: string; min_count?: number }): number {
+  const { sql, params } = tagCountQuery(opts);
+  return (db.prepare(`SELECT COUNT(*) AS cnt FROM (${sql}) AS sub`).get(...params) as { cnt: number }).cnt;
+}
+
+function tagCountQuery(opts?: { prefix?: string; min_count?: number }): { sql: string; params: (string | number)[] } {
+  let sql = "SELECT t.*, COUNT(nt.node_id) AS count FROM tags t LEFT JOIN node_tags nt ON nt.tag = t.name";
+  const params: (string | number)[] = [];
+
+  if (opts?.prefix) {
+    sql += " WHERE t.name LIKE ?";
+    params.push(`${opts.prefix}%`);
+  }
+
+  sql += " GROUP BY t.name";
+
+  // min_count=0 means "registered with no node attached" (the work-queue signal),
+  // not "no minimum" — an unset min_count already means that.
+  if (opts?.min_count !== undefined) {
+    sql += opts.min_count === 0 ? " HAVING count = 0" : " HAVING count >= ?";
+    if (opts.min_count !== 0) params.push(opts.min_count);
+  }
+
+  return { sql, params };
+}
+
+/** Rename a tag (node_tags follows via ON UPDATE CASCADE) */
+export function renameTag(db: Database, from: string, to: string): void {
+  db.prepare("UPDATE tags SET name = ? WHERE name = ?").run(to, from);
+}
+
+/** Merge one tag into another: move all node_tags, delete the source tag */
+export function mergeTags(db: Database, from: string, to: string): number {
+  return db.transaction((): number => {
+    // Count how many node_tags entries will be moved
+    const beforeCount = (db.prepare("SELECT COUNT(*) AS cnt FROM node_tags WHERE tag = ?").get(from) as { cnt: number }).cnt;
+    // Move node_tags entries (INSERT OR IGNORE for overlap)
+    db.prepare(
+      "INSERT OR IGNORE INTO node_tags (node_id, tag) SELECT node_id, ? FROM node_tags WHERE tag = ?"
+    ).run(to, from);
+    // Remove old node_tags entries
+    db.prepare("DELETE FROM node_tags WHERE tag = ?").run(from);
+    // Delete the source tag
+    db.prepare("DELETE FROM tags WHERE name = ?").run(from);
+    return beforeCount;
+  })();
+}
+
+/** Add tags to a node (INSERT OR IGNORE) */
+export function addNodeTags(db: Database, nodeId: number, tags: string[]): void {
+  const stmt = db.prepare("INSERT OR IGNORE INTO node_tags (node_id, tag) VALUES (?, ?)");
+  for (const tag of tags) {
+    stmt.run(nodeId, tag);
+  }
+}
+
+/** Remove tags from a node */
+export function removeNodeTags(db: Database, nodeId: number, tags: string[]): void {
+  const stmt = db.prepare("DELETE FROM node_tags WHERE node_id = ? AND tag = ?");
+  for (const tag of tags) {
+    stmt.run(nodeId, tag);
+  }
+}
+
+/** Get all tags for a node */
+export function getNodeTags(db: Database, nodeId: number): string[] {
+  return (db.prepare("SELECT tag FROM node_tags WHERE node_id = ? ORDER BY tag").all(nodeId) as { tag: string }[]).map(r => r.tag);
+}
+
+/** Find nodes by tag, optionally filtered by type */
+export function findNodesByTag(db: Database, tag: string, typeFilter?: string): NodeRow[] {
+  let sql = "SELECT n.* FROM nodes n JOIN node_tags nt ON n.id = nt.node_id WHERE nt.tag = ?";
+  const params: (string | number)[] = [tag];
+  if (typeFilter) {
+    sql += " AND n.type = ?";
+    params.push(typeFilter);
+  }
+  sql += " ORDER BY n.id";
+  return db.prepare(sql).all(...params) as NodeRow[];
+}
+
+/** Get all registered tag names */
+export function getAllTagNames(db: Database): string[] {
+  return (db.prepare("SELECT name FROM tags ORDER BY name").all() as { name: string }[]).map(r => r.name);
+}
+
+/** Update a tag's description and/or claim_id */
+export function updateTag(db: Database, name: string, description?: string, claim_id?: number): void {
+  const stmt = db.prepare("UPDATE tags SET description = COALESCE(?, description), claim_id = COALESCE(?, claim_id) WHERE name = ?");
+  stmt.run(description ?? null, claim_id ?? null, name);
+}
+
+/** Get namespace cardinality declaration */
+export function getNamespaceCardinality(db: Database, namespace: string): NamespaceCardinality | null {
+  const row = db.prepare("SELECT cardinality FROM tag_namespaces WHERE namespace = ?").get(namespace) as { cardinality: NamespaceCardinality } | null;
+  return row?.cardinality ?? null;
+}
+
+/** Set namespace cardinality (INSERT OR REPLACE) */
+export function setNamespaceCardinality(db: Database, namespace: string, cardinality: NamespaceCardinality): void {
+  db.prepare("INSERT OR REPLACE INTO tag_namespaces (namespace, cardinality) VALUES (?, ?)").run(namespace, cardinality);
 }
 
 // =============================================================================

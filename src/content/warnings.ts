@@ -36,4 +36,22 @@ export const WARNINGS = {
     `Warning: Claim #${claimId} status reverted from "${previousStatus}" to "proposed" ` +
     `because node #${nodeId} in its argument chain was modified. ` +
     `Re-run compile_arguments and re-assess status when ready.`,
+
+  /**
+   * §4.2: `paper:` tag carried with source="observed".
+   * Neutral statement of the combination plus both legitimate readings — writing
+   * it as an imperative ("should be literature") would emit a false warning on
+   * every core node a reproduction task creates, and a warning channel that
+   * cries wolf stops being read at all.
+   */
+  paperTagObservedSource: (itemRef: string, paperTags: string[]) =>
+    `Warning: ${itemRef} carries ${paperTags.join(", ")} with source="observed". ` +
+    `Two readings are both legitimate: a result this paper states (reproduction), ` +
+    `or your own observation about it. If instead this is a proposition extracted ` +
+    `from the paper, it should be source="literature".`,
+
+  /** §4.3.2: attachment resolves, but lies outside the review working directory. */
+  attachmentOutOfRoot: (path: string) =>
+    `Warning: attachment "${path}" resolves outside the review working directory. ` +
+    `It is not portable, and whether a review session can read it depends on the runtime environment.`,
 } as const;

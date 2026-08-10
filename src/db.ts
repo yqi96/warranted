@@ -8,6 +8,15 @@ import { Database } from "bun:sqlite";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
+// FTS5 availability flag — set once at startup
+let _ftsAttempted = false;
+let _ftsAvailable = false;
+
+/** Whether FTS5 is available at runtime */
+export function isFtsAvailable(): boolean {
+  return _ftsAvailable;
+}
+
 /**
  * 打开数据库并初始化 Schema。
  * @param dbPath - 数据库文件路径，默认 ":memory:"（内存数据库，适合测试）
@@ -81,7 +90,81 @@ export function initializeSchema(db: Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_rebuttal_targets_target ON rebuttal_targets(target_id, target_type);
+
+    CREATE TABLE IF NOT EXISTS tags (
+      name        TEXT PRIMARY KEY,
+      description TEXT NOT NULL DEFAULT '',
+      claim_id    INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS node_tags (
+      node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+      tag     TEXT    NOT NULL REFERENCES tags(name) ON UPDATE CASCADE ON DELETE CASCADE,
+      PRIMARY KEY (node_id, tag)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_node_tags_tag ON node_tags(tag);
+
+    CREATE TABLE IF NOT EXISTS tag_namespaces (
+      namespace   TEXT PRIMARY KEY,
+      cardinality TEXT NOT NULL CHECK (cardinality IN ('dense', 'bounded')),
+      declared_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    INSERT OR IGNORE INTO tag_namespaces (namespace, cardinality) VALUES ('paper', 'dense');
   `);
+
+  // FTS5 virtual table + triggers
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+        content, content='nodes', content_rowid='id', tokenize='trigram'
+      );
+    `);
+    _ftsAttempted = true;
+    _ftsAvailable = true;
+
+    // Check if triggers already exist
+    const existingTriggers = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'nodes_fts_%'"
+    ).all() as Array<{ name: string }>;
+    const existingNames = new Set(existingTriggers.map(t => t.name));
+
+    if (!existingNames.has("nodes_fts_ai")) {
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS nodes_fts_ai AFTER INSERT ON nodes BEGIN
+          INSERT INTO nodes_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+      `);
+    }
+    if (!existingNames.has("nodes_fts_ad")) {
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS nodes_fts_ad AFTER DELETE ON nodes BEGIN
+          INSERT INTO nodes_fts(nodes_fts, rowid, content) VALUES ('delete', old.id, old.content);
+        END;
+      `);
+    }
+    if (!existingNames.has("nodes_fts_au")) {
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS nodes_fts_au AFTER UPDATE OF content ON nodes BEGIN
+          INSERT INTO nodes_fts(nodes_fts, rowid, content) VALUES ('delete', old.id, old.content);
+          INSERT INTO nodes_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+      `);
+    }
+
+    // Rebuild index if it's empty but nodes exist
+    const nodeCount = (db.prepare("SELECT COUNT(*) AS cnt FROM nodes").get() as { cnt: number }).cnt;
+    const ftsCount = (db.prepare("SELECT COUNT(*) AS cnt FROM nodes_fts").get() as { cnt: number }).cnt;
+    if (nodeCount > 0 && ftsCount === 0) {
+      db.exec("INSERT INTO nodes_fts(nodes_fts) VALUES ('rebuild')");
+    }
+  } catch (e) {
+    _ftsAttempted = true;
+    _ftsAvailable = false;
+    console.warn("[warranted] FTS5 not available — search will use LIKE only.");
+  }
 
   // Migration: 为已有数据库添加 argument_hash 列
   const columns = db.prepare("PRAGMA table_info(compile_state)").all() as Array<{ name: string }>;
@@ -307,6 +390,31 @@ export function tightenCheckConstraint(db: Database): void {
   // Recreate indexes
   db.exec("CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_nodes_warrant_claim ON nodes(CAST(json_extract(data,'$.claim_id') AS INTEGER)) WHERE type='warrant'");
+
+  // Recreate FTS triggers and rebuild index if FTS5 is available
+  if (_ftsAvailable) {
+    db.exec("DROP TRIGGER IF EXISTS nodes_fts_ai");
+    db.exec("DROP TRIGGER IF EXISTS nodes_fts_ad");
+    db.exec("DROP TRIGGER IF EXISTS nodes_fts_au");
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS nodes_fts_ai AFTER INSERT ON nodes BEGIN
+        INSERT INTO nodes_fts(rowid, content) VALUES (new.id, new.content);
+      END;
+    `);
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS nodes_fts_ad AFTER DELETE ON nodes BEGIN
+        INSERT INTO nodes_fts(nodes_fts, rowid, content) VALUES ('delete', old.id, old.content);
+      END;
+    `);
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS nodes_fts_au AFTER UPDATE OF content ON nodes BEGIN
+        INSERT INTO nodes_fts(nodes_fts, rowid, content) VALUES ('delete', old.id, old.content);
+        INSERT INTO nodes_fts(rowid, content) VALUES (new.id, new.content);
+      END;
+    `);
+    // Rebuild FTS index after table rebuild
+    db.exec("INSERT INTO nodes_fts(nodes_fts) VALUES ('rebuild')");
+  }
 }
 
 /**

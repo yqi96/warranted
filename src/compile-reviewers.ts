@@ -10,7 +10,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { dirname } from "path";
+import { reviewCwd } from "./review-config.ts";
 import type { ReviewConfig } from "./review-config.ts";
 import type { NodeRow, ElementReviewResult } from "./types.ts";
 import * as repo from "./repo.ts";
@@ -110,10 +110,22 @@ async function reviewChain(
         content: w.content,
         grounds: groundIds.map(gid => {
           const gIdx = ctx.groundRows.findIndex(g => g.id === gid);
-          if (gIdx === -1) return { id: gid, content: "(not found)" };
+          if (gIdx === -1) return { id: gid, content: "(not found)", type: "statement" as const, verification: "pending" };
+          const gRow = ctx.groundRows[gIdx];
+          const gData = ctx.groundDatas[gIdx];
+          if (gRow.type === "claim") {
+            return {
+              id: gid,
+              content: gRow.content,
+              type: "claim" as const,
+              status: (gData.status as string) || "proposed",
+            };
+          }
           return {
             id: gid,
-            content: ctx.groundRows[gIdx].content,
+            content: gRow.content,
+            type: "statement" as const,
+            verification: (gData.verification as string) || "pending",
           };
         }),
         backings: repo.findBackingsByWarrant(db, w.id)
@@ -173,7 +185,7 @@ export async function runChainReview(
     };
   }
 
-  const cwd = dirname(dirname(config.dbPath));
+  const cwd = reviewCwd(config);
 
   log("chain_review", "OK", 0, `claim=#${claimId} → starting chain review`);
   const t1 = Date.now();

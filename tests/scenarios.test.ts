@@ -254,7 +254,7 @@ describe("场景 3：文献综述", () => {
 
     // 搜索验证
     const results = service.searchNodesService(db, "Mamba");
-    expect(results.length).toBe(1);
+    expect(results.rows.length).toBe(1);
 
     const stats = service.getStats(db);
     // rebuttal statement also has source=literature, so grounds.total includes it

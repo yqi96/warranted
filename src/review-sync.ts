@@ -12,6 +12,7 @@ import { writeFileSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
 import { log } from "./logger.ts";
 import * as repo from "./repo.ts";
+import { reviewCwd } from "./review-config.ts";
 
 // =============================================================================
 // Statement Evidence Review（同步）
@@ -21,6 +22,26 @@ import * as repo from "./repo.ts";
 export interface StatementReviewResult {
   errors: string[];
   warnings: string[];
+  /**
+   * §3.0's third outcome. Set when the review infrastructure itself failed
+   * (exception, timeout, SDK failure, denied tool calls) rather than when the
+   * reviewer judged the evidence inadequate. The two carry opposite
+   * prescriptions — retry vs. fix the evidence — so callers must not merge them,
+   * and must never mark a statement `verified` when this is set.
+   */
+  reviewError?: string;
+  /** Tool calls the SDK denied. Non-empty means the reviewer may never have read the evidence. */
+  deniedTools?: string[];
+}
+
+/** A denial means the verdict may rest on evidence the reviewer never read. */
+function denialResult(deniedTools: string[], warnings: string[]): StatementReviewResult {
+  return {
+    errors: [],
+    warnings,
+    deniedTools,
+    reviewError: `review denied ${deniedTools.length} tool call(s) (${deniedTools.join(", ")}) — the reviewer may not have read the attachments`,
+  };
 }
 
 /** 创建前证据审查：不依赖 DB，接受参数直接审查 */
@@ -38,12 +59,13 @@ export async function reviewStatementEvidencePreCreate(
     },
   });
 
+  const deniedTools: string[] = [];
   try {
-    const cwd = dirname(dirname(config.dbPath));
+    const cwd = reviewCwd(config);
     log("statement_review", "OK", 0, `START statement_reviewer: pre-create`);
     const t0 = Date.now();
 
-    const response = await callAgent(config, prompt, params.attachments, cwd);
+    const response = await callAgent(config, prompt, params.attachments, cwd, undefined, deniedTools);
     const elapsed = Date.now() - t0;
     const parsed = parseLLMResponse(response, "");
     const errors: string[] = ((parsed.errors as Array<any>) || []).map(e =>
@@ -56,10 +78,12 @@ export async function reviewStatementEvidencePreCreate(
     log("statement_review", "OK", elapsed,
       `END statement_reviewer: pre-create → ${errors.length} error(s), ${warnings.length} warning(s)`);
 
+    if (deniedTools.length > 0) return denialResult(deniedTools, warnings);
+
     return { errors, warnings };
   } catch (error) {
     log("statement_review", "ERR", 0, `pre-create: ${error}`);
-    return { errors: [`Reviewer error: ${error}`], warnings: [] };
+    return { errors: [], warnings: [], reviewError: String(error) };
   }
 }
 
@@ -86,13 +110,14 @@ export async function executeStatementReview(
     },
   });
 
+  const deniedTools: string[] = [];
   try {
-    const cwd = dirname(dirname(config.dbPath));
+    const cwd = reviewCwd(config);
     log("statement_review", "OK", 0,
       `START statement_reviewer: statement=#${statementId}`);
     const t0 = Date.now();
 
-    const response = await callAgent(config, prompt, statementData.attachments || [], cwd);
+    const response = await callAgent(config, prompt, statementData.attachments || [], cwd, undefined, deniedTools);
     const elapsed = Date.now() - t0;
     const parsed = parseLLMResponse(response, "");
     const errors: string[] = ((parsed.errors as Array<any>) || []).map(e =>
@@ -105,12 +130,15 @@ export async function executeStatementReview(
     log("statement_review", "OK", elapsed,
       `END statement_reviewer: statement=#${statementId} → ${errors.length} error(s), ${warnings.length} warning(s)`);
 
-    saveStatementReviewFile(config, statementId, { errors, warnings });
+    const result: StatementReviewResult = deniedTools.length > 0
+      ? denialResult(deniedTools, warnings)
+      : { errors, warnings };
+    saveStatementReviewFile(config, statementId, result);
 
-    return { errors, warnings };
+    return result;
   } catch (error) {
     log("statement_review", "ERR", 0, `statement=#${statementId}: ${error}`);
-    return { errors: [`Reviewer error: ${error}`], warnings: [] };
+    return { errors: [], warnings: [], reviewError: String(error) };
   }
 }
 

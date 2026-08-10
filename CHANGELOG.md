@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — behavior changes that affect existing graphs and existing call sites
+
+See the [Upgrading to 0.5.0](README.md#upgrading-to-050) section for the two actions that surface these.
+
+**Graph-state changes (a full `compile_arguments` after upgrading surfaces them):**
+
+- **Claim-type Grounds are now judged by their own status.** A Claim used as a Ground counts as satisfied only when its own `status` is `supported` or `disputed`. Previously compile treated every claim-type Ground as satisfied unconditionally while the `update_node(status=)` gate treated it as never satisfied — the two disagreed, and the practical effect was that no Claim above the bottom layer of a multi-layer graph could be marked `supported`. Existing graphs where a `supported` Claim sits on a `proposed` or `refuted` sub-Claim will start reporting an error on the next compile. Sitting on a `disputed` sub-Claim does **not** error: a recorded evidence conflict is a settled end state, and the upper layer draws scope from it rather than truth value.
+- **Claim status changes now propagate upward.** Changing a Claim's status invalidates the compiled state of every Claim above it (the Claim itself is exempt, unless the same call also changed `content` or a relation). Consequence for ordering: "compile every layer first, then settle statuses bottom-up" no longer works — settling a lower status invalidates the upper compile, and setting the upper status then reports `argument has not been compiled or is stale`. The working order is layer-by-layer interleaving: compile a layer, settle a layer, move up. Restating a status that is already set changes nothing and triggers no recompile.
+
+**Call-habit changes (these fail on the write path; compile can never surface them):**
+
+- `create_statement`'s `source` is now **required** — it no longer defaults to `observed`.
+- `source="literature"` now **requires attachments** at creation. This was already promised in the tool's own parameter description and simply was not enforced.
+- Every path in `attachments` must resolve from the review working directory. URLs therefore do not qualify.
+- When the review infrastructure itself errors, the Statement now falls back to `verification="pending"` and reports the error, instead of silently resting at `verified`.
+- `update_node(attachments=[])` against an already-`verified` Statement now errors. It previously succeeded silently, leaving a verified Statement with no evidence.
+
+### Added
+
+- `mapLimit` concurrency cap (`src/concurrency.ts`) shared by compile, `verify_statements`, and `create_statements`. Default 4 concurrent review sessions, overridable via the `WARRANTED_REVIEW_CONCURRENCY` environment variable. A bare `compile_arguments` over 25 Claims previously fired roughly 78 Agent SDK calls at once.
+
+### Fixed
+
+- `create_statement(rebuttal_for=)` now invalidates the target Claim's compiled state, matching `update_node(rebuttal_ids={add})`. Previously the same graph operation invalidated at one entry point and not the other, so a Claim could be marked `disputed` on the strength of a compile that never saw the Rebuttal.
+- Compile's no-change short-circuit now runs `structuralPreCheck` and `structuralQualityCheck` before returning. Reverting a verified Ground to `pending` does not change the argument hash, so the short-circuit previously made the "grounds may have been reverted to pending after status was set" check unreachable — the Claim rested at `supported` and compile reported `no-change` indefinitely.
+- Compile now reports claim-type Grounds by their actual status (`has no verdict yet` / `is refuted` / `is disputed`) instead of skipping them entirely or reporting a flat "not supported". The chain-review prompt renders each Ground's type and status, and its factually-true precondition now opens an explicit exception for claim-type Grounds so the reviewer can judge what the Warrant draws from a contested lower conclusion.
+- `delete_node` now invalidates every Claim that depended on a *collaterally* deleted node, not just the one named in the call. A Statement that was a Backing of one Warrant and a Ground of another was deleted as the first Warrant's collateral, silently stripped from the second Warrant's ground set by `ON DELETE CASCADE`, and left that Warrant's Claim resting at `supported`/`passed` over a ground set that no longer existed. The returned warnings now name every Claim invalidated this way.
+- Collateral deletion now keeps a Warrant's `data.ground_ids` and the `warrant_grounds` rows in agreement. `ON DELETE CASCADE` removed only the relation row, leaving a dangling id in the JSON that compile reads — which then reported `Ground #N ... not found` on a graph the delete had already handled. This applies to deleted Claims as well as Statements, since a Claim can occupy the Ground role.
+- A `delete_node` that fails no longer leaves the pre-delete invalidation behind. `delete_node(claim_id)` without `cascade=true` is rejected, but the invalidation had already reverted that Claim's `status` to `proposed` and dropped its `compile_state` — a call that reported an error had silently downgraded the graph. Invalidation and deletion are now one transaction.
+- `update_node(ground_ids={add})` now runs the circular-chain-reasoning check. A support cycle rejected by `create_warrant` was accepted by adding the same claim-type Ground afterwards.
+
 ## [0.4.3] - 2026-08-03
 
 ### Changed

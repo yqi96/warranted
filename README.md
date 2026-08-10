@@ -42,6 +42,30 @@ Release history: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
+## Upgrading to 0.5.0
+
+0.5.0's behavior changes split into two classes with completely different discovery methods, so upgrading needs **two** actions, not one. Running a full compile finds the first class and structurally cannot find the second.
+
+**① Graph-state changes — run `compile_arguments` over every Claim.**
+
+Claim-type Grounds are now judged by their own status, and Claims that report new errors are the places where an upper conclusion sits on an unsettled or refuted lower conclusion. That state has existed all along with no rule ever looking at it. Handle them one at a time: if the lower Claim is `proposed`, settle it first; if it is `refuted`, re-hang the upper Claim on a narrower Claim that survives the refutation (typically "this approach exists in the literature" rather than "this approach works"). A `disputed` lower Claim is fine and needs no action.
+
+The same pass surfaces the new ordering constraint. Because settling a lower status now invalidates the compiled state above it, work layer by layer — compile a layer, settle that layer's statuses, then move up — rather than compiling everything first and settling statuses afterwards.
+
+**② Call-habit changes — audit your write-path callers now.**
+
+Compile **cannot see these**; they fire only on your next write. If you have scripts, automation, or custom skills that call `create_statement` or `update_node`, check them against these five before your next recording session:
+
+- `source` is now required on `create_statement`.
+- `source="literature"` must carry attachments.
+- Every attachment path must resolve from the review working directory (URLs do not qualify).
+- A review-infrastructure error now leaves the Statement `pending` and reports the error, rather than resting at `verified`.
+- `update_node(attachments=[])` against a `verified` Statement now errors.
+
+Among these is recording a contradiction — the write that should least be allowed to fail in an argument graph. A compile-only upgrade check gives you two of the seven changes.
+
+---
+
 ## Setup with Claude Code
 
 **1. Clone and configure**
@@ -124,8 +148,8 @@ The visualizer server tracks the current selection. Once the plugin is running, 
 
 | Skill | Trigger | Role |
 |-------|---------|------|
+| `literature-survey` | `/literature-survey` | Full-scale literature survey workflow. Five-phase protocol: scope, screen, batch-extract, classify, then synthesize and verify the DAG. Hand off to `/literature-writing` for the write-up. |
 | `paper-reproduce` | `/paper-reproduce` | Paper reproduction workflow. Builds an independent argument graph and verifies paper claims step by step. |
 | `literature-writing` | `/literature-writing` | Literature-backed writing workflow — related work, introductions, discussions, survey write-ups. Grounds each citable finding in the argument graph and writes LaTeX with `\cite{statement_N}` citations. Maintains a `.bib` file throughout. |
 | `cite-review` | `/cite-review` | Citation-faithfulness audit. Checks every `\cite{statement_N}` against its Statement in parallel, corrects mismatched LaTeX, and reconciles the graph. |
-| `academic-writing` | `/academic-writing` | Manuscript-writing umbrella. Projects graph-backed arguments into paper prose across all sections, figures, tables, and citations. |
 | `overleaf-setup` | `/overleaf-setup` | One-time setup skill. Installs `leaf`, authenticates, links a local LaTeX directory to an Overleaf project, and writes a Stop hook that auto-pushes on every conversation turn (skips if no files changed). |

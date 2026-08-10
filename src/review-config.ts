@@ -17,7 +17,19 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from "fs";
-import { dirname } from "path";
+import { dirname, resolve } from "path";
+
+/**
+ * Compute the review working directory from the database path.
+ * The review cwd is the parent of the database directory (dirname(dirname(dbPath))).
+ * All attachment paths are resolved relative to this directory.
+ */
+export function reviewCwd(config: ReviewConfig): string;
+export function reviewCwd(dbPath: string): string;
+export function reviewCwd(configOrPath: ReviewConfig | string): string {
+  const p = typeof configOrPath === "string" ? configOrPath : configOrPath.dbPath;
+  return resolve(dirname(dirname(p)));
+}
 
 export interface ReviewConfig {
   enabled: boolean;

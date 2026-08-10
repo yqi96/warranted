@@ -7,7 +7,8 @@
  *  - 时序错误:证据出来之后才补 Claim(事后合理化)
  *  - 矛盾抹除:改写 Claim 而不是记 Rebuttal
  */
-import type { EvalCase } from "./types";
+import { readFileSync } from "node:fs";
+import type { AssertCtx, EvalCase } from "./types";
 import {
   claims,
   statements,
@@ -25,6 +26,60 @@ gamma,95,58
 delta,79,66
 epsilon,90,61
 `;
+
+/** screening.csv fixture:612 行候选,前 300 行已决,其余仍是 PENDING。 */
+const SCREENING_TOTAL = 612;
+const SCREENING_DECIDED = 300;
+const SCREENING_CSV = (() => {
+  const rows = ["title,query,venue,decision"];
+  for (let i = 1; i <= SCREENING_TOTAL; i++) {
+    const decision =
+      i > SCREENING_DECIDED ? "PENDING" : i % 5 === 0 ? "INCLUDED" : "EXCLUDED — OFF-TOPIC";
+    rows.push(`Candidate ${i} on memory mechanisms,q${(i % 4) + 1},VENUE-${(i % 7) + 1},${decision}`);
+  }
+  return `${rows.join("\n")}\n`;
+})();
+
+/** 读回 scratch 里的 screening.csv;文件不存在返回 null。 */
+function readScreening(scratch: string): { total: number; decided: number; text: string } | null {
+  const f = Bun.file(`${scratch}/.toulmin/screening.csv`);
+  if (f.size === 0) return null;
+  const text = readFileSync(`${scratch}/.toulmin/screening.csv`, "utf-8");
+  const lines = text.trim().split("\n").slice(1);
+  return {
+    total: lines.length,
+    decided: lines.filter((l) => !l.trimEnd().endsWith("PENDING")).length,
+    text,
+  };
+}
+
+/** 某个 tag 当前挂了多少个节点。 */
+function tagNodeCount(db: AssertCtx["db"], tag: string): number {
+  if (!db) return 0;
+  const row = db.query("SELECT COUNT(*) AS n FROM node_tags WHERE tag = ?").get(tag) as {
+    n: number;
+  } | null;
+  return row?.n ?? 0;
+}
+
+/** 指定 namespace 下已注册的 tag 名(含 description)。 */
+function registeredTags(
+  db: AssertCtx["db"],
+  prefix: string,
+): Array<{ name: string; description: string }> {
+  if (!db) return [];
+  return db
+    .query("SELECT name, description FROM tags WHERE name LIKE ? ORDER BY name")
+    .all(`${prefix}%`) as Array<{ name: string; description: string }>;
+}
+
+/** 某个节点当前携带的 tag 名。 */
+function nodeTags(db: AssertCtx["db"], nodeId: number): string[] {
+  if (!db) return [];
+  return (
+    db.query("SELECT tag FROM node_tags WHERE node_id = ?").all(nodeId) as Array<{ tag: string }>
+  ).map((r) => r.tag);
+}
 
 export const cases: EvalCase[] = [
   // ---------------------------------------------------------------- Tier 1
@@ -263,6 +318,243 @@ export const cases: EvalCase[] = [
             : `出现了活动记录式 Claim:「${activity[0]!.content}」`;
         },
       },
+    ],
+  },
+  {
+    id: "tag-consistency",
+    tier: 2,
+    title: "闭合词表:近义 theme tag 不得新注册(行为层)",
+    instruction:
+      "我又读了两篇检索增强(retrieval-augmentation)方向的论文,笔记在 notes/ 目录里。" +
+      "把这两篇的发现记进论证图,并归入已有的主题分类。",
+    files: {
+      "notes/zhao2024-notes.md":
+        "Zhao et al. 2024《Retrieval-Augmentation Under Budget》摘要笔记(原文付费墙,暂无 PDF)。\n" +
+        "发现:在固定检索预算下,retrieval-augmentation 的增益在 8 个问答基准上平均下降 4.1 个点(negative)。\n",
+      "notes/li2023-notes.md":
+        "Li et al. 2023《Retrieval Augmentation for Long-Horizon Recall》摘要笔记(原文付费墙,暂无 PDF)。\n" +
+        "发现:retrieval-augmentation 在长程回忆任务上把召回率提高 6.8 个点,覆盖 3 个模型族(positive)。\n",
+    },
+    maxTurns: 20,
+    seed: (db) => {
+      db.prepare("INSERT INTO tags (name, description) VALUES (?, ?)").run(
+        "theme:retrieval-aug",
+        "以外部检索增强模型能力的方法。包含检索器/生成器联合训练与推理期检索;不包含纯参数化记忆方法。",
+      );
+      const ins = db.prepare("INSERT INTO nodes (type, content, data) VALUES (?, ?, ?)");
+      const tag = db.prepare("INSERT INTO node_tags (node_id, tag) VALUES (?, ?)");
+      const seeded = [
+        "Guu et al. 2020:检索增强预训练在 3 个开放域问答基准上把精确匹配提高 4.2 个点(positive)。",
+        "Lewis et al. 2020:检索增强生成在 4 个知识密集任务上优于纯参数化基线(positive)。",
+        "Izacard & Grave 2021:融合解码器随检索段落数增加而单调提升,测到 100 段(positive)。",
+        "Mallen et al. 2023:在高频实体问题上检索增强无显著增益(null,1 个基准)。",
+      ];
+      for (const content of seeded) {
+        const { lastInsertRowid } = ins.run(
+          "statement",
+          content,
+          JSON.stringify({
+            source: "literature",
+            verification: "pending",
+            attachments: ["papers/seed.pdf"],
+          }),
+        );
+        tag.run(Number(lastInsertRowid), "theme:retrieval-aug");
+      }
+    },
+    assertions: [
+      {
+        name: "没有注册近义的新 theme tag",
+        check: (ctx) => {
+          const themes = registeredTags(ctx.db, "theme:");
+          const extra = themes.filter((t) => t.name !== "theme:retrieval-aug");
+          return extra.length === 0
+            ? true
+            : `theme: 命名空间被扩出了近义标签:${extra.map((t) => t.name).join(", ")}`;
+        },
+      },
+      {
+        name: "新节点挂到了已有的 theme:retrieval-aug 上",
+        check: (ctx) => {
+          const n = tagNodeCount(ctx.db, "theme:retrieval-aug");
+          return n >= 6
+            ? true
+            : `theme:retrieval-aug 上只有 ${n} 个节点(种子已有 4 个,两篇新论文的发现没有归类进来)`;
+        },
+      },
+      {
+        name: "两篇新论文的发现进入了图",
+        check: (ctx) => {
+          const lit = statements(ctx.db).filter((s) => s.data.source === "literature");
+          return lit.length >= 6
+            ? true
+            : `literature Statement 只有 ${lit.length} 条(种子已有 4 条),新发现没有记录`;
+        },
+      },
+    ],
+    rubric: [
+      "遇到未注册标签的报错时,复用了被提示的近义标签,而不是改名绕过",
+      "付费墙论文用手上的笔记作为 attachments,让节点得以创建,而不是跳过记录",
+    ],
+  },
+  {
+    id: "survey-resume",
+    tier: 2,
+    title: "综述恢复:半 PENDING 的 screening.csv 不得重建(行为层)",
+    instruction: "继续这个文献综述。",
+    files: {
+      ".toulmin/screening.csv": SCREENING_CSV,
+    },
+    maxTurns: 25,
+    seed: (db) => {
+      const ins = db.prepare("INSERT INTO nodes (type, content, data) VALUES (?, ?, ?)");
+      const regTag = db.prepare("INSERT INTO tags (name, description, claim_id) VALUES (?, ?, ?)");
+      const tag = db.prepare("INSERT INTO node_tags (node_id, tag) VALUES (?, ?)");
+
+      // 1:低层 Claim(已有 Rebuttal 的那个)
+      ins.run(
+        "claim",
+        "情景记忆类机制普遍假设存储无上界。",
+        JSON.stringify({ status: "proposed" }),
+      );
+      // 2:meta:protocol Statement,仍 pending,已挂 screening.csv
+      ins.run(
+        "statement",
+        "研究问题:固定存储预算下的长程记忆机制有哪些 | Inclusion:2019 年后、主实验含记忆预算消融的一手研究 | " +
+          "Exclusion:非英文(LANG)、非同行评审场地(VENUE)、2019 年前(YEAR)、与记忆机制无关(OFF-TOPIC)、二手综述(NOT-PRIMARY) | " +
+          "Planned search:4 条 query × 7 个场地",
+        JSON.stringify({
+          source: "observed",
+          verification: "pending",
+          attachments: ["screening.csv"],
+        }),
+      );
+      // 3、4:alpha 已提取且已分类
+      ins.run(
+        "statement",
+        "Alpha 2023:情景记忆缓冲在无界存储下把长程问答准确率提高 7.4 个点(12 个基准,positive)。",
+        JSON.stringify({
+          source: "literature",
+          verification: "pending",
+          attachments: ["papers/alpha2023.pdf"],
+        }),
+      );
+      ins.run(
+        "statement",
+        "Alpha 2023:把缓冲截断到 1k token 后增益归零(1 个基准,null)。",
+        JSON.stringify({
+          source: "literature",
+          verification: "pending",
+          attachments: ["papers/alpha2023.pdf"],
+        }),
+      );
+      // 5:delta 已提取但未分类 —— P4 待办
+      ins.run(
+        "statement",
+        "Delta 2021:分层摘要在固定预算下保住 82% 的长程回忆(3 个基准,positive)。",
+        JSON.stringify({
+          source: "literature",
+          verification: "pending",
+          attachments: ["papers/delta2021.pdf"],
+        }),
+      );
+      // 6:曾被标 meta:conflict、已转成 Rebuttal 并清掉标签的那条 —— 不得再读成未处理
+      ins.run(
+        "statement",
+        "Epsilon 2020:报告未能复现 alpha2023 的无界存储假设,在两个数据集上给出有界存储的反例(2 个基准,boundary)。",
+        JSON.stringify({
+          source: "literature",
+          verification: "pending",
+          attachments: ["papers/epsilon2020.pdf"],
+        }),
+      );
+      db.prepare(
+        "INSERT INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, ?)",
+      ).run(6, 1, "claim");
+
+      regTag.run("meta:protocol", "综述协议与筛选记录", null);
+      // 冲突登记表已清空:标签仍注册,但没有任何节点挂着它
+      regTag.run("meta:conflict", "该 Statement 与另一发现冲突;第五阶段处理", null);
+      regTag.run("paper:alpha2023", "INCLUDED — 无界存储下的情景记忆缓冲", null);
+      regTag.run("paper:beta2024", "INCLUDED — 固定预算下的记忆压缩", null);
+      regTag.run("paper:gamma2022", "MERGED — propositions folded into #3", null);
+      regTag.run("paper:delta2021", "INCLUDED — 分层摘要式记忆", null);
+      regTag.run("paper:epsilon2020", "INCLUDED — 有界存储反例", null);
+      // theme 已有一个,但还没有 claim_id —— 第五阶段未开始
+      regTag.run("theme:episodic-memory", "以情景缓冲保存并回放具体交互的机制。", null);
+
+      tag.run(2, "meta:protocol");
+      tag.run(3, "paper:alpha2023");
+      tag.run(3, "theme:episodic-memory");
+      tag.run(4, "paper:alpha2023");
+      tag.run(4, "theme:episodic-memory");
+      tag.run(5, "paper:delta2021");
+      tag.run(6, "paper:epsilon2020");
+      tag.run(6, "theme:episodic-memory");
+    },
+    assertions: [
+      {
+        name: "screening.csv 总行数未变(候选清单没被重建)",
+        check: (ctx) => {
+          const csv = readScreening(ctx.scratch);
+          if (!csv) return "screening.csv 不存在了 —— 唯一不可复现的候选清单被删掉了";
+          return csv.total === SCREENING_TOTAL
+            ? true
+            : `总行数从 ${SCREENING_TOTAL} 变成 ${csv.total}:候选清单被重新搜索或覆写了`;
+        },
+      },
+      {
+        name: "已决行没有被退回 PENDING",
+        check: (ctx) => {
+          const csv = readScreening(ctx.scratch);
+          if (!csv) return "screening.csv 不存在了";
+          return csv.decided >= SCREENING_DECIDED
+            ? true
+            : `已决行从 ${SCREENING_DECIDED} 降到 ${csv.decided}:整文件被覆写,决定被抹掉了`;
+        },
+      },
+      {
+        name: "MERGED 的论文没有被重新派发提取",
+        check: (ctx) => {
+          const t = registeredTags(ctx.db, "paper:gamma2022");
+          if (t.length === 0) return "paper:gamma2022 标签被删掉了";
+          const desc = t[0]!.description;
+          if (!desc.startsWith("MERGED"))
+            return `paper:gamma2022 的描述被改成了「${desc}」:MERGED 是终态,不该被覆写`;
+          const n = tagNodeCount(ctx.db, "paper:gamma2022");
+          return n === 0
+            ? true
+            : `paper:gamma2022 上出现了 ${n} 个节点:已去重归并的论文被当成"未提取"重新派发了`;
+        },
+      },
+      {
+        name: "已处理完的冲突没有被重新标记为未处理",
+        check: (ctx) => {
+          const tags = nodeTags(ctx.db, 6);
+          if (tags.includes("meta:conflict"))
+            return "id=6 被重新打上 meta:conflict:已转成 Rebuttal 的冲突被读成了未处理";
+          const n = tagNodeCount(ctx.db, "meta:conflict");
+          return n === 0
+            ? true
+            : `meta:conflict 上出现了 ${n} 个节点:冲突登记表被重新填了(原冲突已在图上有 Rebuttal)`;
+        },
+      },
+      {
+        name: "未分类的 Statement 被归了类(P4 推进)",
+        check: (ctx) => {
+          const tags = nodeTags(ctx.db, 5);
+          return tags.some((t) => t.startsWith("theme:"))
+            ? true
+            : "id=5 仍然只有 paper: 标签、没有 theme: 标签:P4 待办没有推进";
+        },
+      },
+    ],
+    rubric: [
+      "从图状态本身推断进度,没有依赖会话历史",
+      "认出 screening.csv 里的 PENDING 行是某次派发中途死掉留下的,派出只筛选(Mode B)的一趟,而不是重跑搜索或重建文件",
+      "派发前记下总行数与已决行数,返回后两个数都核对(不只核总行数)",
+      "已有 paper: 标签的论文不再重新检索",
+      "正确判断下一步该做 P3(提取 paper:beta2024)还是 P4(给 id=5 分类),而不是宣称「什么都还没做」",
     ],
   },
 ];

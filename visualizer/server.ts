@@ -382,7 +382,7 @@ const server = Bun.serve({
           return Response.json([], { headers: corsHeaders });
         }
         const nodes = repo.searchNodes(db, q, typeParam || undefined);
-        return Response.json(nodes.map(n => ({ ...n, data: repo.parseNodeData(n) })), { headers: corsHeaders });
+        return Response.json(nodes.rows.map(n => ({ ...n, data: repo.parseNodeData(n) })), { headers: corsHeaders });
       }
 
       // API: 查询当前监控路径

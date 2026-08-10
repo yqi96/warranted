@@ -26,12 +26,14 @@ import { findWarrantsUsingGround, isGroundVerified, describeUnverifiedGround } f
 import { WARNINGS } from "./content/index.ts";
 import { log } from "./logger.ts";
 import { writeFileSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
+import { join } from "path";
+import { reviewCwd } from "./review-config.ts";
 import { callAndParse } from "./review-llm.ts";
 import {
   buildClaimReviewPrompt,
   buildWarrantReviewPrompt,
 } from "./compile-prompts.ts";
+import { mapLimit } from "./concurrency.ts";
 
 // =============================================================================
 // 审查结果持久化
@@ -100,7 +102,7 @@ export async function reviewNodeDefinition(
   qualifier?: string | null,
   options?: { nodeId?: number; claimId?: number }
 ): Promise<{ errors: string[]; warnings: string[] }> {
-  const cwd = dirname(dirname(config.dbPath));
+  const cwd = reviewCwd(config);
   const reviewedAt = new Date().toISOString().slice(0, 19);
   const nodeId = options?.nodeId ?? 0;
   const claimId = options?.claimId ?? 0;
@@ -228,7 +230,19 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
 
   // --- Category B: Individual Quality (per ground and warrant) ---
   for (const gr of ctx.groundRows) {
-    if (gr.type === "claim") continue; // claim-type grounds skip quality checks
+    if (gr.type === "claim") {
+      // Companion 5 + §5: claim-type Grounds get status-branched warning
+      const gData = JSON.parse(gr.data) as { status?: string; [k: string]: unknown };
+      const gStatus = gData.status || "proposed";
+      if (gStatus === "proposed") {
+        warnings.push(`Ground Claim #${gr.id} has no verdict yet — settle it before this Claim can be`);
+      } else if (gStatus === "refuted") {
+        warnings.push(`Ground Claim #${gr.id} is refuted and cannot support this Claim — reground on what survives it`);
+      } else if (gStatus === "disputed") {
+        warnings.push(`Ground Claim #${gr.id} is disputed — this Warrant must state what it draws from a contested conclusion`);
+      }
+      continue;
+    }
     const gData = JSON.parse(gr.data) as {
       source?: string;
       verification?: string;
@@ -529,12 +543,14 @@ export function findAffectedClaimIds(db: Database, nodeId: number): number[] {
 
 /**
  * 清除受影响 Claim 的 compiled 状态。
+ * 可选 skipNodeIds 用于排除某些节点（如要求 status 变更不自我失效）。
  */
-export function invalidateCompiledClaims(db: Database, nodeId: number): string[] {
+export function invalidateCompiledClaims(db: Database, nodeId: number, skipNodeIds?: Set<number>): string[] {
   const affectedIds = findAffectedClaimIds(db, nodeId);
   const warnings: string[] = [];
 
   for (const claimId of affectedIds) {
+    if (skipNodeIds?.has(claimId)) continue;
     const row = repo.getNodeById(db, claimId);
     if (!row || row.type !== "claim") continue;
     const data = JSON.parse(row.data);
@@ -571,6 +587,11 @@ export function invalidateCompiledClaims(db: Database, nodeId: number): string[]
  * - 无 compile_state + 结构完整 → 触发首次逻辑链审查
  * - 无 compile_state + 结构不完整 → 标记 stale
  * - 无 reviewConfig → 标记 stale
+ *
+ * ⚠️ 不变式守卫：当 config === null 时，本函数走 marked-stale 路径而非报错。
+ * 该路径目前仅在 tools.ts:693 reviewConfig 先失败的前提下方可达；任何新调用者
+ * 必须自行决定 null-config 行为，否则 rule C′ 的判定无人执行。
+ * 见 tests/claim-ground.test.ts §1.6.1 的不变式断言。
  */
 export async function compileClaims(
   db: Database,
@@ -579,7 +600,8 @@ export async function compileClaims(
 ): Promise<AutoVerifyResult[]> {
   log("auto_review", "OK", 0, `triggered for ${affectedClaimIds.length} claim(s): [${affectedClaimIds.join(", ")}]`);
 
-  const promises = affectedClaimIds.map(async (claimId): Promise<AutoVerifyResult> => {
+  // §4: use mapLimit to cap concurrency
+  const results = await mapLimit(affectedClaimIds, undefined, async (claimId): Promise<AutoVerifyResult> => {
     const t0 = Date.now();
     const claimRow = repo.getNodeById(db, claimId);
     if (!claimRow || claimRow.type !== "claim") {
@@ -594,6 +616,21 @@ export async function compileClaims(
     // 意味着上次 compile 通过。hash 未变 → 无需重新审查。
     if (prevState && prevState.argumentHash) {
       if (prevState.argumentHash === newArgHash) {
+        // §3: hash 未变不代表结构未变（verification 不入 hash），
+        // 运行结构检查确保 Ground 退回 pending 等场景不被短路掩盖
+        const structuralErrors = structuralPreCheck(db, claimId);
+        if (structuralErrors.length > 0) {
+          log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged but structural errors → marked-stale`);
+          repo.setCompileStatus(db, claimId, "stale");
+          return { claimId, action: "marked-stale", message: structuralErrors.join("; ") };
+        }
+        const qualityResult = structuralQualityCheck(db, claimId);
+        if (qualityResult.errors.length > 0) {
+          log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged but quality errors → marked-stale`);
+          repo.setCompileStatus(db, claimId, "stale");
+          return { claimId, action: "marked-stale", message: `Structural quality check failed: ${qualityResult.errors.join("; ")}` };
+        }
+
         log("auto_review", "OK", Date.now() - t0, `claim=#${claimId}: hash unchanged → no-change`);
         return { claimId, action: "no-change" };
       }
@@ -630,7 +667,6 @@ export async function compileClaims(
     return { claimId, action: "marked-stale" };
   });
 
-  const results = await Promise.all(promises);
   const summary = results.map(r => `claim=#${r.claimId}:${r.action}`).join(", ");
   log("auto_review", "OK", 0, `completed: ${summary}`);
   return results;

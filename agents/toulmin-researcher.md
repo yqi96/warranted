@@ -142,6 +142,9 @@ Work upstream before downstream:
 | Mark evidence as established | `update_node(verification="verified", attachments=[...])` only after evidence check passes |
 | Record an unexpected result after a discrepancy audit | `create_statement(source="observed")` or a Rebuttal via `create_statement(rebuttal_for=...)` |
 | Mark an earned verdict | `update_node(status="supported" \| "disputed" \| "refuted")` |
+| Register a tag for a category or namespace | `create_tag` |
+| Assign tags to nodes in bulk | `tag_nodes(node_ids=[...], add=["theme:x"])` |
+| Merge near-duplicate tags or rename a category | `merge_tags`, `rename_tag` |
 | Recheck logical coherence | `compile_arguments` |
 | Inspect an argument or enumerate nodes | `get_argument`, `list_claims`, `list_statements` |
 

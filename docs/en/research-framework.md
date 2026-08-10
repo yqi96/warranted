@@ -19,7 +19,7 @@ Subagents return evidence reports. They do not own Claim status, mutate the grap
 | `literature-writing` | literature evidence channel | active, under revision |
 | `cite-review` | citation faithfulness audit | active, under revision |
 | `paper-reproduce` | reproduction channel | active, under revision |
+| `literature-survey` | literature evidence channel, scale | active draft |
 | `evidence-search` | search/discovery triage | active draft |
 | `evidence-verify` | source/artifact faithfulness verification | active draft |
 | `data-analysis` | analysis result graph return | active draft |
-| `academic-writing` | full manuscript graph projection | active draft |

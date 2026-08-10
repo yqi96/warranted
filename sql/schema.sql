@@ -56,3 +56,33 @@ CREATE TABLE IF NOT EXISTS rebuttal_targets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rebuttal_targets_target ON rebuttal_targets(target_id, target_type);
+
+-- Tag registry: organizational dimension orthogonal to argument structure
+-- Tags carry organizational metadata, never argument content.
+-- Tag operations never invalidate a compile.
+CREATE TABLE IF NOT EXISTS tags (
+    name        TEXT PRIMARY KEY,
+    description TEXT NOT NULL DEFAULT '',
+    claim_id    INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Node-to-tag membership: which nodes carry which tags
+CREATE TABLE IF NOT EXISTS node_tags (
+    node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    tag     TEXT    NOT NULL REFERENCES tags(name) ON UPDATE CASCADE ON DELETE CASCADE,
+    PRIMARY KEY (node_id, tag)
+);
+
+CREATE INDEX IF NOT EXISTS idx_node_tags_tag ON node_tags(tag);
+
+-- Namespace cardinality declarations: governs near-match skip behavior
+-- 'paper' is pre-declared as dense (factory default)
+CREATE TABLE IF NOT EXISTS tag_namespaces (
+    namespace   TEXT PRIMARY KEY,
+    cardinality TEXT NOT NULL CHECK (cardinality IN ('dense', 'bounded')),
+    declared_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Factory pre-declaration: paper is always dense
+INSERT OR IGNORE INTO tag_namespaces (namespace, cardinality) VALUES ('paper', 'dense');

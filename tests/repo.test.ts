@@ -227,8 +227,8 @@ describe("searchNodes", () => {
     repo.insertNode(db, "statement", "实验数据支持", { source: "observed", verification: "verified", attachments: [] });
 
     const results = repo.searchNodes(db, "ScaleOpt");
-    expect(results.length).toBe(1);
-    expect(results[0].type).toBe("claim");
+    expect(results.rows.length).toBe(1);
+    expect(results.rows[0].type).toBe("claim");
   });
 
   test("类型过滤", () => {
@@ -236,14 +236,14 @@ describe("searchNodes", () => {
     repo.insertNode(db, "statement", "Adam 实验结果", { source: "observed", verification: "verified", attachments: [] });
 
     const claims = repo.searchNodes(db, "Adam", "claim");
-    expect(claims.length).toBe(1);
-    expect(claims[0].type).toBe("claim");
+    expect(claims.rows.length).toBe(1);
+    expect(claims.rows[0].type).toBe("claim");
   });
 
   test("无匹配返回空数组", () => {
     repo.insertNode(db, "claim", "测试");
     const results = repo.searchNodes(db, "不存在的内容");
-    expect(results.length).toBe(0);
+    expect(results.rows.length).toBe(0);
   });
 });
 

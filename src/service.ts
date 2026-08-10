@@ -27,7 +27,10 @@ import type {
   ArgumentWarrant,
   ArgumentRebuttal,
   Stats,
+  ScaleBlock,
   ToulminNode,
+  TagRow,
+  NamespaceCardinality,
 } from "./types.ts";
 import {
   NotFoundError,
@@ -37,6 +40,9 @@ import {
   StatusTransitionError,
 } from "./errors.ts";
 import { WARNINGS, HINTS } from "./content/index.ts";
+import { findNearMatches } from "./tag-similarity.ts";
+import { isFtsAvailable } from "./db.ts";
+import { existsSync } from "fs";
 
 // =============================================================================
 // 辅助函数
@@ -45,7 +51,7 @@ import { WARNINGS, HINTS } from "./content/index.ts";
 const VALID_GROUND_SOURCES: string[] = ["literature", "observed"];
 
 /** 将 NodeRow 转换为具体类型的节点对象 */
-function toClaimNode(row: NodeRow): ClaimNode {
+function toClaimNode(row: NodeRow, db: Database): ClaimNode {
   const data = JSON.parse(row.data);
   return {
     id: row.id,
@@ -54,10 +60,11 @@ function toClaimNode(row: NodeRow): ClaimNode {
     status: data.status || "proposed",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    tags: repo.getNodeTags(db, row.id),
   };
 }
 
-function toWarrantNode(row: NodeRow): WarrantNode {
+function toWarrantNode(row: NodeRow, db: Database): WarrantNode {
   const data = JSON.parse(row.data);
   return {
     id: row.id,
@@ -67,10 +74,11 @@ function toWarrantNode(row: NodeRow): WarrantNode {
     groundIds: data.ground_ids || [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    tags: repo.getNodeTags(db, row.id),
   };
 }
 
-function toStatementNode(row: NodeRow): StatementNode {
+function toStatementNode(row: NodeRow, db: Database): StatementNode {
   const data = JSON.parse(row.data);
   return {
     id: row.id,
@@ -81,15 +89,16 @@ function toStatementNode(row: NodeRow): StatementNode {
     attachments: data.attachments || [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    tags: repo.getNodeTags(db, row.id),
   };
 }
 
 /** 根据 type 转换 NodeRow 为具体节点 */
-function toNode(row: NodeRow): ToulminNode {
+function toNode(row: NodeRow, db: Database): ToulminNode {
   switch (row.type) {
-    case "claim": return toClaimNode(row);
-    case "warrant": return toWarrantNode(row);
-    case "statement": return toStatementNode(row);
+    case "claim": return toClaimNode(row, db);
+    case "warrant": return toWarrantNode(row, db);
+    case "statement": return toStatementNode(row, db);
     default: throw new ValidationError(`Unknown node type: ${row.type}`);
   }
 }
@@ -119,20 +128,31 @@ export function findWarrantsUsingGround(db: Database, groundId: number): NodeRow
 /**
  * 判断一个 Ground 节点是否"已验证"，供 A1 门禁和 compile 阶段共用。
  * - statement 类型：verification === "verified"
- * - claim 类型（链式推理）：该 claim 自身必须已是 "supported"，
- *   未经确认（proposed）或已被反驳（disputed/refuted）的 claim 不能作为可信 ground。
+ * - claim 类型（链式推理）：该 claim 自身 status ∈ {supported, disputed}。
+ *   proposed 未经确认、refuted 已被推翻，均不能作为可信 ground。
+ *   disputed 包含在内是因为证据冲突本身就是一种经过审查的结论状态，
+ *   且 disputed 没有退路（无法像 refuted 那样改挂窄 Claim）。
  */
 export function isGroundVerified(groundRow: NodeRow): boolean {
   const data = JSON.parse(groundRow.data);
-  if (groundRow.type === "claim") return data.status === "supported";
+  if (groundRow.type === "claim") return data.status === "supported" || data.status === "disputed";
   return data.verification === "verified";
 }
 
 /** 简短标注一个未通过 isGroundVerified 的 ground，用于错误/警告文案定位具体节点。 */
 export function describeUnverifiedGround(groundRow: NodeRow): string {
-  return groundRow.type === "claim"
-    ? `Claim #${groundRow.id} not supported`
-    : `Ground #${groundRow.id} not verified`;
+  if (groundRow.type === "claim") {
+    const data = JSON.parse(groundRow.data);
+    const status = data.status || "proposed";
+    if (status === "proposed") {
+      return `Ground Claim #${groundRow.id} has no verdict yet — settle it before this Claim can be`;
+    }
+    if (status === "refuted") {
+      return `Ground Claim #${groundRow.id} is refuted — reground on what survives it`;
+    }
+    return `Claim #${groundRow.id} not supported`;
+  }
+  return `Ground #${groundRow.id} not verified`;
 }
 
 /** 查找某 Warrant 的 Backings（via warrant_backings 关系表） */
@@ -218,33 +238,49 @@ function wouldCreateCycle(db: Database, groundClaimId: number, targetClaimId: nu
 // =============================================================================
 
 /** 创建 Claim */
-export function createClaim(db: Database, content: string, qualifier?: string | null): ClaimNode {
+export function createClaim(db: Database, content: string, qualifier?: string | null, tags?: string[]): ClaimNode {
   if (!content || !content.trim()) {
     throw new ValidationError("Claim content cannot be empty");
+  }
+  if (tags && tags.length > 0) {
+    assertTagsRegistered(db, tags);
   }
   const data: ClaimData = { status: "proposed" };
   if (qualifier) data.qualifier = qualifier;
   const row = repo.insertNode(db, "claim", content.trim(), data);
-  return toClaimNode(row);
+  if (tags && tags.length > 0) {
+    repo.addNodeTags(db, row.id, tags);
+  }
+  return toClaimNode(row, db);
 }
 
 /**
- * 创建 Statement 节点（通用）。可选立即挂载为 rebuttal。
+ * Every validation a Statement write must pass, evaluated against the result
+ * state `(content, source, verification, attachments, tags)`.
+ *
+ * Single-item and bulk entry points call this same function so the two cannot
+ * drift apart (pr3-batch.md §0.3, §4.0). It performs no writes, which is what
+ * lets `create_statements` run it over every item before deciding whether to
+ * write any of them (§2.2's validate-all → write-all contract).
  */
-export function createStatement(
+export function assertStatementWritable(
   db: Database,
   opts: {
     content: string;
     source: GroundSource;
     verification: VerificationStatus;
     attachments?: string[];
-    rebuttal_for?: { target_id: number; target_type: TargetType };
+    tags?: string[];
   }
-): StatementNode {
-  const { content, source, verification, attachments, rebuttal_for } = opts;
+): void {
+  const { content, source, verification, attachments, tags } = opts;
 
   if (!content || !content.trim()) {
     throw new ValidationError("Statement content cannot be empty");
+  }
+
+  if (tags && tags.length > 0) {
+    assertTagsRegistered(db, tags);
   }
   const validSources = VALID_GROUND_SOURCES;
   if (!validSources.includes(source)) {
@@ -262,6 +298,43 @@ export function createStatement(
     );
   }
 
+  // §4.1: source='literature' with no attachments
+  if (source === 'literature' && (!attachments || attachments.length === 0)) {
+    throw new ValidationError(
+      'source="literature" requires at least one attachment. Provide the reference files (e.g., paper PDF, reference document) as attachments.'
+    );
+  }
+  // §4.3: reject URLs (path resolution needs reviewCwd and is layered on in tools.ts)
+  for (const p of attachments ?? []) {
+    assertNotUrl(p);
+  }
+}
+
+/** §4.3: attachments must be locally readable files; a URL can never resolve. */
+function assertNotUrl(p: string): void {
+  if (p.startsWith("http://") || p.startsWith("https://")) {
+    throw new ValidationError(`Attachment path "${p}" is a URL. Use local file paths.`);
+  }
+}
+
+/**
+ * 创建 Statement 节点（通用）。可选立即挂载为 rebuttal。
+ */
+export function createStatement(
+  db: Database,
+  opts: {
+    content: string;
+    source: GroundSource;
+    verification: VerificationStatus;
+    attachments?: string[];
+    rebuttal_for?: { target_id: number; target_type: TargetType };
+    tags?: string[];
+  }
+): StatementNode {
+  const { content, source, verification, attachments, rebuttal_for, tags } = opts;
+
+  assertStatementWritable(db, { content, source, verification, attachments, tags });
+
   const row = repo.insertNode(db, "statement", content.trim(), {
     source,
     verification,
@@ -276,7 +349,11 @@ export function createStatement(
     repo.insertRebuttalTarget(db, row.id, rebuttal_for.target_id, rebuttal_for.target_type);
   }
 
-  return toStatementNode(row);
+  if (tags && tags.length > 0) {
+    repo.addNodeTags(db, row.id, tags);
+  }
+
+  return toStatementNode(row, db);
 }
 
 
@@ -287,9 +364,10 @@ export function createWarrant(
     content: string;
     claimId: number;
     groundIds?: number[];
+    backingIds?: number[];
   }
 ): WarrantNode {
-  const { content, claimId, groundIds } = opts;
+  const { content, claimId, groundIds, backingIds } = opts;
 
   if (!content || !content.trim()) {
     throw new ValidationError("Warrant content cannot be empty");
@@ -327,7 +405,14 @@ export function createWarrant(
   for (const gid of gIds) {
     db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(row.id, gid);
   }
-  return toWarrantNode(row);
+  // Also populate warrant_backings relationship table
+  const bIds = backingIds || [];
+  for (const bid of bIds) {
+    const backingRow = assertNodeExists(repo.getNodeById(db, bid), bid);
+    assertNodeType(backingRow, "statement");
+    db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(row.id, bid);
+  }
+  return toWarrantNode(row, db);
 }
 
 // =============================================================================
@@ -335,33 +420,114 @@ export function createWarrant(
 // =============================================================================
 
 /** 列出所有 Claim */
-export function listClaims(db: Database, statusFilter?: string): ClaimNode[] {
-  const rows = repo.listNodesByType(db, "claim");
-  let claims = rows.map(toClaimNode);
+export function listClaims(
+  db: Database,
+  statusFilter?: string,
+  compileStatusFilter?: string,
+  tag?: string,
+  limit: number = 50,
+  offset: number = 0
+): { rows: ClaimNode[]; total: number } {
+  let sql = "SELECT n.* FROM nodes n WHERE n.type = 'claim'";
+  const params: (string | number)[] = [];
+
+  const tagClause = repo.tagFilterClause(tag, false, "n");
+  sql += tagClause.clause;
+  params.push(...tagClause.params);
 
   if (statusFilter) {
     const statuses = statusFilter.split(",").map(s => s.trim());
-    claims = claims.filter(c => statuses.includes(c.status));
+    sql += ` AND COALESCE(json_extract(n.data, '$.status'), 'proposed') IN (${statuses.map(() => "?").join(", ")})`;
+    params.push(...statuses);
   }
 
-  return claims;
+  if (compileStatusFilter) {
+    const statuses = compileStatusFilter.split(",").map(s => s.trim());
+    sql += ` AND COALESCE(json_extract(n.data, '$.compile_status'), 'null') IN (${statuses.map(() => "?").join(", ")})`;
+    params.push(...statuses);
+  }
+
+  const total = (db.prepare(`SELECT COUNT(*) AS cnt FROM (${sql}) AS sub`).get(...params) as { cnt: number }).cnt;
+
+  const rows = db.prepare(`${sql} ORDER BY n.id LIMIT ? OFFSET ?`).all(...params, limit, offset) as NodeRow[];
+  return { rows: rows.map(r => toClaimNode(r, db)), total };
 }
 
-/** 列出所有 Statement 节点，可按 source 和/或 verification 过滤 */
-export function listStatements(db: Database, sourceFilter?: string, verificationFilter?: string): StatementNode[] {
-  const rows = repo.listNodesByType(db, "statement");
-  let statements = rows.map(toStatementNode);
+/** 列出所有 Statement 节点，可按 source / verification / tag / role / without_tag 过滤，支持分页 */
+export function listStatements(
+  db: Database,
+  sourceFilter?: string,
+  verificationFilter?: string,
+  tag?: string,
+  without_tag?: string,
+  role?: string,
+  limit: number = 50,
+  offset: number = 0
+): { rows: StatementNode[]; total: number } {
+  // Build base query
+  let baseSql: string;
+  let baseParams: (string | number)[] = [];
+
+  if (role === "ground") {
+    baseSql = "SELECT DISTINCT n.* FROM nodes n JOIN warrant_grounds wg ON wg.ground_id = n.id WHERE n.type = 'statement'";
+  } else if (role === "backing") {
+    baseSql = "SELECT DISTINCT n.* FROM nodes n JOIN warrant_backings wb ON wb.statement_id = n.id WHERE n.type = 'statement'";
+  } else if (role === "rebuttal") {
+    baseSql = "SELECT DISTINCT n.* FROM nodes n JOIN rebuttal_targets rt ON rt.statement_id = n.id WHERE n.type = 'statement'";
+  } else {
+    baseSql = "SELECT n.* FROM nodes n WHERE n.type = 'statement'";
+  }
+
+  // Build filter clauses
+  let filters: string[] = [];
+  let filterParams: (string | number)[] = [];
 
   if (sourceFilter) {
     const sources = sourceFilter.split(",").map(s => s.trim());
-    statements = statements.filter(g => g.source !== undefined && sources.includes(g.source));
-  }
-  if (verificationFilter) {
-    const statuses = verificationFilter.split(",").map(s => s.trim());
-    statements = statements.filter(g => g.verification !== undefined && statuses.includes(g.verification));
+    filters.push(`json_extract(n.data, '$.source') IN (${sources.map(() => "?").join(", ")})`);
+    filterParams.push(...sources);
   }
 
-  return statements;
+  if (verificationFilter) {
+    const statuses = verificationFilter.split(",").map(s => s.trim());
+    filters.push(`json_extract(n.data, '$.verification') IN (${statuses.map(() => "?").join(", ")})`);
+    filterParams.push(...statuses);
+  }
+
+  const tagClause = repo.tagFilterClause(tag, false, "n");
+  if (tagClause.clause) {
+    filters.push(tagClause.clause.replace(/^ AND /, ""));
+    filterParams.push(...tagClause.params);
+  }
+
+  const withoutTagClause = repo.tagFilterClause(without_tag, true, "n");
+  if (withoutTagClause.clause) {
+    filters.push(withoutTagClause.clause.replace(/^ AND /, ""));
+    filterParams.push(...withoutTagClause.params);
+  }
+
+  // For role queries, filters use AND on the outer WHERE clause
+  let dataSql: string;
+  let dataParams: (string | number)[];
+  let countSql: string;
+  let countParams: (string | number)[];
+
+  if (filters.length > 0) {
+    const filterClause = filters.join(" AND ");
+    dataSql = `${baseSql} AND ${filterClause} ORDER BY n.id LIMIT ? OFFSET ?`;
+    dataParams = [...baseParams, ...filterParams, limit, offset];
+    countSql = `SELECT COUNT(*) AS cnt FROM (${baseSql} AND ${filterClause}) AS sub`;
+    countParams = [...baseParams, ...filterParams];
+  } else {
+    dataSql = `${baseSql} ORDER BY n.id LIMIT ? OFFSET ?`;
+    dataParams = [...baseParams, limit, offset];
+    countSql = `SELECT COUNT(*) AS cnt FROM (${baseSql}) AS sub`;
+    countParams = [...baseParams];
+  }
+
+  const total = (db.prepare(countSql).get(...countParams) as { cnt: number }).cnt;
+  const rows = db.prepare(dataSql).all(...dataParams) as NodeRow[];
+  return { rows: rows.map(r => toStatementNode(r, db)), total };
 }
 
 /** 获取节点的完整论证子图 */
@@ -379,7 +545,7 @@ export function getArgument(db: Database, nodeId: number): ArgumentResult {
 }
 
 function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
-  const claim = toClaimNode(claimRow);
+  const claim = toClaimNode(claimRow, db);
 
   // Qualifier (now a Claim attribute)
   const claimData = JSON.parse(claimRow.data);
@@ -550,35 +716,47 @@ function getNodeArgument(db: Database, row: NodeRow): NodeArgument {
 export function searchNodesService(
   db: Database,
   keyword: string,
-  typeFilter?: string
-): ToulminNode[] {
-  const like = `%${keyword}%`;
+  typeFilter?: string,
+  tag?: string,
+  limit: number = 20,
+  offset: number = 0
+): { rows: ToulminNode[]; total: number } {
+  // Virtual role filters: query relationship tables then intersect with keyword.
+  // §2.7: role filtering completes before pagination, and truncation happens after it.
+  const roleJoin: Record<string, string> = {
+    ground: "JOIN warrant_grounds wg ON wg.ground_id = n.id",
+    backing: "JOIN warrant_backings wb ON wb.statement_id = n.id",
+    rebuttal: "JOIN rebuttal_targets rt ON rt.statement_id = n.id",
+  };
+  if (typeFilter && roleJoin[typeFilter]) {
+    let sql = `SELECT DISTINCT n.* FROM nodes n ${roleJoin[typeFilter]} WHERE n.content LIKE ?`;
+    const params: (string | number)[] = [`%${keyword}%`];
+    const tagClause = repo.tagFilterClause(tag, false, "n");
+    sql += tagClause.clause;
+    params.push(...tagClause.params);
 
-  // Virtual role filters: query relationship tables then intersect with keyword
-  if (typeFilter === "ground") {
-    const rows = db.prepare(
-      "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON wg.ground_id = n.id WHERE n.content LIKE ? ORDER BY n.id"
-    ).all(like) as NodeRow[];
-    return rows.map(toNode);
-  }
-  if (typeFilter === "backing") {
-    const rows = db.prepare(
-      "SELECT n.* FROM nodes n JOIN warrant_backings wb ON wb.statement_id = n.id WHERE n.content LIKE ? ORDER BY n.id"
-    ).all(like) as NodeRow[];
-    return rows.map(toNode);
-  }
-  if (typeFilter === "rebuttal") {
-    const rows = db.prepare(
-      "SELECT n.* FROM nodes n JOIN rebuttal_targets rt ON rt.statement_id = n.id WHERE n.content LIKE ? ORDER BY n.id"
-    ).all(like) as NodeRow[];
-    return rows.map(toNode);
+    const total = (db.prepare(`SELECT COUNT(*) AS cnt FROM (${sql}) AS sub`).get(...params) as { cnt: number }).cnt;
+    const rows = db.prepare(`${sql} ORDER BY n.id LIMIT ? OFFSET ?`).all(...params, limit, offset) as NodeRow[];
+    return { rows: rows.map(r => toNode(r, db)), total };
   }
 
-  const rows = repo.searchNodes(db, keyword, typeFilter as any);
-  return rows.map(toNode);
+  // FTS for keyword >= 3 chars, otherwise LIKE
+  const ftsAvail = isFtsAvailable();
+  if (keyword.length >= 3 && ftsAvail) {
+    const result = repo.searchNodesFts(db, keyword, {
+      type: typeFilter as any,
+      tag,
+      limit,
+      offset,
+    });
+    return { rows: result.rows.map(r => toNode(r, db)), total: result.total };
+  }
+
+  const result = repo.searchNodes(db, keyword, typeFilter as any, { tag, limit, offset });
+  return { rows: result.rows.map(r => toNode(r, db)), total: result.total };
 }
 
-/** 获取全局统计 */
+/** 获取全局统计，含规模块 */
 export function getStats(db: Database): Stats {
   const counts = repo.countNodesByType(db);
 
@@ -586,12 +764,28 @@ export function getStats(db: Database): Stats {
   const claimRows = repo.listNodesByType(db, "claim");
   const byStatus: Record<string, number> = {};
   let staleCount = 0;
+  const staleIds: number[] = [];
   for (const row of claimRows) {
     const data = JSON.parse(row.data);
     const status = data.status || "proposed";
     byStatus[status] = (byStatus[status] || 0) + 1;
-    if (data.compile_status === "stale") staleCount++;
+    if (data.compile_status === "stale") {
+      staleCount++;
+      staleIds.push(row.id);
+    }
   }
+
+  // Never compiled count: claims with no compile_state record
+  const neverCompiled = claimRows.filter(r => {
+    const cs = db.prepare("SELECT 1 FROM compile_state WHERE claim_id = ?").get(r.id);
+    return !cs;
+  }).length;
+
+  // Passed-awaiting-verdict: claims with compile_status "passed" but status "proposed"
+  const passedAwaiting = claimRows.filter(r => {
+    const data = JSON.parse(r.data);
+    return data.compile_status === "passed" && (data.status || "proposed") === "proposed";
+  }).length;
 
   // Grounds: all statement nodes that are used as grounds (in warrant_grounds) or have source field
   const groundIds = new Set<number>(
@@ -630,6 +824,9 @@ export function getStats(db: Database): Stats {
   // Rebuttals: statement nodes in rebuttal_targets
   const rebuttalStatementCount = (db.prepare("SELECT COUNT(*) as cnt FROM rebuttal_targets").get() as { cnt: number }).cnt;
 
+  // ── Scale block ──
+  const scale = buildScaleBlock(db);
+
   return {
     claims: { total: counts.claim, by_status: byStatus, stale_count: staleCount > 0 ? staleCount : undefined },
     grounds: { total: groundStatementRows.length, by_source: bySource, by_verification: byVerification },
@@ -637,6 +834,146 @@ export function getStats(db: Database): Stats {
     backings: { total: backingStatementCount },
     qualifiers: { total: 0 },
     rebuttals: { total: rebuttalStatementCount, by_target_type: byTargetType },
+    scale,
+  };
+}
+
+/** Build the scale block for get_stats output */
+const GAP_MATRIX_MAX_LINES = 8;
+
+function buildScaleBlock(db: Database): ScaleBlock {
+  // Tag namespace aggregates
+  const allTags = repo.listTagsWithCount(db);
+  const namespaceMap = new Map<string, { count: number; with_nodes: number; cardinality: string }>();
+
+  for (const t of allTags) {
+    const ns = t.name.split(":")[0];
+    const existing = namespaceMap.get(ns) ?? { count: 0, with_nodes: 0, cardinality: "bounded" };
+    existing.count++;
+    if (t.count > 0) existing.with_nodes++;
+    // Get cardinality from tag_namespaces table
+    const card = repo.getNamespaceCardinality(db, ns);
+    if (card) existing.cardinality = card;
+    namespaceMap.set(ns, existing);
+  }
+
+  const namespaces = Array.from(namespaceMap.entries()).map(([name, info]) => ({
+    name,
+    ...info,
+  }));
+
+  // Untagged count
+  const totalNodes = (db.prepare("SELECT COUNT(*) AS cnt FROM nodes").get() as { cnt: number }).cnt;
+  const taggedNodes = (db.prepare("SELECT COUNT(DISTINCT node_id) AS cnt FROM node_tags").get() as { cnt: number }).cnt;
+  const untagged = totalNodes - taggedNodes;
+
+  // Statement tagging coverage (the §4.2 `Statements:` line counts statements, not tags)
+  const statementTotal = (db.prepare("SELECT COUNT(*) AS cnt FROM nodes WHERE type = 'statement'").get() as { cnt: number }).cnt;
+  const statementTagged = (db.prepare(
+    "SELECT COUNT(DISTINCT nt.node_id) AS cnt FROM node_tags nt JOIN nodes n ON n.id = nt.node_id WHERE n.type = 'statement'"
+  ).get() as { cnt: number }).cnt;
+
+  // Namespace gap matrix: only (dense, bounded) ordered pairs
+  const namespaceGaps: Array<{ from: string; to: string; count: number }> = [];
+  const denseNS = namespaces.filter(n => n.cardinality === "dense").map(n => n.name);
+  const boundedNS = namespaces.filter(n => n.cardinality === "bounded" && n.name !== "meta").map(n => n.name);
+
+  for (const dense of denseNS) {
+    for (const bounded of boundedNS) {
+      if (dense === bounded) continue;
+      const gapCount = (db.prepare(
+        "SELECT COUNT(DISTINCT nt1.node_id) AS cnt FROM node_tags nt1 " +
+        "WHERE nt1.tag LIKE ? AND NOT EXISTS (" +
+        "  SELECT 1 FROM node_tags nt2 WHERE nt2.node_id = nt1.node_id AND nt2.tag LIKE ?" +
+        ")"
+      ).get(`${dense}:%`, `${bounded}:%`) as { cnt: number }).cnt;
+      if (gapCount > 0) {
+        namespaceGaps.push({ from: dense, to: bounded, count: gapCount });
+      }
+    }
+  }
+  // §4.2.1: sort ascending — the real signal shrinks as classification progresses,
+  // so descending order would squeeze it out first. Cap at 8 lines and report the
+  // omitted count, since the reader cannot otherwise know how large the matrix was.
+  namespaceGaps.sort((a, b) => a.count - b.count);
+  const gapsOmitted = Math.max(0, namespaceGaps.length - GAP_MATRIX_MAX_LINES);
+  const shownGaps = namespaceGaps.slice(0, GAP_MATRIX_MAX_LINES);
+
+  // Role counts
+  const groundRoleTotal = (db.prepare("SELECT COUNT(DISTINCT ground_id) AS cnt FROM warrant_grounds").get() as { cnt: number }).cnt;
+  const groundRoleVerified = (db.prepare(
+    "SELECT COUNT(DISTINCT wg.ground_id) AS cnt FROM warrant_grounds wg " +
+    "JOIN nodes n ON n.id = wg.ground_id " +
+    "WHERE (n.type = 'statement' AND json_extract(n.data, '$.verification') = 'verified') " +
+    "OR (n.type = 'claim' AND json_extract(n.data, '$.status') IN ('supported', 'disputed'))"
+  ).get() as { cnt: number }).cnt;
+  const backingRoleTotal = (db.prepare("SELECT COUNT(DISTINCT statement_id) AS cnt FROM warrant_backings").get() as { cnt: number }).cnt;
+  const backingRolePending = (db.prepare(
+    "SELECT COUNT(DISTINCT wb.statement_id) AS cnt FROM warrant_backings wb " +
+    "JOIN nodes n ON n.id = wb.statement_id " +
+    "WHERE json_extract(n.data, '$.verification') != 'verified' OR json_extract(n.data, '$.verification') IS NULL"
+  ).get() as { cnt: number }).cnt;
+  const rebuttalRoleTotal = (db.prepare("SELECT COUNT(DISTINCT statement_id) AS cnt FROM rebuttal_targets").get() as { cnt: number }).cnt;
+  const rebuttalRolePending = (db.prepare(
+    "SELECT COUNT(DISTINCT rt.statement_id) AS cnt FROM rebuttal_targets rt " +
+    "JOIN nodes n ON n.id = rt.statement_id " +
+    "WHERE json_extract(n.data, '$.verification') != 'verified' OR json_extract(n.data, '$.verification') IS NULL"
+  ).get() as { cnt: number }).cnt;
+
+  // Claims detail
+  const claimRows = repo.listNodesByType(db, "claim");
+  const staleIds: number[] = [];
+  let neverCompiled = 0;
+  let passedAwaiting = 0;
+  for (const row of claimRows) {
+    const data = JSON.parse(row.data);
+    if (data.compile_status === "stale") staleIds.push(row.id);
+    const hasCs = db.prepare("SELECT 1 FROM compile_state WHERE claim_id = ?").get(row.id);
+    if (!hasCs) neverCompiled++;
+    if (data.compile_status === "passed" && (data.status || "proposed") === "proposed") passedAwaiting++;
+  }
+
+  // Attachments: collect all attachment paths from statement nodes
+  const allAttachments: Array<{ path: string; missing: boolean }> = [];
+  type AttachmentRow = { attachments: string };
+  const attRows = db.prepare(
+    "SELECT json_extract(data, '$.attachments') AS attachments FROM nodes WHERE type = 'statement'"
+  ).all() as AttachmentRow[];
+  for (const ar of attRows) {
+    if (!ar.attachments) continue;
+    try {
+      const paths = JSON.parse(ar.attachments) as string[];
+      for (const p of paths) {
+        const exists = existsSync(p);
+        allAttachments.push({ path: p, missing: !exists });
+      }
+    } catch { /* skip malformed JSON */ }
+  }
+  // Deduplicate by path
+  const seen = new Set<string>();
+  const uniqueAttachments = allAttachments.filter(a => {
+    if (seen.has(a.path)) return false;
+    seen.add(a.path);
+    return true;
+  });
+
+  return {
+    tags: { total: allTags.length, namespaces },
+    untagged,
+    statements: { total: statementTotal, tagged: statementTagged, untagged: statementTotal - statementTagged },
+    namespace_gaps: shownGaps,
+    gaps_omitted: gapsOmitted,
+    roles: {
+      grounds: { total: groundRoleTotal, verified: groundRoleVerified, pending: groundRoleTotal - groundRoleVerified },
+      backings: { total: backingRoleTotal, pending: backingRolePending },
+      rebuttals: { total: rebuttalRoleTotal, pending: rebuttalRolePending },
+    },
+    claims_detail: {
+      never_compiled: neverCompiled,
+      stale: { count: staleIds.length, ids: staleIds },
+      passed_awaiting: passedAwaiting,
+    },
+    attachments: { total: uniqueAttachments.length, files: uniqueAttachments },
   };
 }
 
@@ -789,6 +1126,14 @@ export function updateNode(
         const gRow = repo.getNodeById(db, gid);
         if (!gRow) throw new NotFoundError(gid);
         if (gRow.type !== "statement" && gRow.type !== "claim") throw new TypeMismatchError(gid, "statement", gRow.type);
+        // E1: cycle detection for claim-type grounds
+        if (gRow.type === "claim") {
+          if (wouldCreateCycle(db, gRow.id, data.claim_id)) {
+            throw new ValidationError(
+              `Circular chain reasoning detected: Claim #${data.claim_id} would reference itself through Claim #${gid}.`
+            );
+          }
+        }
       }
       for (const gid of params.ground_ids.add) {
         repo.insertWarrantGround(db, nodeId, gid);
@@ -843,6 +1188,17 @@ export function updateNode(
     }
   }
 
+  // 更新 tags（任何节点类型）
+  if (params.tags !== undefined) {
+    if (params.tags.add && params.tags.add.length > 0) {
+      assertTagsRegistered(db, params.tags.add);
+      repo.addNodeTags(db, nodeId, params.tags.add);
+    }
+    if (params.tags.remove && params.tags.remove.length > 0) {
+      repo.removeNodeTags(db, nodeId, params.tags.remove);
+    }
+  }
+
   // 更新 qualifier（Claim only）
   if (params.qualifier !== undefined) {
     if (row.type !== "claim") {
@@ -851,10 +1207,32 @@ export function updateNode(
     data.qualifier = params.qualifier;
   }
 
+  // ── Check block: evaluate result state (after all presence branches) ──
+  // §4.1: source='literature' with no attachments
+  if (data.source === 'literature' && (!data.attachments || data.attachments.length === 0)) {
+    if (params.source !== undefined || params.attachments !== undefined) {
+      throw new ValidationError(
+        'source="literature" requires at least one attachment. Provide the reference files.'
+      );
+    }
+  }
+  // §4.0.2: verified with no attachments
+  if (data.verification === 'verified' && (!data.attachments || data.attachments.length === 0)) {
+    if (params.verification !== undefined || params.attachments !== undefined) {
+      throw new ValidationError(
+        `Cannot mark statement #${nodeId} as "verified": verified statements must have attachments. Provide scripts, logs, or other evidence files via the attachments parameter.`
+      );
+    }
+  }
+  // §4.3: reject URLs (path resolution is handled by the tools layer with reviewCwd)
+  for (const p of data.attachments ?? []) {
+    assertNotUrl(p);
+  }
+
   // 执行更新
   const content = params.content !== undefined ? params.content : row.content;
   const updated = repo.updateNodeFields(db, nodeId, { content, data });
-  return { node: toNode(assertNodeExists(updated, nodeId)), warnings };
+  return { node: toNode(assertNodeExists(updated, nodeId), db), warnings };
   })();
 }
 
@@ -862,11 +1240,74 @@ export function updateNode(
 // 删除操作
 // =============================================================================
 
-/** 删除节点，返回警告信息数组 */
+/** Delete a node and ensure ground set consistency (JSON + relation table). Does NOT invalidate. */
+function deleteNodeWithGroundCleanup(db: Database, nodeId: number): void {
+  const row = repo.getNodeById(db, nodeId);
+  // Claims occupy the Ground role too (chain reasoning), so both types need the
+  // JSON half of the removal — ON DELETE CASCADE only covers warrant_grounds.
+  if (row && (row.type === "statement" || row.type === "claim")) {
+    repo.removeGroundFromAllWarrants(db, nodeId);
+  }
+  repo.deleteNodeById(db, nodeId);
+}
+
+/**
+ * Collect all node IDs that will be deleted by deleteNode, without deleting them.
+ * Drives both deleteNode's invalidation pass and its deletion pass.
+ */
+export function collectCollateralNodeIds(db: Database, nodeId: number, cascade: boolean): number[] {
+  const row = repo.getNodeById(db, nodeId);
+  if (!row) return [nodeId];
+  const ids: number[] = [];
+
+  switch (row.type) {
+    case "claim": {
+      if (!cascade) return [nodeId];
+      const warrants = repo.findWarrantsByClaim(db, nodeId);
+      for (const w of warrants) {
+        const backings = findAllBackingsByWarrant(db, w.id);
+        for (const b of backings) ids.push(b.id);
+        const warrantRebuttals = findAllRebuttalsByTarget(db, w.id, "warrant");
+        for (const r of warrantRebuttals) ids.push(r.id);
+        ids.push(w.id);
+      }
+      const claimRebuttals = findAllRebuttalsByTarget(db, nodeId, "claim");
+      for (const r of claimRebuttals) ids.push(r.id);
+      ids.push(nodeId);
+      break;
+    }
+    case "statement":
+      ids.push(nodeId);
+      break;
+    case "warrant": {
+      const backings = findAllBackingsByWarrant(db, nodeId);
+      for (const b of backings) ids.push(b.id);
+      const warrantRebuttals = findAllRebuttalsByTarget(db, nodeId, "warrant");
+      for (const r of warrantRebuttals) ids.push(r.id);
+      ids.push(nodeId);
+      break;
+    }
+    default:
+      ids.push(nodeId);
+  }
+  return ids;
+}
+
+/**
+ * 删除节点，返回警告信息数组。
+ *
+ * `invalidate` is injected rather than imported: compile-service imports from this
+ * module, so calling `invalidateCompiledClaims` directly would be circular. It runs
+ * for every node in the cascade set, inside this transaction and before any row is
+ * removed — the reverse lookup it depends on is unusable afterwards, and it mutates
+ * (reverts Claim status, drops compile_state), so a delete that throws must take the
+ * invalidation down with it.
+ */
 export function deleteNode(
   db: Database,
   nodeId: number,
-  cascade: boolean = false
+  cascade: boolean = false,
+  invalidate: (nodeId: number) => void = () => {}
 ): string[] {
   return db.transaction((): string[] => {
   const row = assertNodeExists(repo.getNodeById(db, nodeId), nodeId);
@@ -877,30 +1318,9 @@ export function deleteNode(
       if (!cascade) {
         throw new CascadeRequiredError();
       }
-      // 删除绑定的 Warrants（及其 Backings）
-      const warrants = repo.findWarrantsByClaim(db, nodeId);
-      for (const w of warrants) {
-        const backings = findAllBackingsByWarrant(db, w.id);
-        for (const b of backings) {
-          repo.deleteNodeById(db, b.id);
-        }
-        const warrantRebuttals = findAllRebuttalsByTarget(db, w.id, "warrant");
-        for (const r of warrantRebuttals) {
-          repo.deleteNodeById(db, r.id);
-        }
-        repo.deleteNodeById(db, w.id);
-      }
-      // 删除指向 Claim 的 Rebuttals
-      const rebuttals = findAllRebuttalsByTarget(db, nodeId, "claim");
-      for (const r of rebuttals) {
-        repo.deleteNodeById(db, r.id);
-      }
-      // 删除 Claim 本身（ON DELETE CASCADE 会自动清理 warrant_grounds）
-      repo.deleteNodeById(db, nodeId);
       break;
     }
 
-    case "ground":
     case "statement": {
       // D1 警告: 检查是否被 Warrant 引用
       const usingWarrants = findWarrantsUsingGround(db, nodeId);
@@ -908,14 +1328,6 @@ export function deleteNode(
         const wids = usingWarrants.map(w => `#${w.id}`).join(", ");
         warnings.push(WARNINGS.deleteGroundReferencedByWarrant(nodeId, wids));
       }
-      // 从所有 Warrant 的 ground_ids 中移除
-      repo.removeGroundFromAllWarrants(db, nodeId);
-      // 删除指向该 Ground 的 Rebuttals
-      const rebuttals = findAllRebuttalsByTarget(db, nodeId);
-      for (const r of rebuttals) {
-        repo.deleteNodeById(db, r.id);
-      }
-      repo.deleteNodeById(db, nodeId);
       break;
     }
 
@@ -931,17 +1343,6 @@ export function deleteNode(
           warnings.push(WARNINGS.deleteWarrantSupportingClaim(nodeId, claimId, claimStatus));
         }
       }
-      // 级联删除 Backings
-      const backings = findAllBackingsByWarrant(db, nodeId);
-      for (const b of backings) {
-        repo.deleteNodeById(db, b.id);
-      }
-      // 删除指向该 Warrant 的 Rebuttals
-      const warrantRebuttals = findAllRebuttalsByTarget(db, nodeId, "warrant");
-      for (const r of warrantRebuttals) {
-        repo.deleteNodeById(db, r.id);
-      }
-      repo.deleteNodeById(db, nodeId);
       break;
     }
 
@@ -949,6 +1350,236 @@ export function deleteNode(
       throw new ValidationError(`Unknown node type: ${row.type}`);
   }
 
+  // One collection pass drives both invalidation and deletion — a second copy of
+  // this traversal could drift and silently leave a collateral node uninvalidated.
+  const collateralIds = collectCollateralNodeIds(db, nodeId, cascade);
+  for (const id of collateralIds) {
+    invalidate(id);
+  }
+  for (const id of collateralIds) {
+    deleteNodeWithGroundCleanup(db, id);
+  }
+
   return warnings;
   })();
+}
+
+// =============================================================================
+// Tag operations
+// =============================================================================
+
+const TAG_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*:[a-z0-9][a-z0-9_-]*$/;
+
+/** Validate a tag name format, throwing ValidationError on failure */
+function assertValidTagName(name: string): void {
+  if (!TAG_NAME_REGEX.test(name)) {
+    throw new ValidationError(
+      `Invalid tag name: "${name}". Tag names must match the format <namespace>:<name>, ` +
+      `e.g., "theme:attention-mechanism". Only lowercase letters, digits, hyphens, and underscores are allowed.`
+    );
+  }
+}
+
+/** Build a near-match suggestions map for finding similar tags */
+function buildTagCounts(db: Database): Map<string, number> {
+  const tags = repo.listTagsWithCount(db);
+  const map = new Map<string, number>();
+  for (const t of tags) {
+    map.set(t.name, t.count);
+  }
+  return map;
+}
+
+/**
+ * Assert that all tags in the list are registered.
+ * Throws ValidationError with near-match suggestions for unregistered tags.
+ *
+ * Exported because the bulk entry points (`create_statements`, `tag_nodes`)
+ * must produce the same suggestion quality as the single-node paths — the
+ * near-match suggestion is the core of the vocabulary-consistency mechanism,
+ * so a hand-rolled existence check at a bulk entry point is a regression.
+ */
+export function assertTagsRegistered(db: Database, tags: string[]): void {
+  const allNames = repo.getAllTagNames(db);
+  const allNamesSet = new Set(allNames);
+
+  for (const tag of tags) {
+    if (allNamesSet.has(tag)) continue;
+    // §4.3: similarity is computed only once existence has already failed,
+    // so the normal write path never pays for the count aggregation.
+    const cardinalityLookup = (ns: string) => repo.getNamespaceCardinality(db, ns);
+    const nearMatches = findNearMatches(tag, allNames, buildTagCounts(db), cardinalityLookup);
+    const suggestion =
+      nearMatches.length > 0
+        ? nearMatches.map(m => `${m.name} (${m.count} nodes)`).join(", ")
+        : "(none)";
+    throw new ValidationError(HINTS.tagNotRegistered(tag, suggestion));
+  }
+}
+
+/**
+ * Register a single tag.
+ * Format validation, near-match warnings, cardinality declaration handling.
+ */
+export function createTagService(
+  db: Database,
+  name: string,
+  description: string,
+  claimId?: number,
+  namespaceCardinality?: NamespaceCardinality
+): { tag: TagRow; warnings: string[] } {
+  assertValidTagName(name);
+
+  // Check if already exists
+  const existing = repo.getTag(db, name);
+  if (existing) {
+    throw new ValidationError(`Tag "${name}" already exists.`);
+  }
+
+  // Validate claim_id if provided
+  if (claimId !== undefined) {
+    const claimRow = repo.getNodeById(db, claimId);
+    if (!claimRow) throw new NotFoundError(claimId);
+    if (claimRow.type !== "claim") {
+      throw new TypeMismatchError(claimId, "claim", claimRow.type);
+    }
+  }
+
+  const warnings: string[] = [];
+
+  // Cardinality declaration handling
+  const namespace = name.split(":")[0];
+  const existingCardinality = repo.getNamespaceCardinality(db, namespace);
+  if (namespaceCardinality !== undefined) {
+    if (existingCardinality === null) {
+      // Not yet declared — store it
+      repo.setNamespaceCardinality(db, namespace, namespaceCardinality);
+    } else if (existingCardinality !== namespaceCardinality) {
+      // Already declared with a different value — warning, no overwrite
+      warnings.push(
+        `Namespace "${namespace}:" is already declared ${existingCardinality}; ignoring "${namespaceCardinality}". ` +
+        `Use a dedicated call if you really mean to change it.`
+      );
+    }
+  }
+
+  // Near-match check (soft warning)
+  const allTags = repo.getAllTagNames(db);
+  const tagCounts = buildTagCounts(db);
+  const cardinalityLookup = (ns: string) => repo.getNamespaceCardinality(db, ns);
+  const nearMatches = findNearMatches(name, allTags, tagCounts, cardinalityLookup);
+  for (const m of nearMatches) {
+    warnings.push(`Near-existing tag \`${m.name}\` (${m.count} nodes) — is this a different category?`);
+  }
+
+  const tag = repo.insertTag(db, name, description, claimId);
+  return { tag, warnings };
+}
+
+/**
+ * Bulk register tags (cap 200, per-item independent).
+ */
+export function createTagsService(
+  db: Database,
+  tags: Array<{ name: string; description: string; claim_id?: number }>,
+  namespaceCardinality?: NamespaceCardinality
+): { registered: TagRow[]; failed: Array<{ name: string; reason: string }>; warnings: string[] } {
+  const registered: TagRow[] = [];
+  const failed: Array<{ name: string; reason: string }> = [];
+  const warnings: string[] = [];
+
+  const maxBatch = 200;
+  if (tags.length > maxBatch) {
+    throw new ValidationError(`Batch size exceeds maximum of ${maxBatch} tags.`);
+  }
+  const batch = tags.slice(0, maxBatch);
+
+  for (const item of batch) {
+    try {
+      const result = createTagService(db, item.name, item.description, item.claim_id, namespaceCardinality);
+      registered.push(result.tag);
+      warnings.push(...result.warnings);
+    } catch (e) {
+      failed.push({ name: item.name, reason: formatServiceError(e) });
+    }
+  }
+
+  return { registered, failed, warnings };
+}
+
+/** Extract error message from a thrown value */
+function formatServiceError(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
+
+/**
+ * Update a tag's description and/or claim_id.
+ * `claim_id` goes through the same Claim-type guard as registration: a tag's
+ * claim pointer means "the Claim that generalizes this category" (§0.4), so it
+ * must not be reachable through a path that skips the type check.
+ */
+export function updateTagService(
+  db: Database,
+  name: string,
+  description?: string,
+  claimId?: number
+): TagRow {
+  const existing = repo.getTag(db, name);
+  if (!existing) {
+    throw new ValidationError(`Tag "${name}" does not exist.`);
+  }
+
+  if (claimId !== undefined) {
+    const claimRow = repo.getNodeById(db, claimId);
+    if (!claimRow) throw new NotFoundError(claimId);
+    if (claimRow.type !== "claim") {
+      throw new TypeMismatchError(claimId, "claim", claimRow.type);
+    }
+  }
+
+  repo.updateTag(db, name, description, claimId);
+  return repo.getTag(db, name)!;
+}
+
+/**
+ * Rename a tag. `from` must exist; `to` must be format-legal and must not exist.
+ */
+export function renameTagService(db: Database, from: string, to: string): { moved: number } {
+  const existing = repo.getTag(db, from);
+  if (!existing) {
+    throw new ValidationError(`Tag "${from}" does not exist.`);
+  }
+  assertValidTagName(to);
+  const targetExisting = repo.getTag(db, to);
+  if (targetExisting) {
+    throw new ValidationError(`Tag "${to}" already exists.`);
+  }
+
+  repo.renameTag(db, from, to);
+  // Count affected nodes from node_tags for the new name
+  const moved = (db.prepare("SELECT COUNT(*) AS cnt FROM node_tags WHERE tag = ?").get(to) as { cnt: number }).cnt;
+  return { moved };
+}
+
+/**
+ * Merge tag `from` into `to`. Both must exist.
+ * If `from` has a claim_id and `to` does not → warning.
+ */
+export function mergeTagsService(db: Database, from: string, to: string): { moved: number; warnings: string[] } {
+  const fromTag = repo.getTag(db, from);
+  const toTag = repo.getTag(db, to);
+  if (!fromTag) throw new ValidationError(`Tag "${from}" does not exist.`);
+  if (!toTag) throw new ValidationError(`Tag "${to}" does not exist.`);
+
+  const warnings: string[] = [];
+  if (fromTag.claim_id !== null && toTag.claim_id === null) {
+    warnings.push(
+      `Tag "${from}" has a claim_id (#${fromTag.claim_id}) but "${to}" does not. ` +
+      `Consider revising the Claim to point at the merged tag.`
+    );
+  }
+
+  const moved = repo.mergeTags(db, from, to);
+  return { moved, warnings };
 }

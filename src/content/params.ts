@@ -37,12 +37,30 @@ export const PARAMS = {
   // list_claims.status
   claim_status_filter:
     "Filter by status (comma-separated: proposed,supported,disputed,refuted)",
+  claim_compile_status_filter:
+    "Filter by compile_status (comma-separated: passed,stale,null). Omit to include all.",
   // list_statements.source
   statement_source_filter:
     "Filter by source type (comma-separated: literature,observed). Omit to include all.",
   // list_statements.verification
   statement_verification_filter:
     "Filter by verification status (comma-separated: verified,pending). Omit to include all.",
+  statement_role_filter:
+    "Filter by role: 'ground', 'backing', or 'rebuttal'. Intersects with relation tables.",
+  // list_statements.without_tag
+  tag_without_filter:
+    "Exclude nodes with this tag. Supports prefix wildcards: 'theme:*' matches all 'theme:' tags.",
+  // pagination
+  pagination_limit:
+    "Maximum number of items to return (default 50).",
+  pagination_offset:
+    "Number of items to skip (default 0). For self-consuming queues (filters that remove completed items), always re-query with offset=0.",
+
+  // list_tags
+  tag_prefix:
+    "Filter tags by namespace prefix. For example, 'theme:' lists only tags in the 'theme:' namespace.",
+  tag_min_count:
+    "Minimum node count to include. Use 0 to find tags that are registered but have no nodes attached (the work-queue signal).",
 
   // ── 节点标识 ────────────────────────────────────────────────────────────────
 
@@ -91,4 +109,32 @@ export const PARAMS = {
   /** create_statement.rebuttal_for（整个对象的 .describe()） */
   rebuttal_for_stmt:
     "If provided, this statement is recorded as a rebuttal for the target Claim or Warrant. Use this for counter-conditions, exceptions, or contradicting evidence, not ordinary observation notes.",
+
+  // ── 标签参数 ──────────────────────────────────────────────────────────────────
+
+  tag_name:
+    "Tag name in format <namespace>:<name>, e.g., 'theme:attention-mechanism'. Only lowercase letters, digits, hyphens, and underscores are allowed. " +
+    "Dots, slashes, and uppercase are not: lowercase the identifier and replace every other character with '-' " +
+    "(lr=0.001 -> 'exp:lr-0-001', llama-3.1 -> 'model:llama-3-1', n=1e-4 -> 'exp:lr-1e-4', one sweep -> 'sweep:2026-03-lr'). " +
+    "This is an encoding, not a structure: a tag is a flat string with no key=value, so range queries over the encoded value are not expressible.",
+  tag_description:
+    "Description of what this tag represents and what kind of nodes it should be applied to.",
+  tag_claim_id:
+    "Optional Claim ID that this tag points to — the claim that generalizes this category. Establishes a two-sided taxonomy.",
+  tag_namespace_cardinality:
+    "Cardinality class for this namespace: 'dense' (hundreds of members, e.g., paper:, run:) or 'bounded' (a dozen members, e.g., theme:, condition:). " +
+    "Will this namespace's members grow into the hundreds, or hold steady at a dozen? " +
+    "The undeclared default is to run the near-match check. 'paper:' is pre-declared as dense.",
+  tag_tags_array:
+    "Optional array of registered tag names to apply to this node. Tags must be registered first via create_tag.",
+  tag_tags_object:
+    "Incremental tag updates: { add?: string[], remove?: string[] }. Tags must be registered first via create_tag.",
+  tag_filter:
+    "Optional tag name to filter by. Only nodes with this tag are returned.",
+  tag_from:
+    "Current tag name to rename or merge from.",
+  tag_to:
+    "New tag name (for rename) or target tag name (for merge).",
+  tag_tags_array_input:
+    "Array of tag objects to register (max 200). Each object: { name, description, claim_id? }.",
 } as const;

@@ -674,15 +674,15 @@ describe("getArgument", () => {
 describe("listClaims", () => {
   test("空数据库返回空数组", () => {
     const claims = service.listClaims(db);
-    expect(claims).toEqual([]);
+    expect(claims.rows).toEqual([]);
   });
 
   test("只返回 Claim 类型", () => {
     makeClaim(db, "C1");
     makeGround(db, { content: "G1" });
     const claims = service.listClaims(db);
-    expect(claims.length).toBe(1);
-    expect(claims[0].type).toBe("claim");
+    expect(claims.rows.length).toBe(1);
+    expect(claims.rows[0].type).toBe("claim");
   });
 
   test("按 status 过滤", () => {
@@ -691,10 +691,10 @@ describe("listClaims", () => {
     const c3 = makeClaim(db, "C3", "proposed");
 
     const proposed = service.listClaims(db, "proposed");
-    expect(proposed.length).toBe(2);
+    expect(proposed.rows.length).toBe(2);
 
     const supported = service.listClaims(db, "supported");
-    expect(supported.length).toBe(1);
+    expect(supported.rows.length).toBe(1);
   });
 });
 
@@ -705,15 +705,15 @@ describe("listClaims", () => {
 describe("listStatements", () => {
   test("空数据库返回空数组", () => {
     const statements = service.listStatements(db);
-    expect(statements).toEqual([]);
+    expect(statements.rows).toEqual([]);
   });
 
   test("只返回 statement 类型节点", () => {
     makeClaim(db, "C1");
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     const statements = service.listStatements(db);
-    expect(statements.length).toBe(1);
-    expect(statements[0].type).toBe("statement");
+    expect(statements.rows.length).toBe(1);
+    expect(statements.rows[0].type).toBe("statement");
   });
 
   test("无过滤器返回所有 statement", () => {
@@ -721,15 +721,15 @@ describe("listStatements", () => {
     makeGround(db, { content: "G2", source: "literature", verification: "pending" });
     makeGround(db, { content: "G3", source: "observed", verification: "pending" });
     const statements = service.listStatements(db);
-    expect(statements.length).toBe(3);
+    expect(statements.rows.length).toBe(3);
   });
 
   test("source 单值过滤", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     makeGround(db, { content: "G2", source: "literature", verification: "verified" });
     const statements = service.listStatements(db, "literature");
-    expect(statements.length).toBe(1);
-    expect(statements[0].content).toBe("G2");
+    expect(statements.rows.length).toBe(1);
+    expect(statements.rows[0].content).toBe("G2");
   });
 
   test("source 逗号分隔多值过滤（OR 语义），且排除无 source 字段的 statement（backing）", () => {
@@ -740,16 +740,16 @@ describe("listStatements", () => {
     const warrant = makeWarrant(db, claim.id, []);
     makeBacking(db, warrant.id, "B1 (no source field)");
     const statements = service.listStatements(db, "literature,observed");
-    expect(statements.length).toBe(3);
-    expect(statements.map(g => g.content).sort()).toEqual(["G1", "G2", "G3"]);
+    expect(statements.rows.length).toBe(3);
+    expect(statements.rows.map(g => g.content).sort()).toEqual(["G1", "G2", "G3"]);
   });
 
   test("verification 过滤", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     makeGround(db, { content: "G2", source: "observed", verification: "pending" });
     const verified = service.listStatements(db, undefined, "verified");
-    expect(verified.length).toBe(1);
-    expect(verified[0].content).toBe("G1");
+    expect(verified.rows.length).toBe(1);
+    expect(verified.rows[0].content).toBe("G1");
   });
 
   test("source + verification AND 组合过滤", () => {
@@ -757,20 +757,20 @@ describe("listStatements", () => {
     makeGround(db, { content: "G2", source: "literature", verification: "pending" });
     makeGround(db, { content: "G3", source: "observed", verification: "verified" });
     const statements = service.listStatements(db, "literature", "verified");
-    expect(statements.length).toBe(1);
-    expect(statements[0].content).toBe("G1");
+    expect(statements.rows.length).toBe(1);
+    expect(statements.rows[0].content).toBe("G1");
   });
 
   test("无效 source 值静默返回空列表", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     const statements = service.listStatements(db, "nonexistent");
-    expect(statements).toEqual([]);
+    expect(statements.rows).toEqual([]);
   });
 
   test("无效 verification 值静默返回空列表", () => {
     makeGround(db, { content: "G1", source: "observed", verification: "verified" });
     const statements = service.listStatements(db, undefined, "invalid");
-    expect(statements).toEqual([]);
+    expect(statements.rows).toEqual([]);
   });
 });
 
@@ -858,8 +858,8 @@ describe("searchNodesService", () => {
     makeGround(db, { content: "Adam 基线实验" });
 
     const results = service.searchNodesService(db, "ScaleOpt");
-    expect(results.length).toBe(1);
-    expect(results[0].type).toBe("claim");
+    expect(results.rows.length).toBe(1);
+    expect(results.rows[0].type).toBe("claim");
   });
 
   test("类型过滤", () => {
@@ -867,8 +867,8 @@ describe("searchNodesService", () => {
     makeGround(db, { content: "实验数据" });
 
     const claims = service.searchNodesService(db, "实验", "claim");
-    expect(claims.length).toBe(1);
-    expect(claims[0].type).toBe("claim");
+    expect(claims.rows.length).toBe(1);
+    expect(claims.rows[0].type).toBe("claim");
   });
 });
 

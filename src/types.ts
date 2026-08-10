@@ -9,6 +9,21 @@
 // 枚举常量
 // =============================================================================
 
+export type NamespaceCardinality = "dense" | "bounded";
+
+export interface TagRow {
+  name: string;
+  description: string;
+  claim_id: number | null;
+  created_at: string;
+}
+
+export interface TagNamespaceRow {
+  namespace: string;
+  cardinality: NamespaceCardinality;
+  declared_at: string;
+}
+
 export const NodeType = {
   Claim: "claim",
   Warrant: "warrant",
@@ -59,6 +74,7 @@ export interface BaseNode {
   content: string;
   createdAt: string;
   updatedAt: string;
+  tags?: string[];
 }
 
 /** Claim 节点 */
@@ -133,6 +149,7 @@ export interface UpdateNodeParams {
   backing_ids?: { add?: number[]; remove?: number[] };
   rebuttal_ids?: { add?: number[]; remove?: number[] };
   qualifier?: string | null;
+  tags?: { add?: string[]; remove?: string[] };
 }
 
 // =============================================================================
@@ -216,6 +233,19 @@ export interface Stats {
   backings: { total: number };
   qualifiers: { total: number };
   rebuttals: { total: number; by_target_type: Record<string, number> };
+  scale?: ScaleBlock;
+}
+
+export interface ScaleBlock {
+  tags: { total: number; namespaces: Array<{ name: string; count: number; with_nodes: number; cardinality: string }> };
+  untagged: number;
+  /** §4.2's `Statements:` line — counts statements, not tags. */
+  statements: { total: number; tagged: number; untagged: number };
+  namespace_gaps: Array<{ from: string; to: string; count: number }>;
+  gaps_omitted: number;
+  roles: { grounds: { total: number; verified: number; pending: number }; backings: { total: number; pending: number }; rebuttals: { total: number; pending: number } };
+  claims_detail: { never_compiled: number; stale: { count: number; ids: number[] }; passed_awaiting: number };
+  attachments: { total: number; files: Array<{ path: string; missing: boolean }> };
 }
 
 // =============================================================================

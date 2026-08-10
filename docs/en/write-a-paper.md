@@ -6,12 +6,14 @@
 
 Produce a research paper — or a literature survey — where every claim is traceable to evidence in the argument graph. **Done** means:
 
-- Every Statement used as evidence is `verified` (source paper attached, content confirmed)
+- Every Statement used as evidence is `verified` (source paper attached, content confirmed). **Deferred verification:** for a literature survey, verification happens in two stages — the Grounds the argument rests on are verified in phase 5; the remaining citation surface is verified by `/literature-writing` as it decides what to cite.
 - Every Claim has passed `compile_arguments`
 - Every Claim has a verdict: `supported`, `disputed`, or `refuted`
 - The `.tex` is coherent: each citation's surrounding text faithfully represents its Statement
 
 Two skills drive this: run `/overleaf-setup` once to wire up auto-push and citation enforcement (below), then `/literature-writing` to draft — it grounds each external finding in the graph before it's cited and maintains the `.bib` file as you go.
+
+**For scale:** a literature survey of dozens of papers or more should run `/literature-survey` first (collect, classify, synthesize) and hand off to `/literature-writing` for the prose. For a dozen or so papers, go straight to `/literature-writing`.
 
 ---
 
@@ -60,6 +62,10 @@ At the end of each turn, the hook pushes to Overleaf and automatically replaces 
 Name papers by their bib key when you download them — e.g. `vaswani2017attention.pdf`. The agent handles `.bib` maintenance.
 
 ⭐ **The chain matters:** `\cite{statement_N}` → a verified Statement → an attached paper. A Statement is only marked `verified` once its source paper is attached and confirmed to support the stated finding, so every citation traces back to a document that was actually examined — not a plausible-sounding reference generated from training data.
+
+**The attachment is required at the moment you record the Statement, not at verification time.** A `source="literature"` Statement with an empty `attachments` list is rejected outright, so you cannot record the proposition now, cite it while drafting, and attach the PDF before delivery. This is not deferred verification pulled forward — archiving a file triggers no review — but it does mean the source has to be on disk when the node comes into existence.
+
+**For a paper you cannot get the PDF for yet — paywalled, embargoed, print-only — attach whatever you do have**: an abstract snapshot, a publisher-page capture, your reading notes. The creation check only tests that the attachment list is non-empty and that each path resolves; whether the material is *sufficient* is judged by the review checklist when the Statement is verified, which is the step that was always supposed to make that call. So a snapshot lets the node exist and stay citable-in-progress, and the sufficiency question stays where it belongs.
 
 ---
 

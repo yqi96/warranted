@@ -95,6 +95,37 @@ describe("callAgent SDK call options", () => {
     expect(warnSpy.mock.calls[0]?.[0]).toContain("Read");
   });
 
+  test("permission_denied 的工具名交回调用方，不是只进 console.warn", async () => {
+    // console.warn 走 MCP server 的 stderr，主 agent 从来看不到。只记在那里,
+    // 「被拒 = 没审过」这条防线在生产路径上就没有承载者 —— 消费侧那段
+    // deniedTools 判断永远是死代码，而图上一次被拒的审查与一次真通过完全同形
+    mockMessages = [
+      { type: "system", subtype: "permission_denied", tool_name: "Read", tool_use_id: "x" },
+      { type: "result", subtype: "success", result: "{}" },
+    ];
+    spyOn(console, "warn").mockImplementation(() => {});
+
+    const denied: string[] = [];
+    await callAgent(testConfig, "test prompt", [], undefined, undefined, denied);
+    expect(denied).toEqual(["Read"]);
+  });
+
+  test("被拒的审查经 review-sync 落成第三种结局，不是一次干净通过", async () => {
+    mockMessages = [
+      { type: "system", subtype: "permission_denied", tool_name: "Read", tool_use_id: "x" },
+      { type: "result", subtype: "success", result: '{"errors":[],"warnings":[]}' },
+    ];
+    spyOn(console, "warn").mockImplementation(() => {});
+
+    const r = await reviewStatementEvidencePreCreate(testConfig, {
+      content: "一条证据",
+      source: "observed",
+      attachments: ["evidence/x.txt"],
+    });
+    expect(r.deniedTools).toEqual(["Read"]);
+    expect(r.reviewError).toBeDefined();
+  });
+
   test("仅 success 消息时不调用 console.warn，且正确返回结果", async () => {
     mockMessages = [{ type: "result", subtype: "success", result: "hello" }];
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});

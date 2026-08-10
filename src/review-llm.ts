@@ -44,7 +44,8 @@ export async function callAgent(
   prompt: string,
   attachmentPaths: string[],
   cwd?: string,
-  requestId?: string
+  requestId?: string,
+  deniedOut?: string[]
 ): Promise<string> {
   // 构建完整 prompt：审查指令 + 附件路径列表
   const fullPrompt = attachmentPaths.length > 0
@@ -86,7 +87,11 @@ export async function callAgent(
     releasePermit();
   }
   if (deniedTools.length > 0) {
+    // stderr only reaches the server operator, never the calling agent — so the
+    // names are also handed back to the caller, which is what lets a denied
+    // review be reported as "not reviewed" rather than counted as a pass.
     console.warn(`[review-llm] ${deniedTools.length} tool call(s) denied under dontAsk: ${deniedTools.join(", ")}`);
+    deniedOut?.push(...deniedTools);
   }
 
   if (!finalResult) {

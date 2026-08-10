@@ -42,6 +42,30 @@
 
 ---
 
+## 升级到 0.5.0
+
+0.5.0 的行为变更分成两类，发现方式完全不同，所以升级需要**两个**动作而不是一个。跑一遍全量 compile 只能发现第一类，第二类结构上不可能被 compile 看见。
+
+**① 图状态类变更 —— 对每个 Claim 跑一遍 `compile_arguments`。**
+
+claim 型 Ground 现在按它自身的 status 判定。新报错的 Claim 就是"上层结论压在一个未定案或已被推翻的下层结论上"的位置——这个状态一直存在，只是从来没有规则去看它。逐个处理：下层是 `proposed` 就先把它定案；下层是 `refuted` 就把上层改挂到一个能在推翻中存活的更窄的 Claim 上（通常是"该做法在文献中存在"而不是"该做法有效"）。下层是 `disputed` 属于正常，无需处理。
+
+同一遍扫描也会暴露新的顺序约束。因为定下层的 status 现在会失效它上方的 compile，所以要逐层推进——compile 一层、定这一层的 status、再往上——而不是先把所有层 compile 完再统一定状态。
+
+**② 调用习惯类变更 —— 现在就检查你的写入侧调用方。**
+
+compile **看不见这些**，它们只在你下一次写入时才触发。如果你有脚本、自动化或自定义 skill 在调用 `create_statement` 或 `update_node`，在下一次记录证据之前先对照这五条检查：
+
+- `create_statement` 的 `source` 现在是必填项。
+- `source="literature"` 必须携带 attachments。
+- 每个 attachment 路径都必须能从审查工作目录解析（URL 不算）。
+- 审查基础设施本身出错时，Statement 现在会落到 `pending` 并报出错误，而不是停留在 `verified`。
+- 对已经 `verified` 的 Statement 调用 `update_node(attachments=[])` 现在会报错。
+
+这五条里包含"记录一个矛盾"——在论证图里最不该被允许失败的写入。只做 compile 检查的升级，覆盖率是七分之二。
+
+---
+
 ## 接入 Claude Code
 
 **1. 克隆并配置**
@@ -122,8 +146,8 @@ bun run viz
 
 | Skill | 触发方式 | 作用 |
 |-------|----------|------|
+| `literature-survey` | `/literature-survey` | 大规模文献综述工作流。五阶段协议：范围界定、筛选、批量提取、分类、综合与验证 DAG。完成后交给 `/literature-writing` 撰写。 |
 | `paper-reproduce` | `/paper-reproduce` | 论文复现工作流。构建独立论证图，逐步验证论文主张是否成立。 |
 | `literature-writing` | `/literature-writing` | 文献写作工作流——related work、引言、讨论、综述的写作阶段。把每条可引用的外部发现接入论证图作为 Statement（Ground 角色），用 LaTeX 以 `\cite{statement_N}` 引用写作，全程维护 `.bib` 文件。 |
 | `cite-review` | `/cite-review` | 引用忠实性审计。并行核对每个 `\cite{statement_N}` 与其 Statement 是否一致，修正不符的 LaTeX，并回填论证图。 |
-| `academic-writing` | `/academic-writing` | 论文写作总纲 skill。把有图支撑的论证投射到论文各章节、图、表与引用的正文表达中。 |
 | `overleaf-setup` | `/overleaf-setup` | 一次性配置 skill。安装 `leaf`、完成认证、把本地 LaTeX 目录关联到 Overleaf 项目，并写入一个 Stop hook，在每轮对话结束时自动推送（无文件改动则跳过）。 |

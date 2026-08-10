@@ -1,6 +1,6 @@
 ---
 name: paper-reproduce
-description: Use for reproducing published papers or validating whether a paper's Claims and stated results hold under independent reproduction. Preserve the paper's Claims, map stated results to pending Grounds, enforce verification independence, delegate experiment work to code-experimenter, and route mismatches and claimed blockers to discrepancy-auditor before any Rebuttal or barrier verdict.
+description: Use when reproducing a published paper, or judging whether its Claims hold under independent execution — including a run that disagrees with the paper, or one that appears blocked. Not for testing a hypothesis of your own.
 ---
 
 ## Graph Mapping

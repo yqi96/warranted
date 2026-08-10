@@ -1,6 +1,6 @@
 ---
 name: cite-review
-description: Use to audit citation faithfulness in LaTeX: every \cite{statement_N} must faithfully represent Statement N. Extract each cite, delegate per-cite checks in parallel, reason across the reports, then correct the text and reconcile the graph.
+description: Use when citations in a LaTeX manuscript need checking against what the cited papers actually say — prose that may overstate, understate, or mischaracterise a source. Not for writing new prose or creating citations; that is literature-writing.
 ---
 
 ## Goal

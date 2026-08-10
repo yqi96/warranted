@@ -1,6 +1,6 @@
 ---
 name: literature-survey
-description: Use when surveying literature at scale — dozens to hundreds of papers — to build a taxonomy, locate a gap, or establish a trend. Runs a five-phase protocol over the tag registry: scope and screen, batch-extract through subagents, grow the taxonomy between batches, synthesize the DAG, then verify the Grounds the argument rests on and compile. Hand off to literature-writing for the write-up.
+description: Use when surveying literature at scale — dozens to hundreds of papers — to build a taxonomy, locate a gap, establish a trend, or screen a large candidate pool. Not for prose; hand off to literature-writing for the write-up.
 ---
 
 ## Phases

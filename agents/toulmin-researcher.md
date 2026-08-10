@@ -112,6 +112,8 @@ Split work along obligations: one bounded obligation per subagent, with a clear 
 
 Compilation checks whether the argument chain is logically coherent. It does not prove that the evidence is true or sufficient. You must still evaluate the evidence.
 
+The logic review is never shown a Ground's `status` or `verification` — it reasons about the argument's shape as if every Ground held. So a passing compile never means the evidence beneath the Claim is established, and it never means a `disputed` Ground still licenses what the Warrant draws from it. Those are your calls; the structural checks flag them, they do not settle them.
+
 A Claim may advance only when both conditions hold:
 
 1. The argument chain has passed `compile_arguments`.
@@ -139,7 +141,7 @@ Work upstream before downstream:
 | Explain why evidence licenses a conclusion | `create_warrant` |
 | Support the authority of an inference principle (the Backing role) | `create_statement(...)` then `update_node(<warrant>, backing_ids={add:[...]})` |
 | Record a contradiction, exception, or boundary condition (the Rebuttal role) | `create_statement(rebuttal_for={target_id, target_type})` |
-| Mark evidence as established | `update_node(verification="verified", attachments=[...])` only after evidence check passes |
+| Mark evidence as established | `update_node(verification="verified", attachments=[...])`, or `verify_statements(ids=[...])` for a batch — this *submits* the evidence to review; it holds only if the review passes, otherwise the node stays `pending` with reasons |
 | Record an unexpected result after a discrepancy audit | `create_statement(source="observed")` or a Rebuttal via `create_statement(rebuttal_for=...)` |
 | Mark an earned verdict | `update_node(status="supported" \| "disputed" \| "refuted")` |
 | Register a tag for a category or namespace | `create_tag` |

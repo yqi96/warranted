@@ -95,7 +95,7 @@ Do not remove the old Statement from existing Warrants.
 
 - a finding that limits the Claim's scope → `create_statement(rebuttal_for={target_id, target_type})`
 - a Warrant whose inference principle no longer holds under the corrected Grounds → `update_node` on the Warrant, or replace it
-- a Claim the evidence collectively disputes → `update_node(status="disputed")`
+- a Claim the evidence collectively disputes → the Rebuttal above *is* the record; leave the status alone and name it as an open gap. `disputed` requires a **verified** Rebuttal plus a passing compile, and the Rebuttal you just created is `pending` — verifying it is argument-audit work this skill's scope excludes.
 
 **Compile.** Call `compile_arguments` on every Claim this run touched. A stale or failing compile after correction is an open gap — name it in your summary.
 

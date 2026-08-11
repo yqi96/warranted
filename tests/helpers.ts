@@ -68,7 +68,15 @@ export function makeClaim(
   };
 }
 
-/** 创建 Ground/Statement 节点 */
+/**
+ * 创建 Ground/Statement 节点。
+ *
+ * 这些夹具走原始 INSERT，绕开 service 层的校验 —— 这是有意的，需要构造非法状态的
+ * 用例只能这样写。但**默认值**必须是公开 API 造得出来的状态，否则几百个不关心
+ * attachments 的调用点会白拿一个非法节点：默认 verification 是 "verified"，
+ * 而 createStatement 要求已核实的 statement 必须带证据文件。想测"已核实却没有
+ * 证据"的用例请显式传 `attachments: []`，把这个前提写在用例里。
+ */
 export function makeGround(
   db: Database,
   opts: {
@@ -82,7 +90,7 @@ export function makeGround(
     content = "Test ground",
     source = "observed",
     verification = "verified",
-    attachments = [],
+    attachments = ["/evidence/test-ground.csv"],
   } = opts;
 
   const now = new Date().toISOString().slice(0, 19);
@@ -176,20 +184,24 @@ export function makeBacking(
 /**
  * 创建 Rebuttal/Statement 节点。
  *
- * verification 默认 "verified"，和 makeGround 一致：夹具的默认值要让
- * `makeRebuttal(db, claim.id)` 在测试里的字面意思——"有一条算数的反驳"——成立。
- * A3/A4 只认已核实的反驳，所以想验证"未核实的反驳挡不住门"的用例必须显式传 "pending"。
+ * 默认值和 makeGround 一致，理由也一样（见 makeGround 的注释）：
+ * verification 默认 "verified"，是为了让 `makeRebuttal(db, claim.id)` 在用例里的
+ * 字面意思——"有一条算数的反驳"——成立；A3/A4 只认已核实的反驳，所以想验证
+ * "未核实的反驳挡不住门"的用例必须显式传 "pending"。
+ * source 默认 "observed"，因为 0.5.0 起 source 是必填字段：不写的话这条反驳
+ * 对 list_statements 的两个 source 过滤都不可见，既不算 observed 也不算 literature。
  */
 export function makeRebuttal(
   db: Database,
   targetId: number,
   targetType: TargetType = "claim",
   content: string = "Test rebuttal",
-  attachments: string[] = [],
-  verification: VerificationStatus = "verified"
+  attachments: string[] = ["/evidence/test-rebuttal.csv"],
+  verification: VerificationStatus = "verified",
+  source: GroundSource = "observed"
 ): StatementNode {
   const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({ attachments, verification });
+  const data = JSON.stringify({ source, attachments, verification });
   const stmt = db.prepare(
     "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('statement', ?, ?, ?, ?)"
   );
@@ -201,6 +213,7 @@ export function makeRebuttal(
     id,
     type: "statement",
     content,
+    source,
     verification,
     attachments,
     createdAt: now,

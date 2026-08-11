@@ -889,15 +889,42 @@ describe("searchNodesService", () => {
 // =============================================================================
 
 describe("审查规则: Claim 状态转换", () => {
+  // A0/A1/A3/A4 抛的是同一个 StatusTransitionError，所以"断言抛了这个类"分不清
+  // 是哪道门拦下来的。曾经有四条用例名字写着 A1/A3，实际全撞在 A0 上（少了 compile
+  // 记录就会），断言照样通过，等于这四道门里的三道从来没被测过。
+  // 下面这些片段是四道门唯一互相区分的东西，每条用例断言自己那一条。
+  const GATE = {
+    A0_never: /argument has not been compiled yet/,
+    A0_stale: /the argument changed after it last passed compile/,
+    A1_noWarrant: /Claim has no Warrants/,
+    A1_noGrounds: /no Warrant has all Grounds verified — Warrant #\d+: no Grounds attached/,
+    A1_groundPending: /no Warrant has all Grounds verified — Warrant #\d+: Ground #\d+ not verified/,
+    A3: /no verified Rebuttals target this Claim or its Warrants/,
+    A4: /no verified Rebuttals exist to justify refutation/,
+  };
+
+  /** 断言这次转换被拦下来了，而且是被 gate 那道门拦的。fn 只调用一次。 */
+  function expectBlockedBy(fn: () => unknown, gate: RegExp) {
+    let err: unknown;
+    try {
+      fn();
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(StatusTransitionError);
+    expect((err as Error).message).toMatch(gate);
+  }
+
   test("A0: stale Claim 不能标记 supported", () => {
     const claim = makeClaim(db);
     const ground = makeGround(db, { content: "G", verification: "verified" });
     makeWarrant(db, claim.id, [ground.id]);
     // 设置 compile_status = "stale"
     repo.saveCompileState(db, claim.id, "stale", "");
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "supported" })
-    ).toThrow(StatusTransitionError);
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "supported" }),
+      GATE.A0_stale
+    );
   });
 
   test("A0: 从未 compile 的 Claim 不能标记 supported", () => {
@@ -905,67 +932,78 @@ describe("审查规则: Claim 状态转换", () => {
     const ground = makeGround(db, { content: "G", verification: "verified" });
     makeWarrant(db, claim.id, [ground.id]);
     // compile_status 未设置（默认 null/undefined）
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "supported" })
-    ).toThrow(StatusTransitionError);
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "supported" }),
+      GATE.A0_never
+    );
   });
 
   test("A0: stale Claim 不能标记 disputed (有 Rebuttal)", () => {
     const claim = makeClaim(db);
     repo.saveCompileState(db, claim.id, "stale", "");
     makeRebuttal(db, claim.id);
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "disputed" })
-    ).toThrow(StatusTransitionError);
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "disputed" }),
+      GATE.A0_stale
+    );
   });
 
   test("A0: 从未 compile 的 Claim 不能标记 disputed (有 Rebuttal)", () => {
     const claim = makeClaim(db);
     makeRebuttal(db, claim.id);
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "disputed" })
-    ).toThrow(StatusTransitionError);
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "disputed" }),
+      GATE.A0_never
+    );
   });
 
   test("A0: stale Claim 不能标记 refuted (有 Rebuttal)", () => {
     const claim = makeClaim(db);
     repo.saveCompileState(db, claim.id, "stale", "");
     makeRebuttal(db, claim.id);
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "refuted" })
-    ).toThrow(StatusTransitionError);
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "refuted" }),
+      GATE.A0_stale
+    );
   });
 
   test("A0: 从未 compile 的 Claim 不能标记 refuted (有 Rebuttal)", () => {
     const claim = makeClaim(db);
     makeRebuttal(db, claim.id);
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "refuted" })
-    ).toThrow(StatusTransitionError);
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "refuted" }),
+      GATE.A0_never
+    );
   });
 
   test("A1: 无 Warrant 时不能标记 supported", () => {
     const claim = makeClaim(db);
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "supported" })
-    ).toThrow(StatusTransitionError);
+    repo.saveCompileState(db, claim.id, "passed", "");  // 否则先撞 A0，测不到 A1
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "supported" }),
+      GATE.A1_noWarrant
+    );
   });
 
   test("A1: Warrant 无 Ground 时不能标记 supported", () => {
     const claim = makeClaim(db);
+    repo.saveCompileState(db, claim.id, "passed", "");
     makeWarrant(db, claim.id, []);  // 直接通过 repo 创建空 groundIds
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "supported" })
-    ).toThrow(StatusTransitionError);
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "supported" }),
+      GATE.A1_noGrounds
+    );
   });
 
   test("A1: Ground 未 verified 时不能标记 supported", () => {
     const claim = makeClaim(db);
+    repo.saveCompileState(db, claim.id, "passed", "");
     const ground = makeGround(db, { content: "G", verification: "pending" });
     makeWarrant(db, claim.id, [ground.id]);
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "supported" })
-    ).toThrow(StatusTransitionError);
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "supported" }),
+      GATE.A1_groundPending
+    );
   });
 
   test("A1: 有 Warrant + verified Ground + compiled 时可以标记 supported", () => {
@@ -978,9 +1016,11 @@ describe("审查规则: Claim 状态转换", () => {
 
   test("A3: 无 Rebuttal 时不能标记 disputed", () => {
     const claim = makeClaim(db);
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "disputed" })
-    ).toThrow(StatusTransitionError);
+    repo.saveCompileState(db, claim.id, "passed", "");
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "disputed" }),
+      GATE.A3
+    );
   });
 
   test("A3: 有已核实的 Rebuttal 时可以标记 disputed", () => {
@@ -994,9 +1034,10 @@ describe("审查规则: Claim 状态转换", () => {
   test("A4: 无 Rebuttal 时不能标记 refuted", () => {
     const claim = makeClaim(db);
     repo.saveCompileState(db, claim.id, "passed", "");
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "refuted" })
-    ).toThrow(StatusTransitionError);
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "refuted" }),
+      GATE.A4
+    );
   });
 
   test("A4: 有已核实的 Rebuttal 时可以标记 refuted", () => {
@@ -1014,18 +1055,20 @@ describe("审查规则: Claim 状态转换", () => {
     const claim = makeClaim(db);
     repo.saveCompileState(db, claim.id, "passed", "");
     makeRebuttal(db, claim.id, "claim", "光有说法，没核实", [], "pending");
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "disputed" })
-    ).toThrow(/no verified Rebuttals/);
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "disputed" }),
+      GATE.A3
+    );
   });
 
   test("A4: 未核实的 Rebuttal 不足以标记 refuted", () => {
     const claim = makeClaim(db);
     repo.saveCompileState(db, claim.id, "passed", "");
     makeRebuttal(db, claim.id, "claim", "光有说法，没核实", [], "pending");
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "refuted" })
-    ).toThrow(/no verified Rebuttals/);
+    expectBlockedBy(
+      () => service.updateNode(db, claim.id, { status: "refuted" }),
+      GATE.A4
+    );
   });
 
   test("A3/A4: 挂在 Warrant 上的已核实 Rebuttal 也算", () => {
@@ -1156,10 +1199,11 @@ describe("审查规则: 结构约束", () => {
 
 describe("审查规则: Ground 验证留痕", () => {
   test("H1: verified Ground 无 attachments 时不能通过 updateNode 设置", () => {
-    const ground = makeGround(db, { verification: "pending" });
+    // attachments: [] 是这条用例的前提，必须写出来：夹具的默认值带一个占位证据文件
+    const ground = makeGround(db, { verification: "pending", attachments: [] });
     expect(() =>
       service.updateNode(db, ground.id, { verification: "verified" })
-    ).toThrow(ValidationError);
+    ).toThrow(/verified statements must have attachments/);
   });
 
   test("H1: verified Ground 有 attachments 时可以通过 updateNode 设置", () => {

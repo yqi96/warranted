@@ -177,3 +177,158 @@ describe("tightenCheckConstraint", () => {
     db.close();
   });
 });
+
+// =============================================================================
+// compile_state.claim_id 的外键 + 三条外键子列索引
+// =============================================================================
+
+function compileStateDdl(db: Database): string {
+  return (
+    db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'compile_state'").get() as {
+      sql: string;
+    }
+  ).sql;
+}
+
+function indexNames(db: Database): string[] {
+  return (
+    db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%'").all() as Array<{
+      name: string;
+    }>
+  ).map((r) => r.name);
+}
+
+/** 旧库形态：nodes 是宽 CHECK，compile_state 没有外键 —— 也就是 0.5.0 之前的文件。 */
+const LEGACY_COMPILE_STATE_SQL = `
+  CREATE TABLE compile_state (
+    claim_id       INTEGER PRIMARY KEY,
+    verdict        TEXT    NOT NULL DEFAULT 'passed',
+    summary        TEXT    NOT NULL DEFAULT '',
+    node_hashes    TEXT    NOT NULL DEFAULT '{}',
+    argument_hash  TEXT,
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+`;
+
+describe("compile_state 外键", () => {
+  let dir: string;
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("新库：删掉 claim，它的 compile 记录跟着消失", () => {
+    const db = new Database(":memory:");
+    initializeSchema(db);
+    db.exec("PRAGMA foreign_keys = ON"); // openDatabase 会开，这里是裸 Database
+
+    expect(compileStateDdl(db)).toContain("REFERENCES nodes(id) ON DELETE CASCADE");
+
+    const claimId = (db.prepare("INSERT INTO nodes (type, content) VALUES ('claim', 'C') RETURNING id").get() as { id: number }).id;
+    db.prepare("INSERT INTO compile_state (claim_id, verdict) VALUES (?, 'passed')").run(claimId);
+    db.prepare("DELETE FROM nodes WHERE id = ?").run(claimId);
+
+    // 留下这一行的后果不是多一行垃圾：nodes 重建后 id 会重用，
+    // 新 claim 会读到这条 passed，而 A0 门只比 verdict。
+    expect(countOf(db, "compile_state")).toBe(0);
+    db.close();
+  });
+
+  test("旧库文件升级：补上外键，指向已消失 claim 的孤儿行被清掉，正常行留着", () => {
+    dir = mkdtempSync(join(tmpdir(), "warranted-cs-fk-"));
+    const dbPath = join(dir, "legacy.db");
+    const seed = new Database(dbPath, { create: true });
+    seed.exec(LEGACY_SCHEMA_SQL);
+    seed.exec(LEGACY_COMPILE_STATE_SQL);
+    seedLegacyRows(seed); // #1 warrant, #2 statement
+    seed.prepare("INSERT INTO nodes (type, content) VALUES ('claim', 'C')").run(); // #3
+    seed.prepare("INSERT INTO compile_state (claim_id, verdict) VALUES (3, 'passed')").run();
+    seed.prepare("INSERT INTO compile_state (claim_id, verdict) VALUES (99, 'passed')").run(); // #99 不存在
+    seed.close();
+
+    const db = openDatabase(dbPath);
+
+    expect(compileStateDdl(db)).toContain("REFERENCES nodes(id) ON DELETE CASCADE");
+    expect(
+      (db.prepare("SELECT claim_id FROM compile_state").all() as Array<{ claim_id: number }>).map((r) => r.claim_id)
+    ).toEqual([3]);
+
+    // 外键补上之后必须真的在管事，而不只是写在建表语句里
+    db.prepare("DELETE FROM nodes WHERE id = 3").run();
+    expect(countOf(db, "compile_state")).toBe(0);
+    db.close();
+
+    // 二次打开幂等：不再重建，也不报错
+    const db2 = openDatabase(dbPath);
+    expect(compileStateDdl(db2)).toContain("REFERENCES nodes(id)");
+    expect(
+      (db2.prepare("SELECT name FROM sqlite_master WHERE name = 'compile_state_new'").all() as unknown[]).length
+    ).toBe(0);
+    db2.close();
+  });
+
+  test("升级中途失败：整体回滚，旧表还在，连接没被卡在未关闭的事务里", () => {
+    dir = mkdtempSync(join(tmpdir(), "warranted-cs-fail-"));
+    const dbPath = join(dir, "legacy.db");
+    const seed = new Database(dbPath, { create: true });
+    seed.exec(LEGACY_SCHEMA_SQL);
+    seed.exec(LEGACY_COMPILE_STATE_SQL);
+    seed.prepare("INSERT INTO nodes (type, content) VALUES ('claim', 'C')").run();
+    seed.prepare("INSERT INTO compile_state (claim_id, verdict) VALUES (1, 'passed')").run();
+    // 故障注入：占住 compile_state_new 这个名字，让重建的第一步就撞名。
+    seed.exec("CREATE TABLE compile_state_new (x)");
+    seed.close();
+
+    expect(() => openDatabase(dbPath)).toThrow(/compile_state_new/);
+
+    // 迁移失败若不 ROLLBACK，BEGIN IMMEDIATE 就一直开着，别的连接会拿到
+    // "database is locked" —— 这正是被删掉的 migrateWarrantGroundsColumn 的毛病。
+    const probe = new Database(dbPath);
+    expect(() => probe.exec("INSERT INTO nodes (type, content) VALUES ('claim', 'D')")).not.toThrow();
+    expect(compileStateDdl(probe)).not.toContain("REFERENCES nodes"); // 还是升级前的样子
+    expect(countOf(probe, "compile_state")).toBe(1);
+    probe.close();
+  });
+});
+
+describe("外键子列索引", () => {
+  let dir: string;
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const REQUIRED = ["idx_tags_claim", "idx_warrant_backings_statement", "idx_warrant_grounds_ground"];
+
+  test("新库三条都建上，且反查 ground 真的走索引而不是扫全表", () => {
+    const db = new Database(":memory:");
+    initializeSchema(db);
+
+    for (const name of REQUIRED) expect(indexNames(db)).toContain(name);
+
+    // 光断言索引存在不够 —— 索引建了但查询用不上是常见情形。
+    const plan = (
+      db.prepare("EXPLAIN QUERY PLAN SELECT warrant_id FROM warrant_grounds WHERE ground_id = 1").all() as Array<{
+        detail: string;
+      }>
+    )
+      .map((r) => r.detail)
+      .join(" ");
+    expect(plan).toContain("idx_warrant_grounds_ground");
+    expect(plan).not.toContain("SCAN");
+    db.close();
+  });
+
+  test("旧库文件打开一次就补齐 —— CREATE INDEX IF NOT EXISTS 每次打开都跑，不需要迁移", () => {
+    dir = mkdtempSync(join(tmpdir(), "warranted-idx-"));
+    const dbPath = join(dir, "legacy.db");
+    const seed = new Database(dbPath, { create: true });
+    seed.exec(LEGACY_SCHEMA_SQL); // 只有 nodes 和 warrant_grounds，没有任何 idx_
+    seedLegacyRows(seed);
+    seed.close();
+
+    const db = openDatabase(dbPath);
+    for (const name of REQUIRED) expect(indexNames(db)).toContain(name);
+    db.close();
+  });
+});

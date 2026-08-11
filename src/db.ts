@@ -64,7 +64,11 @@ export function initializeSchema(db: Database): void {
     ) WHERE type = 'warrant';
 
     CREATE TABLE IF NOT EXISTS compile_state (
-      claim_id       INTEGER PRIMARY KEY,
+      -- 外键是保命的：claim 被删而这一行留下时，它会被重用同一个 id 的新 claim
+      -- 读到（nodes 重建后 sqlite_sequence 归零，id 确实会重用），而 A0 门只比
+      -- verdict、从不比 argument_hash —— 新 claim 于是继承了别人的 passed。
+      -- 旧库由 migrateCompileStateForeignKey 补上。
+      claim_id       INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
       verdict        TEXT    NOT NULL DEFAULT 'passed',
       summary        TEXT    NOT NULL DEFAULT '',
       node_hashes    TEXT    NOT NULL DEFAULT '{}',
@@ -78,11 +82,19 @@ export function initializeSchema(db: Database): void {
       PRIMARY KEY (warrant_id, ground_id)
     );
 
+    -- 下面三条索引补的都是外键子列。主键覆盖的是 warrant → ground 这个方向，
+    -- 反向（"哪些 warrant 用了这条 ground"）在图规模下是全表扫描；而且外键
+    -- 开着时，删任何节点都要在每张缺索引的子表上扫一遍。实测两万节点：
+    -- 反查 106.5ms → 0.7ms，删 200 个节点 102.2ms → 3.0ms。
+    CREATE INDEX IF NOT EXISTS idx_warrant_grounds_ground ON warrant_grounds(ground_id);
+
     CREATE TABLE IF NOT EXISTS warrant_backings (
       warrant_id   INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
       statement_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
       PRIMARY KEY (warrant_id, statement_id)
     );
+
+    CREATE INDEX IF NOT EXISTS idx_warrant_backings_statement ON warrant_backings(statement_id);
 
     CREATE TABLE IF NOT EXISTS rebuttal_targets (
       statement_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -99,6 +111,8 @@ export function initializeSchema(db: Database): void {
       claim_id    INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE INDEX IF NOT EXISTS idx_tags_claim ON tags(claim_id);
 
     CREATE TABLE IF NOT EXISTS node_tags (
       node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -177,7 +191,7 @@ export function initializeSchema(db: Database): void {
   migrateToStatementSchema(db);
   migrateHypothesisSource(db);
   tightenCheckConstraint(db);
-  migrateWarrantGroundsColumn(db);
+  migrateCompileStateForeignKey(db);
   migrateRefClaimIdData(db);
 
 }
@@ -456,27 +470,51 @@ export function initializeSchemaFromFile(db: Database, sqlPath?: string): void {
 }
 
 /**
- * 将 warrant_grounds 表的 statement_id 列重命名为 ground_id。
- * 幂等：若列已命名 ground_id 则跳过。
- * 操作包裹在 BEGIN IMMEDIATE...COMMIT 事务中，确保原子性。
+ * 给旧库的 compile_state.claim_id 补上指向 nodes(id) 的外键，并清掉已有的孤儿行。
+ *
+ * `CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作，所以光改内联 schema 只能
+ * 管新库；旧库文件永远拿不到这个外键，必须重建一次。
+ *
+ * 重建时外键**开着**，和 tightenCheckConstraint 相反：那边要关，是因为
+ * warrant_grounds 等子表以 ON DELETE CASCADE 引用 nodes，DROP TABLE nodes 会
+ * 连带删掉子表的行。而 compile_state 没有任何表引用它，DROP 它不会波及别人；
+ * 开着外键反而让下面那条 INSERT 自己验一遍 —— 真有漏网的孤儿行会当场报错，
+ * 而不是安静写进新表。
+ *
+ * 幂等：靠建表语句里有没有 REFERENCES nodes 判断。重建后的语句一定含它。
  */
-function migrateWarrantGroundsColumn(db: Database): void {
-  // Check if column is already named ground_id
-  const cols = db.prepare("PRAGMA table_info(warrant_grounds)").all() as Array<{ name: string }>;
-  if (cols.some(c => c.name === "ground_id")) return; // already migrated
+function migrateCompileStateForeignKey(db: Database): void {
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'compile_state'"
+  ).get() as { sql: string } | null;
+  if (!row || /REFERENCES\s+nodes/i.test(row.sql)) return;
 
-  // Recreate with renamed column, wrapped in transaction
-  db.exec(`
-    BEGIN IMMEDIATE;
-    CREATE TABLE warrant_grounds_new (
-      warrant_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-      ground_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-      PRIMARY KEY (warrant_id, ground_id)
-    );
-    INSERT INTO warrant_grounds_new (warrant_id, ground_id)
-      SELECT warrant_id, statement_id FROM warrant_grounds;
-    DROP TABLE warrant_grounds;
-    ALTER TABLE warrant_grounds_new RENAME TO warrant_grounds;
-    COMMIT;
-  `);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`CREATE TABLE compile_state_new (
+      claim_id       INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+      verdict        TEXT    NOT NULL DEFAULT 'passed',
+      summary        TEXT    NOT NULL DEFAULT '',
+      node_hashes    TEXT    NOT NULL DEFAULT '{}',
+      argument_hash  TEXT,
+      created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+    )`);
+    // 只搬 claim 还在的行。留下孤儿行的后果不是"多一行垃圾"：nodes 重建后
+    // sqlite_sequence 归零，id 会重用，新 claim 于是读到被删 claim 的 passed 判定。
+    // 列名从表诞生起就没变过（argument_hash 由上面的 ALTER 补齐），可以直接列举。
+    const total = (db.prepare("SELECT COUNT(*) AS c FROM compile_state").get() as { c: number }).c;
+    db.exec(`INSERT INTO compile_state_new (claim_id, verdict, summary, node_hashes, argument_hash, created_at)
+      SELECT claim_id, verdict, summary, node_hashes, argument_hash, created_at FROM compile_state
+      WHERE claim_id IN (SELECT id FROM nodes)`);
+    const moved = (db.prepare("SELECT COUNT(*) AS c FROM compile_state_new").get() as { c: number }).c;
+    db.exec("DROP TABLE compile_state");
+    db.exec("ALTER TABLE compile_state_new RENAME TO compile_state");
+    db.exec("COMMIT");
+    if (total > moved) {
+      console.warn(`[warranted] Dropped ${total - moved} orphan compile_state row(s) whose claim no longer exists`);
+    }
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
 }

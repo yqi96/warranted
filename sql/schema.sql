@@ -25,7 +25,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_warrant_claim ON nodes(
 
 -- Compile state per claim
 CREATE TABLE IF NOT EXISTS compile_state (
-    claim_id       INTEGER PRIMARY KEY,
+    claim_id       INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
     verdict        TEXT    NOT NULL DEFAULT 'passed',
     summary        TEXT    NOT NULL DEFAULT '',
     node_hashes    TEXT    NOT NULL DEFAULT '{}',
@@ -40,12 +40,19 @@ CREATE TABLE IF NOT EXISTS warrant_grounds (
     PRIMARY KEY (warrant_id, ground_id)
 );
 
+-- Reverse lookup: which warrants use this ground. The primary key only covers
+-- the warrant -> ground direction; without this index the reverse is a table
+-- scan, and every node delete scans this table for cascade candidates.
+CREATE INDEX IF NOT EXISTS idx_warrant_grounds_ground ON warrant_grounds(ground_id);
+
 -- Backing statements for a warrant
 CREATE TABLE IF NOT EXISTS warrant_backings (
     warrant_id   INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     statement_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     PRIMARY KEY (warrant_id, statement_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_warrant_backings_statement ON warrant_backings(statement_id);
 
 -- Rebuttal targets: a statement rebuts a claim or warrant
 CREATE TABLE IF NOT EXISTS rebuttal_targets (
@@ -66,6 +73,8 @@ CREATE TABLE IF NOT EXISTS tags (
     claim_id    INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_tags_claim ON tags(claim_id);
 
 -- Node-to-tag membership: which nodes carry which tags
 CREATE TABLE IF NOT EXISTS node_tags (

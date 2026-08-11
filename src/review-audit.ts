@@ -13,6 +13,13 @@ export interface AuditRecord {
   requestId: string;
   model: string;
   maxTurns: number;
+  /**
+   * 请求实际打向的 endpoint（config.baseUrl；未配置则不出现，走 SDK 默认）。
+   * 记它是因为：apiKey/baseUrl 曾经读进配置就再没递给 SDK，请求一直打向别处，
+   * 而审计日志只记 model/maxTurns，看不出去了哪里 —— 缺陷因此长期无法定位。
+   * apiKey 绝不入日志。
+   */
+  baseUrl?: string;
   input: {
     prompt: string;
     attachmentPaths: string[];

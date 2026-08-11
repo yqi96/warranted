@@ -6,13 +6,19 @@
  *
  * 配置文件格式（JSON）：
  * {
- *   "apiKey": "sk-xxx",              // 必需
- *   "baseUrl": "https://...",         // 可选，转发站地址
+ *   "apiKey": "sk-xxx",              // 必需；作为 ANTHROPIC_API_KEY 递给 SDK 子进程
+ *   "baseUrl": "https://...",         // 可选，转发站地址；作为 ANTHROPIC_BASE_URL 递给 SDK 子进程
  *   "model": "claude-sonnet-4-...",   // 可选，默认 claude-sonnet-4-20250514
+ *   "fallbackModel": "claude-...",    // 可选，解析失败重试时换的模型；不设置 = 沿用 model
  *   "maxTurns": 10,                   // 可选，agent 最大轮数（正整数），默认 10
  *   "maxConcurrency": 4,              // 可选，全局并发上限（所有 callAgent 调用共享，正整数），默认 4
  *   "auditDir": "/path/to/audit"      // 可选，审计日志目录；null = 禁用；不设置 = dirname(dbPath)/audit
  * }
+ *
+ * apiKey/baseUrl 由 review-llm.ts 显式递给 SDK 子进程，且子进程以隔离模式启动
+ * （settingSources: []），不读 ~/.claude/settings.json。所以这个文件必须自带
+ * 完整凭据：以前靠用户 settings 里的 ANTHROPIC_BASE_URL 碰巧能跑通的部署，
+ * 现在要把地址写进这里。外部 shell 的环境变量仍然继承。
  */
 
 import { existsSync, mkdirSync, readFileSync } from "fs";
@@ -62,6 +68,12 @@ export interface ReviewConfig {
   enabled: boolean;
   provider: "anthropic";
   model: string;
+  /**
+   * 解析失败重试时换用的模型。不设置 = 沿用 model。
+   * 不设置时刻意不猜一个"更强的模型" —— 只用已经证明在这个 endpoint 上存在的模型名
+   * （见 review-llm.ts callAndParse）。
+   */
+  fallbackModel?: string;
   apiKey: string;
   baseUrl?: string;
   maxTurns: number;
@@ -77,6 +89,7 @@ interface ReviewConfigFile {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+  fallbackModel?: string;
   maxTurns?: number;
   maxConcurrency?: number;
   /** 审计日志目录。null = 禁用审计。不设置时默认 dirname(dbPath)/audit */
@@ -124,6 +137,9 @@ export function loadReviewConfig(
   }
 
   const model = fileConfig.model ?? "claude-sonnet-4-20250514";
+  // fallbackModel 和 model 一样不做取值校验：两个字段是同一种东西（模型名），
+  // 只给其中一个加校验会产生"同一条规则两处编码"。要加就一起加。
+  const fallbackModel = fileConfig.fallbackModel ?? undefined;
   const maxTurns = positiveInt("maxTurns", fileConfig.maxTurns) ?? 10;
   const maxConcurrency = positiveInt("maxConcurrency", fileConfig.maxConcurrency);
   const baseUrl = fileConfig.baseUrl ?? undefined;
@@ -150,6 +166,8 @@ export function loadReviewConfig(
     enabled: true,
     provider: "anthropic",
     model,
+    // 未设置时整个键不出现，由 callAndParse 的 `?? config.model` 接管。
+    ...(fallbackModel !== undefined ? { fallbackModel } : {}),
     apiKey,
     baseUrl,
     maxTurns,

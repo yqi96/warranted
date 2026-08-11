@@ -62,6 +62,42 @@ export async function callAgent(
       options: {
         model: config.model,
         maxTurns: config.maxTurns ?? 10,
+        // 凭据必须显式递进去：SDK 起的是子进程，配置文件里的 apiKey/baseUrl
+        // 曾经读进 ReviewConfig 就再没被任何人用过（src/ 里 config.apiKey 零个消费者），
+        // 于是真正生效的是外部 shell 的环境变量 —— 用户按注释把密钥和转发站写进
+        // review.json，加载日志还打 "Config loaded"，请求却打去了别处。
+        //
+        // ...process.env 不能省：显式传 env 会替换继承来的整个环境，不铺一遍等于清空
+        // （连 PATH/HOME 都没了）。配置值放在展开之后 —— 为审查专门写的配置压过外部环境变量。
+        //
+        // apiKey 同时写进 API_KEY 和 AUTH_TOKEN 两个变量：SDK 里这两者各自独立读取，
+        // apiKeyAuth() 发 X-Api-Key、bearerAuth() 发 Authorization: Bearer，
+        // 返回的是 E([apiKeyAuth, bearerAuth]) —— 同时设置不冲突，只是两个头都发。
+        // 官方 endpoint 认前者，转发站常只认后者，而配置里只有一个字段说"凭据"，
+        // 无法表达该走哪种。两个都给，让 endpoint 挑它认的那个。
+        env: {
+          ...process.env,
+          ANTHROPIC_API_KEY: config.apiKey,
+          ANTHROPIC_AUTH_TOKEN: config.apiKey,
+          ...(config.baseUrl ? { ANTHROPIC_BASE_URL: config.baseUrl } : {}),
+        },
+        // 光传 env 不够，还要隔离文件设置。子进程是完整的 Claude Code CLI，
+        // 它启动后会自己读 ~/.claude/settings.json 的 env 段，把上面传的值再盖一遍。
+        // 实测：把三个 ANTHROPIC_* 从 process.env 删掉、config.baseUrl 填一个连不上的
+        // 地址，请求照样 6.5 秒成功 —— 生效的是用户 settings 里的地址，不是配置文件里的。
+        // 加上隔离后同一个死地址才真的失败，真地址才真的成功。
+        // 只挡文件设置，不挡外部 shell 的环境变量（那些还是从 ...process.env 进来），
+        // 所以「没配 baseUrl 时沿用外部环境」这条行为不变。
+        //
+        // 顺带的好处是审查器不再继承用户的 CLAUDE.md、hooks 和权限设置。
+        // 一个看证据的审查器带着别人的项目约定和钩子去工作，本身就不对。
+        settingSources: [],
+        // 不往 ~/.claude/projects/ 写会话记录。每次 LLM 调用都会落一份 jsonl，
+        // 而工作目录就是用户的项目根目录（reviewCwd = dirname(dirname(dbPath))），
+        // 于是审查器的会话混进用户自己的 session 历史，/resume 时能看到。
+        // 实测一个项目的审查工作量留下 300 个文件、144MB —— 是 reviews+audit+log
+        // 三者合计（3MB）的 48 倍。审查器的会话没人要恢复，不需要留。
+        persistSession: false,
         // 只给只读工具
         allowedTools: ["Read", "Glob", "Grep"],
         // 禁止写操作
@@ -106,6 +142,7 @@ export async function callAgent(
       requestId: rid,
       model: config.model,
       maxTurns: config.maxTurns ?? 10,
+      ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
       input: { prompt: fullPrompt, attachmentPaths, cwd },
       output: { raw: finalResult, durationMs: Date.now() - t0 },
     });
@@ -113,8 +150,6 @@ export async function callAgent(
 
   return finalResult;
 }
-
-const FALLBACK_MODEL = "claude-opus-4-7";
 
 /**
  * 从文本中提取 markdown 代码块内容。
@@ -166,7 +201,15 @@ export function parseLLMResponse(
 }
 
 /**
- * 调用 Agent 并解析结果。解析失败时自动用大模型重试一次。
+ * 调用 Agent 并解析结果。解析失败时重试一次。
+ *
+ * 重试用 config.fallbackModel，没配就用同一个 config.model。
+ * 这里原来写死 `model: "claude-opus-4-7", maxTurns: 3`：一个 2026-07 填进来的
+ * Anthropic 官方模型 ID，加上一个凭空砍到 3 的轮数上限。两者都是丢用户的配置 ——
+ * 配了转发站的部署未必有这个模型名，模型不存在时 callAgent 抛错，被下面的 catch
+ * 接成一条 "Reviewer error"，于是一次本该救场的重试变成归咎于审查器的编译错误，
+ * 而那个模型名不是用户选的。轮数同理：解析失败的原因是"输出不是 JSON"，
+ * 不是"轮数太多"，没有理由借这个机会把 20 轮改成 3 轮 —— 附件都可能读不完。
  */
 const NO_FENCES_SUFFIX = "\n\nCRITICAL: Output ONLY a raw JSON object. Do NOT wrap in markdown code fences (```)." as const;
 
@@ -187,8 +230,8 @@ export async function callAndParse(
     };
   }
 
-  // 解析失败 → 用大模型重试（同一 requestId，便于关联）
-  const retryConfig: ReviewConfig = { ...config, model: FALLBACK_MODEL, maxTurns: 3 };
+  // 解析失败 → 重试一次（同一 requestId，便于关联）
+  const retryConfig: ReviewConfig = { ...config, model: config.fallbackModel ?? config.model };
   try {
     const retryRaw = await callAgent(retryConfig, prompt + NO_FENCES_SUFFIX, attachments, cwd, requestId);
     const retryParsed = parseLLMResponse(retryRaw, "");
@@ -197,6 +240,6 @@ export async function callAndParse(
       warnings: ((retryParsed.warnings as unknown[]) || []).map(toStr),
     };
   } catch (e) {
-    return { errors: [`Reviewer error: fallback model also failed: ${e}`], warnings: [] };
+    return { errors: [`Reviewer error: retry with model ${retryConfig.model} also failed: ${e}`], warnings: [] };
   }
 }

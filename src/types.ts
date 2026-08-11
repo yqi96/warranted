@@ -240,24 +240,36 @@ export type ArgumentResult = ClaimArgument | WarrantArgument | NodeArgument;
 // get_stats 返回类型
 // =============================================================================
 
+/**
+ * get_stats 的返回。
+ *
+ * 角色计数（Ground / Backing / Rebuttal 各有多少、多少已核实）一律在 ScaleBlock.roles 里，
+ * 因为角色是由关系表决定的，不是节点自带的属性。这里不再另留一份按节点类型数出来的副本：
+ * 0.5.0 之前有过一份，`source` 改成必填之后它退化成了"全部 statement 的条数"，
+ * 名字却还写着 Grounds。
+ */
 export interface Stats {
-  claims: { total: number; by_status: Record<string, number>; stale_count?: number };
-  grounds: { total: number; by_source: Record<string, number>; by_verification: Record<string, number> };
+  claims: { total: number; by_status: Record<string, number> };
   warrants: { total: number };
-  backings: { total: number };
-  qualifiers: { total: number };
-  rebuttals: { total: number; by_target_type: Record<string, number> };
-  scale?: ScaleBlock;
+  /** Rebuttal 打在 Claim 上还是打在 Warrant 上 —— 这个分布别处没有。 */
+  rebuttals: { by_target_type: Record<string, number> };
+  scale: ScaleBlock;
+}
+
+/** 一个角色（Ground / Backing / Rebuttal）的条数与核实情况。三个角色形状一致，判据也一致。 */
+export interface RoleCount {
+  total: number;
+  verified: number;
+  pending: number;
 }
 
 export interface ScaleBlock {
   tags: { total: number; namespaces: Array<{ name: string; count: number; with_nodes: number; cardinality: string }> };
-  untagged: number;
   /** §4.2's `Statements:` line — counts statements, not tags. */
   statements: { total: number; tagged: number; untagged: number };
   namespace_gaps: Array<{ from: string; to: string; count: number }>;
   gaps_omitted: number;
-  roles: { grounds: { total: number; verified: number; pending: number }; backings: { total: number; pending: number }; rebuttals: { total: number; pending: number } };
+  roles: { grounds: RoleCount; backings: RoleCount; rebuttals: RoleCount };
   claims_detail: { never_compiled: number; stale: { count: number; ids: number[] }; passed_awaiting: number };
   attachments: { total: number; files: Array<{ path: string; missing: boolean }> };
 }

@@ -80,7 +80,7 @@ export const TOOLS = {
     description:
       "Get global argumentation statistics, including tag namespace aggregates, " +
       "namespace gap matrix (unclassified backlog), role counts, and attachment file listing. " +
-      "The scale block helps answer 'where did I get to?' after interruption.",
+      "Helps answer 'where did I get to?' after interruption.",
   },
 
   // ── 变更 ────────────────────────────────────────────────────────────────────

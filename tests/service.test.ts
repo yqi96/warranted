@@ -4,7 +4,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim } from "./helpers.ts";
+import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim, makeChainReasoning } from "./helpers.ts";
 import * as service from "../src/service.ts";
 import * as repo from "../src/repo.ts";
 import { structuralPreCheck, invalidateCompiledClaims } from "../src/compile-service.ts";
@@ -772,23 +772,23 @@ describe("getStats", () => {
   test("空数据库全零", () => {
     const stats = service.getStats(db);
     expect(stats.claims.total).toBe(0);
-    expect(stats.grounds.total).toBe(0);
     expect(stats.warrants.total).toBe(0);
+    expect(stats.scale.roles.grounds.total).toBe(0);
   });
 
   test("正确统计各类型数量", () => {
     makeClaim(db);
     makeClaim(db);
-    makeGround(db);
     const claim = makeClaim(db);
-    const warrant = makeWarrant(db, claim.id);
+    const ground = makeGround(db);
+    const warrant = makeWarrant(db, claim.id, [ground.id]);
     makeBacking(db, warrant.id);
 
     const stats = service.getStats(db);
     expect(stats.claims.total).toBe(3);
-    expect(stats.grounds.total).toBe(1);
     expect(stats.warrants.total).toBe(1);
-    expect(stats.backings.total).toBe(1);
+    expect(stats.scale.roles.grounds.total).toBe(1);
+    expect(stats.scale.roles.backings.total).toBe(1);
   });
 
   test("正确统计 by_status", () => {
@@ -801,40 +801,44 @@ describe("getStats", () => {
     expect(stats.claims.by_status.supported).toBe(1);
   });
 
-  test("正确统计 grounds by_source", () => {
-    makeGround(db, { content: "G1", source: "literature" });
-    makeGround(db, { content: "G2", source: "observed" });
-    makeGround(db, { content: "G3", source: "literature" });
+  // D38：ground 的条数只能查 warrant_grounds。以前是"所有带 source 字段的 statement"，
+  // 0.5.0 把 source 改成必填之后这个条件对每条 statement 都成立，于是 Backing、
+  // Rebuttal、没挂上任何 Warrant 的游离 statement 全被算成了 ground，
+  // 而真正挂在 Warrant 上的 claim 型 ground 反倒数不进去。
+  test("ground 条数不含 Backing / Rebuttal / 游离 statement，含 claim 型 ground", () => {
+    const lower = makeClaim(db, "下层结论", "supported");
+    const upper = makeClaim(db, "上层结论");
+    const lowerWarrant = makeWarrant(db, lower.id, [makeGround(db, { content: "G1" }).id], "下层推理");
+    makeBacking(db, lowerWarrant.id, "依据");
+    makeRebuttal(db, upper.id, "claim", "反驳");
+    makeGround(db, { content: "没挂上任何 Warrant 的游离证据" });
+    // 上层压在下层结论上 —— 这条 ground 是 claim 型
+    makeChainReasoning(db, upper.id, lower.id);
 
-    const stats = service.getStats(db);
-    expect(stats.grounds.by_source.literature).toBe(2);
-    expect(stats.grounds.by_source.observed).toBe(1);
+    const roles = service.getStats(db).scale.roles;
+    expect(roles.grounds.total).toBe(2); // G1 + 下层 Claim
+    expect(roles.grounds.verified).toBe(2); // G1 已核实，下层 Claim supported
+    expect(roles.backings.total).toBe(1);
+    expect(roles.rebuttals.total).toBe(1);
   });
 
-  test("正确统计 grounds by_verification", () => {
-    makeGround(db, { content: "G1", verification: "verified" });
-    makeGround(db, { content: "G2", verification: "pending" });
-
-    const stats = service.getStats(db);
-    expect(stats.grounds.by_verification.verified).toBe(1);
-    expect(stats.grounds.by_verification.pending).toBe(1);
-  });
-
-  test("无 stale Claim 时 stale_count 为 undefined", () => {
+  test("无 stale Claim 时 stale 计数为 0", () => {
     makeClaim(db, "C1");
     makeClaim(db, "C2");
-    const stats = service.getStats(db);
-    expect(stats.claims.stale_count).toBeUndefined();
+    const stale = service.getStats(db).scale.claims_detail.stale;
+    expect(stale.count).toBe(0);
+    expect(stale.ids).toEqual([]);
   });
 
-  test("有 stale Claim 时 stale_count 正确", () => {
+  test("有 stale Claim 时报出条数和具体 id", () => {
     const c1 = makeClaim(db, "C1");
     const c2 = makeClaim(db, "C2");
     makeClaim(db, "C3");
     repo.saveCompileState(db, c1.id, "stale", "");
     repo.saveCompileState(db, c2.id, "stale", "");
-    const stats = service.getStats(db);
-    expect(stats.claims.stale_count).toBe(2);
+    const stale = service.getStats(db).scale.claims_detail.stale;
+    expect(stale.count).toBe(2);
+    expect(stale.ids).toEqual([c1.id, c2.id]);
   });
 
   // 这条测试守的是"一个主张被数两遍"这个 bug。以前失效的做法是把 compile_state
@@ -849,9 +853,7 @@ describe("getStats", () => {
     repo.saveCompileState(db, claim.id, "passed", "ok", computeArgumentHash(db, claim.id));
     invalidateCompiledClaims(db, ground.id);
 
-    const scale = service.getStats(db).scale;
-    expect(scale).toBeDefined();
-    const d = scale!.claims_detail;
+    const d = service.getStats(db).scale.claims_detail;
     expect(d.stale.ids).toContain(claim.id);
     expect(d.never_compiled).toBe(1); // 只有那个真的从未检查过的
     expect(d.never_compiled + d.stale.count).toBe(2); // 两个主张，两次计数

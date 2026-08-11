@@ -29,6 +29,7 @@ import type {
   ArgumentRebuttal,
   Stats,
   ScaleBlock,
+  RoleCount,
   ToulminNode,
   TagRow,
   NamespaceCardinality,
@@ -758,85 +759,48 @@ export function searchNodesService(
 export function getStats(db: Database): Stats {
   const counts = repo.countNodesByType(db);
 
-  // Claims by status and stale count
-  const claimRows = repo.listNodesByType(db, "claim");
-  const compileVerdicts = repo.getAllCompileVerdicts(db);
+  // Claims by status
   const byStatus: Record<string, number> = {};
-  let staleCount = 0;
-  const staleIds: number[] = [];
-  for (const row of claimRows) {
-    const data = JSON.parse(row.data);
-    const status = data.status || "proposed";
+  for (const row of repo.listNodesByType(db, "claim")) {
+    const status = JSON.parse(row.data).status || "proposed";
     byStatus[status] = (byStatus[status] || 0) + 1;
-    if (compileVerdicts.get(row.id) === "stale") {
-      staleCount++;
-      staleIds.push(row.id);
-    }
   }
 
-  // Never compiled count: claims with no compile_state record. 与 stale / passed / failed
-  // 互斥 —— 结构变动只把 verdict 降级为 stale，不再删行，所以改过的主张不会被同时算进这里。
-  const neverCompiled = claimRows.filter(r => !compileVerdicts.has(r.id)).length;
-
-  // Passed-awaiting-verdict: compile 通过但 agent 还没下判断的主张
-  const passedAwaiting = claimRows.filter(r => {
-    const data = JSON.parse(r.data);
-    return compileVerdicts.get(r.id) === "passed" && (data.status || "proposed") === "proposed";
-  }).length;
-
-  // Grounds: all statement nodes that are used as grounds (in warrant_grounds) or have source field
-  const groundIds = new Set<number>(
-    (db.prepare("SELECT ground_id FROM warrant_grounds").all() as Array<{ ground_id: number }>)
-      .map(r => r.ground_id)
-  );
-  const statementRows = repo.listNodesByType(db, "statement");
-  const groundStatementRows = statementRows.filter(r => {
-    const d = JSON.parse(r.data);
-    return d.source !== undefined || groundIds.has(r.id);
-  });
-
-  const bySource: Record<string, number> = {};
-  const byVerification: Record<string, number> = {};
-  for (const row of groundStatementRows) {
-    const data = JSON.parse(row.data);
-    const source = data.source || "unknown";
-    const verification = data.verification || "unknown";
-    bySource[source] = (bySource[source] || 0) + 1;
-    byVerification[verification] = (byVerification[verification] || 0) + 1;
-  }
-
-  // Rebuttals by target_type (via rebuttal_targets)
-  const rebuttalRows = (db.prepare(
-    "SELECT rt.target_type FROM rebuttal_targets rt"
-  ).all() as Array<{ target_type: string }>);
-
+  // Rebuttals by target_type（via rebuttal_targets）。角色的条数交给 scale 块的 roles，
+  // 这里只保留"打在 Claim 上还是 Warrant 上"这个别处没有的分布。
   const byTargetType: Record<string, number> = {};
-  for (const row of rebuttalRows) {
+  for (const row of db.prepare("SELECT rt.target_type FROM rebuttal_targets rt").all() as Array<{ target_type: string }>) {
     const targetType = row.target_type || "unknown";
     byTargetType[targetType] = (byTargetType[targetType] || 0) + 1;
   }
 
-  // Backings: statement nodes in warrant_backings
-  const backingStatementCount = (db.prepare("SELECT COUNT(*) as cnt FROM warrant_backings").get() as { cnt: number }).cnt;
-  // Rebuttals: statement nodes in rebuttal_targets
-  const rebuttalStatementCount = (db.prepare("SELECT COUNT(*) as cnt FROM rebuttal_targets").get() as { cnt: number }).cnt;
-
-  // ── Scale block ──
-  const scale = buildScaleBlock(db);
-
   return {
-    claims: { total: counts.claim, by_status: byStatus, stale_count: staleCount > 0 ? staleCount : undefined },
-    grounds: { total: groundStatementRows.length, by_source: bySource, by_verification: byVerification },
+    claims: { total: counts.claim, by_status: byStatus },
     warrants: { total: counts.warrant },
-    backings: { total: backingStatementCount },
-    qualifiers: { total: 0 },
-    rebuttals: { total: rebuttalStatementCount, by_target_type: byTargetType },
-    scale,
+    rebuttals: { by_target_type: byTargetType },
+    scale: buildScaleBlock(db),
   };
 }
 
 /** Build the scale block for get_stats output */
 const GAP_MATRIX_MAX_LINES = 8;
+
+/**
+ * 一个角色有多少条、多少已核实 —— 三个角色共用这一个口径。
+ *
+ * 从关系表出发取出节点行，再交给 isClaimOrStatementVerified 判核实，不在 SQL 里
+ * 另写一份判据。原因：Claim 也可以扮演角色，而写在 SQL 里的
+ * `json_extract(data, '$.verification') != 'verified'` 对 Claim 行永远成立，
+ * 于是每个 claim 型 Backing / Rebuttal 都会被永久算作未核实，而且不报错。
+ * table / column 是调用处写死的字面量，不接受外部输入。
+ */
+function countRole(db: Database, table: string, column: string): RoleCount {
+  const rows = db.prepare(
+    `SELECT DISTINCT n.* FROM ${table} r JOIN nodes n ON n.id = r.${column}`
+  ).all() as NodeRow[];
+  const verified = rows.filter(isClaimOrStatementVerified).length;
+  return { total: rows.length, verified, pending: rows.length - verified };
+}
 
 function buildScaleBlock(db: Database): ScaleBlock {
   // Tag namespace aggregates
@@ -858,11 +822,6 @@ function buildScaleBlock(db: Database): ScaleBlock {
     name,
     ...info,
   }));
-
-  // Untagged count
-  const totalNodes = (db.prepare("SELECT COUNT(*) AS cnt FROM nodes").get() as { cnt: number }).cnt;
-  const taggedNodes = (db.prepare("SELECT COUNT(DISTINCT node_id) AS cnt FROM node_tags").get() as { cnt: number }).cnt;
-  const untagged = totalNodes - taggedNodes;
 
   // Statement tagging coverage (the §4.2 `Statements:` line counts statements, not tags)
   const statementTotal = (db.prepare("SELECT COUNT(*) AS cnt FROM nodes WHERE type = 'statement'").get() as { cnt: number }).cnt;
@@ -897,25 +856,9 @@ function buildScaleBlock(db: Database): ScaleBlock {
   const shownGaps = namespaceGaps.slice(0, GAP_MATRIX_MAX_LINES);
 
   // Role counts
-  const groundRoleTotal = (db.prepare("SELECT COUNT(DISTINCT ground_id) AS cnt FROM warrant_grounds").get() as { cnt: number }).cnt;
-  const groundRoleVerified = (db.prepare(
-    "SELECT COUNT(DISTINCT wg.ground_id) AS cnt FROM warrant_grounds wg " +
-    "JOIN nodes n ON n.id = wg.ground_id " +
-    "WHERE (n.type = 'statement' AND json_extract(n.data, '$.verification') = 'verified') " +
-    "OR (n.type = 'claim' AND json_extract(n.data, '$.status') IN ('supported', 'disputed'))"
-  ).get() as { cnt: number }).cnt;
-  const backingRoleTotal = (db.prepare("SELECT COUNT(DISTINCT statement_id) AS cnt FROM warrant_backings").get() as { cnt: number }).cnt;
-  const backingRolePending = (db.prepare(
-    "SELECT COUNT(DISTINCT wb.statement_id) AS cnt FROM warrant_backings wb " +
-    "JOIN nodes n ON n.id = wb.statement_id " +
-    "WHERE json_extract(n.data, '$.verification') != 'verified' OR json_extract(n.data, '$.verification') IS NULL"
-  ).get() as { cnt: number }).cnt;
-  const rebuttalRoleTotal = (db.prepare("SELECT COUNT(DISTINCT statement_id) AS cnt FROM rebuttal_targets").get() as { cnt: number }).cnt;
-  const rebuttalRolePending = (db.prepare(
-    "SELECT COUNT(DISTINCT rt.statement_id) AS cnt FROM rebuttal_targets rt " +
-    "JOIN nodes n ON n.id = rt.statement_id " +
-    "WHERE json_extract(n.data, '$.verification') != 'verified' OR json_extract(n.data, '$.verification') IS NULL"
-  ).get() as { cnt: number }).cnt;
+  const groundRole = countRole(db, "warrant_grounds", "ground_id");
+  const backingRole = countRole(db, "warrant_backings", "statement_id");
+  const rebuttalRole = countRole(db, "rebuttal_targets", "statement_id");
 
   // Claims detail
   const claimRows = repo.listNodesByType(db, "claim");
@@ -957,14 +900,13 @@ function buildScaleBlock(db: Database): ScaleBlock {
 
   return {
     tags: { total: allTags.length, namespaces },
-    untagged,
     statements: { total: statementTotal, tagged: statementTagged, untagged: statementTotal - statementTagged },
     namespace_gaps: shownGaps,
     gaps_omitted: gapsOmitted,
     roles: {
-      grounds: { total: groundRoleTotal, verified: groundRoleVerified, pending: groundRoleTotal - groundRoleVerified },
-      backings: { total: backingRoleTotal, pending: backingRolePending },
-      rebuttals: { total: rebuttalRoleTotal, pending: rebuttalRolePending },
+      grounds: groundRole,
+      backings: backingRole,
+      rebuttals: rebuttalRole,
     },
     claims_detail: {
       never_compiled: neverCompiled,

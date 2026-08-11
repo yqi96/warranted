@@ -241,74 +241,56 @@ function formatArgument(result: ArgumentResult): string {
 
 function formatStats(stats: Stats): string {
   const lines: string[] = [];
+  const s = stats.scale;
   lines.push("## Argument Statistics", "");
-  const stalePart = stats.claims.stale_count ? ` (${stats.claims.stale_count} stale)` : "";
-  lines.push(`Claims: ${stats.claims.total}${stalePart}`);
-  for (const [status, count] of Object.entries(stats.claims.by_status)) {
-    lines.push(`  - ${status}: ${count}`);
+
+  lines.push(`Tags: ${s.tags.total} in ${s.tags.namespaces.length} namespaces`);
+  for (const ns of s.tags.namespaces) {
+    const empty = ns.count - ns.with_nodes;
+    const emptyStr = empty > 0 ? ` (${ns.with_nodes} with nodes, ${empty} empty)` : "";
+    lines.push(`  ${ns.name}:${" ".repeat(Math.max(1, 6 - ns.name.length))}${ns.count}${emptyStr}   [${ns.cardinality}]`);
   }
-  lines.push("");
-  lines.push(`Grounds: ${stats.grounds.total}`);
-  for (const [source, count] of Object.entries(stats.grounds.by_source)) {
-    lines.push(`  - ${source}: ${count}`);
-  }
-  for (const [v, count] of Object.entries(stats.grounds.by_verification)) {
-    lines.push(`  - ${v}: ${count}`);
-  }
-  lines.push("");
+  lines.push(`Statements: ${s.statements.total} (${s.statements.tagged} tagged, ${s.statements.untagged} untagged)`);
   lines.push(`Warrants: ${stats.warrants.total}`);
-  lines.push(`Backings: ${stats.backings.total}`);
-  lines.push(`Rebuttals: ${stats.rebuttals.total}`);
-  for (const [t, count] of Object.entries(stats.rebuttals.by_target_type)) {
-    lines.push(`  - ${t}: ${count}`);
+
+  // Namespace gaps
+  if (s.namespace_gaps.length > 0) {
+    const omitted = s.gaps_omitted > 0 ? ` — ${s.gaps_omitted} more pair(s) omitted` : "";
+    lines.push(`Namespace gaps (nodes carrying A but not B):${omitted}`);
+    for (const gap of s.namespace_gaps) {
+      lines.push(`  ${gap.from}: -> ${gap.to}:   ${gap.count}`);
+    }
   }
 
-  // Scale block
-  if (stats.scale) {
-    const s = stats.scale;
-    lines.push("", "## Scale", "");
-    lines.push(`Tags: ${s.tags.total} in ${s.tags.namespaces.length} namespaces`);
-    for (const ns of s.tags.namespaces) {
-      const empty = ns.count - ns.with_nodes;
-      const emptyStr = empty > 0 ? ` (${ns.with_nodes} with nodes, ${empty} empty)` : "";
-      lines.push(`  ${ns.name}:${" ".repeat(Math.max(1, 6 - ns.name.length))}${ns.count}${emptyStr}   [${ns.cardinality}]`);
-    }
-    lines.push(`Statements: ${s.statements.total} (${s.statements.tagged} tagged, ${s.statements.untagged} untagged)`);
+  // Roles. 条数一律以关系表为准 —— 一个节点算不算 Ground 取决于它有没有挂在
+  // Warrant 上，不取决于它带了什么字段。
+  lines.push(`Roles: ${s.roles.grounds.total} grounds (${s.roles.grounds.verified} verified / ${s.roles.grounds.pending} pending), ${s.roles.backings.total} backings (${s.roles.backings.verified} / ${s.roles.backings.pending}), ${s.roles.rebuttals.total} rebuttals (${s.roles.rebuttals.verified} / ${s.roles.rebuttals.pending})`);
+  const targetParts = Object.entries(stats.rebuttals.by_target_type).map(([t, n]) => `${n} on ${t}`);
+  if (targetParts.length > 0) {
+    lines.push(`  rebuttal targets: ${targetParts.join(", ")}`);
+  }
 
-    // Namespace gaps
-    if (s.namespace_gaps.length > 0) {
-      const omitted = s.gaps_omitted > 0 ? ` — ${s.gaps_omitted} more pair(s) omitted` : "";
-      lines.push(`Namespace gaps (nodes carrying A but not B):${omitted}`);
-      for (const gap of s.namespace_gaps) {
-        lines.push(`  ${gap.from}: -> ${gap.to}:   ${gap.count}`);
-      }
-    }
+  // Claims detail. The three sub-counts partition `proposed`, so the headline
+  // total is the real claim count, not their sum (§4.1).
+  const statusParts = Object.entries(stats.claims.by_status).map(([st, n]) => `${n} ${st}`);
+  lines.push(`Claims: ${stats.claims.total}${statusParts.length > 0 ? ` — ${statusParts.join(", ")}` : ""}`);
+  const staleStr = s.claims_detail.stale.count > 0
+    ? `${s.claims_detail.stale.count} stale [#${s.claims_detail.stale.ids.join(" #")}]`
+    : "";
+  const detailParts = [
+    `${s.claims_detail.never_compiled} never compiled`,
+    staleStr,
+    `${s.claims_detail.passed_awaiting} passed-awaiting-verdict`,
+  ].filter(Boolean);
+  lines.push(`  ${detailParts.join(" | ")}`);
 
-    // Roles
-    lines.push(`Roles: ${s.roles.grounds.total} grounds (${s.roles.grounds.verified} verified / ${s.roles.grounds.pending} pending), ${s.roles.backings.total} backings (${s.roles.backings.total - s.roles.backings.pending} / ${s.roles.backings.pending}), ${s.roles.rebuttals.total} rebuttals (${s.roles.rebuttals.total - s.roles.rebuttals.pending} / ${s.roles.rebuttals.pending})`);
-
-    // Claims detail. The three sub-counts partition `proposed`, so the headline
-    // total is the real claim count, not their sum (§4.1).
-    const statusParts = Object.entries(stats.claims.by_status).map(([st, n]) => `${n} ${st}`);
-    lines.push(`Claims: ${stats.claims.total}${statusParts.length > 0 ? ` — ${statusParts.join(", ")}` : ""}`);
-    const staleStr = s.claims_detail.stale.count > 0
-      ? `${s.claims_detail.stale.count} stale [#${s.claims_detail.stale.ids.join(" #")}]`
-      : "";
-    const detailParts = [
-      `${s.claims_detail.never_compiled} never compiled`,
-      staleStr,
-      `${s.claims_detail.passed_awaiting} passed-awaiting-verdict`,
-    ].filter(Boolean);
-    lines.push(`  ${detailParts.join(" | ")}`);
-
-    // Attachments
-    if (s.attachments.total > 0) {
-      if (s.attachments.files.length <= 8) {
-        const fileStr = s.attachments.files.map(f => f.missing ? `${f.path} (missing)` : f.path).join(", ");
-        lines.push(`Attachments: ${s.attachments.total} — ${fileStr}`);
-      } else {
-        lines.push(`Attachments: ${s.attachments.total} distinct files referenced`);
-      }
+  // Attachments
+  if (s.attachments.total > 0) {
+    if (s.attachments.files.length <= 8) {
+      const fileStr = s.attachments.files.map(f => f.missing ? `${f.path} (missing)` : f.path).join(", ");
+      lines.push(`Attachments: ${s.attachments.total} — ${fileStr}`);
+    } else {
+      lines.push(`Attachments: ${s.attachments.total} distinct files referenced`);
     }
   }
 

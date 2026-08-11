@@ -177,12 +177,23 @@ describe("get_argument 工具", () => {
 // =============================================================================
 
 describe("get_stats 工具", () => {
+  // 这条测试以前建了一条没挂在任何 Warrant 上的 statement，然后断言输出里有
+  // "Grounds: 1" —— 它守的正是那个错数。现在挂上去再数。
   test("返回统计信息", async () => {
-    makeClaim(db, "C1");
-    makeGround(db, { content: "G1" });
+    const claim = makeClaim(db, "C1");
+    const ground = makeGround(db, { content: "G1" });
+    makeWarrant(db, claim.id, [ground.id]);
     const result = await tools.get_stats.handler({});
-    expect(result.content[0].text).toContain("Claims: 1");
-    expect(result.content[0].text).toContain("Grounds: 1");
+    const text = result.content[0].text;
+    expect(text).toContain("Claims: 1");
+    expect(text).toContain("1 grounds (1 verified / 0 pending)");
+  });
+
+  test("游离的 statement 不算 ground", async () => {
+    makeGround(db, { content: "没挂上任何 Warrant" });
+    const text = (await tools.get_stats.handler({})).content[0].text;
+    expect(text).toContain("Statements: 1");
+    expect(text).toContain("0 grounds (0 verified / 0 pending)");
   });
 });
 
@@ -335,23 +346,23 @@ describe("get_argument 工具 — stale 标识", () => {
 });
 
 // =============================================================================
-// get_stats 工具 — stale_count
+// get_stats 工具 — stale 的渲染
 // =============================================================================
 
-describe("get_stats 工具 — stale_count", () => {
-  test("无 stale Claim 时统计不含 stale 后缀", async () => {
+describe("get_stats 工具 — stale 的渲染", () => {
+  test("无 stale Claim 时输出不提 stale", async () => {
     makeClaim(db, "C1");
     const result = await tools.get_stats.handler({});
     expect(result.content[0].text).toContain("Claims: 1");
     expect(result.content[0].text).not.toContain("stale");
   });
 
-  test("有 stale Claim 时统计含 stale 后缀", async () => {
+  test("有 stale Claim 时报出条数和具体 id", async () => {
     const claim = makeClaim(db, "C1");
     repo.saveCompileState(db, claim.id, "stale", "");
 
     const result = await tools.get_stats.handler({});
-    expect(result.content[0].text).toContain("Claims: 1 (1 stale)");
+    expect(result.content[0].text).toContain(`1 stale [#${claim.id}]`);
   });
 });
 

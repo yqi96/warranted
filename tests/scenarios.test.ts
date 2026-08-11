@@ -100,13 +100,15 @@ describe("场景 1：论文复现", () => {
     expect(arg.warrants[0].grounds.length).toBe(2);
     expect(arg.warrants[0].backings.length).toBe(1);
 
-    // 验证统计
+    // 验证统计。ground 的条数只数挂在 Warrant 上的那些，所以 backing 和 rebuttal
+    // 不在其中 —— 这里可以写死 2，不必再写 toBeGreaterThanOrEqual。
     const stats = service.getStats(db);
     expect(stats.claims.total).toBe(1);
     expect(stats.claims.by_status.disputed).toBe(1);
-    // grounds.total includes g1, g2, backing statement, and rebuttal statement (all have source field)
-    expect(stats.grounds.total).toBeGreaterThanOrEqual(2);
-    expect(stats.grounds.by_verification.verified).toBeGreaterThanOrEqual(2);
+    expect(stats.scale.roles.grounds.total).toBe(2);
+    expect(stats.scale.roles.grounds.verified).toBe(2);
+    expect(stats.scale.roles.backings.total).toBe(1);
+    expect(stats.scale.roles.rebuttals.total).toBe(1);
   });
 });
 
@@ -175,7 +177,9 @@ describe("场景 2：假设验证", () => {
 
     const stats = service.getStats(db);
     expect(stats.claims.by_status.supported).toBe(1);
-    expect(stats.grounds.by_source.observed).toBe(3);
+    expect(stats.scale.roles.grounds.total).toBe(3);
+    // 三条证据都是自己跑出来的，不是文献里读来的
+    expect(service.listStatements(db, "observed").rows.length).toBe(3);
   });
 });
 
@@ -255,10 +259,9 @@ describe("场景 3：文献综述", () => {
     expect(results.rows.length).toBe(1);
 
     const stats = service.getStats(db);
-    // rebuttal statement also has source=literature, so grounds.total includes it
-    expect(stats.grounds.total).toBeGreaterThanOrEqual(3);
-    expect(stats.grounds.by_source.literature).toBeGreaterThanOrEqual(3);
-    expect(stats.rebuttals.total).toBe(1);
+    expect(stats.scale.roles.grounds.total).toBe(3);
+    expect(stats.scale.roles.rebuttals.total).toBe(1);
+    expect(stats.rebuttals.by_target_type.warrant).toBe(1);
   });
 });
 
@@ -386,7 +389,7 @@ describe("场景 5：共享证据", () => {
 
     // 统计验证
     const stats = service.getStats(db);
-    expect(stats.grounds.total).toBe(0);
+    expect(stats.scale.roles.grounds.total).toBe(0);
     expect(stats.warrants.total).toBe(2);
   });
 });
@@ -431,13 +434,15 @@ describe("场景 6：复杂级联删除", () => {
     const g2Arg = service.getArgument(db, g2.id);
     expect(g2Arg).toBeTruthy();
 
-    // 统计
+    // 统计。两条证据节点还在，但挂着它们的 Warrant 已经删了，所以谁也不再扮演
+    // ground 角色 —— "节点还在"和"还在当证据用"是两件事。
     const stats = service.getStats(db);
     expect(stats.claims.total).toBe(0);
     expect(stats.warrants.total).toBe(0);
-    expect(stats.backings.total).toBe(0);
-    expect(stats.rebuttals.total).toBe(0);
-    expect(stats.grounds.total).toBe(2);
+    expect(stats.scale.statements.total).toBe(2);
+    expect(stats.scale.roles.grounds.total).toBe(0);
+    expect(stats.scale.roles.backings.total).toBe(0);
+    expect(stats.scale.roles.rebuttals.total).toBe(0);
   });
 });
 

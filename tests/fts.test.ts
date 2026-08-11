@@ -14,7 +14,7 @@
  *    没有"。可探测性缺失的时候，唯一诚实的写法是让它红着。这条与
  *    `claim-ground.test.ts` 里的存量 bug 同类：锁的是 HEAD 上的活缺陷。
  *
- * 3. **规模块（11–12）**：探针跑一次 `get_stats` 看输出里有没有 `## Scale`。
+ * 3. **规模块（11–12）**：探针跑一次 `svc.getStats`，看返回里有没有 `scale`。
  *
  * ── 为什么 11、12 单独立案 ───────────────────────────────────────────
  * 缺口矩阵与 Attachments 位是规模块里**唯二会被"优化输出体积"的人改坏而
@@ -878,8 +878,7 @@ describe.skipIf(!SCALE_LANDED)("§17：Statements / Claims 汇总行的量纲", 
     expect(subtotal).toBe(1); // 前提：三者之和确实小于总数（只剩"待办丙"）
 
     const text = await statsText();
-    const scaleSection = text.slice(text.indexOf("## Scale"));
-    const line = scaleSection.split("\n").find(l => l.startsWith("Claims:")) ?? "";
+    const line = text.split("\n").find(l => l.startsWith("Claims:")) ?? "";
     expect(line).toContain("Claims: 3");
     expect(line).toContain("2 supported");
   });

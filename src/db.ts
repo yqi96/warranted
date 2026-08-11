@@ -48,7 +48,9 @@ export function initializeSchema(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS nodes (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      type       TEXT    NOT NULL CHECK(type IN ('claim','ground','warrant','backing','statement','rebuttal')),
+      -- 与 sql/schema.sql 一致的收紧版。旧库里的宽 CHECK 由
+      -- tightenCheckConstraint 迁移；这里写宽版会让每个新库都白重建一次表。
+      type       TEXT    NOT NULL CHECK(type IN ('claim','statement','warrant')),
       content    TEXT    NOT NULL,
       data       TEXT    NOT NULL DEFAULT '{}',
       created_at TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -373,8 +375,36 @@ function needsCheckTightening(db: Database): boolean {
 export function tightenCheckConstraint(db: Database): void {
   if (!needsCheckTightening(db)) return;
 
-  // DDL 必须在事务外执行（SQLite 限制）
+  // PRAGMA foreign_keys 必须在事务**外**发出 —— 在事务里发出会被静默忽略。
+  // 而这一句是保命的：warrant_grounds 等子表以 ON DELETE CASCADE 引用
+  // nodes(id)，外键开着时 DROP TABLE nodes 会把子表的行一起删掉（实测：
+  // pragma 放进事务后 warrant_grounds 从 1 行变 0 行）。
+  // DDL 本身放进事务完全合法，SQLite 没有"DDL 不能进事务"这条限制。
   db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      rebuildNodesTableTight(db);
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+/**
+ * 把 nodes 表重建成收紧 CHECK 的版本，并恢复索引与 FTS 触发器。
+ *
+ * 索引和触发器的重建也必须留在同一个事务里：DROP TABLE nodes 会带走
+ * 三个 FTS 触发器，若只有重建提交、触发器没建回来，库是能打开的，
+ * 但此后所有写入都不再进 FTS —— 检索结果安静地不全，不报任何错。
+ *
+ * 不自己开事务、不动 PRAGMA：两者都由唯一的调用者 tightenCheckConstraint 负责。
+ */
+function rebuildNodesTableTight(db: Database): void {
   db.exec(`CREATE TABLE nodes_new (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     type       TEXT    NOT NULL CHECK(type IN ('claim','statement','warrant')),
@@ -386,7 +416,6 @@ export function tightenCheckConstraint(db: Database): void {
   db.exec("INSERT INTO nodes_new SELECT id, type, content, data, created_at, updated_at FROM nodes WHERE type IN ('claim','statement','warrant')");
   db.exec("DROP TABLE nodes");
   db.exec("ALTER TABLE nodes_new RENAME TO nodes");
-  db.exec("PRAGMA foreign_keys = ON");
   // Recreate indexes
   db.exec("CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_nodes_warrant_claim ON nodes(CAST(json_extract(data,'$.claim_id') AS INTEGER)) WHERE type='warrant'");

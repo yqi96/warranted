@@ -229,11 +229,44 @@ describe.skipIf(!FTS_LANDED)("§5.5：旧库 rebuild 迁移", () => {
   });
 
   test("tightenCheckConstraint 重建 nodes 之后，三个触发器仍在且索引同步", async () => {
-    const before = makeGround(db, { content: "重建之前就存在的证据" });
-    const dbMod: any = await import("../src/db.ts");
-    dbMod.tightenCheckConstraint(db);
+    // 必须手写一个宽 CHECK 的旧库：新建的库约束一开始就是紧的
+    // （src/db.ts 的内联 schema），tightenCheckConstraint 会在第一行直接返回，
+    // 于是下面每条断言都在一个从未被重建过的表上成立 —— 全绿且什么都没测。
+    const legacy = new Database(":memory:");
+    legacy.exec(`
+      CREATE TABLE nodes (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        type       TEXT    NOT NULL CHECK(type IN ('claim','ground','warrant','backing','statement','rebuttal')),
+        content    TEXT    NOT NULL,
+        data       TEXT    NOT NULL DEFAULT '{}',
+        created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    const beforeId = legacy
+      .prepare("INSERT INTO nodes (type, content) VALUES ('statement', ?) RETURNING id")
+      .get("重建之前就存在的证据") as { id: number };
 
-    const triggers = db
+    const dbMod: any = await import("../src/db.ts");
+    dbMod.initializeSchema(legacy); // 内含 tightenCheckConstraint
+
+    const match = (q: string) =>
+      (
+        legacy
+          .prepare("SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?")
+          .all(`"${q}"`) as Array<{ rowid: number }>
+      ).map((r) => r.rowid);
+
+    // 先钉住"重建真的跑过"：SQLite 原样存建表语句，RENAME 只换名字 token
+    // 且换成带引号的形式，所以 CREATE TABLE "nodes" 只可能来自重命名。
+    const ddl = (
+      legacy.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='nodes'").get() as {
+        sql: string;
+      }
+    ).sql;
+    expect(ddl).toContain('CREATE TABLE "nodes"');
+
+    const triggers = legacy
       .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'nodes_fts%'")
       .all() as Array<{ name: string }>;
     expect(triggers.map((t) => t.name).sort()).toEqual([
@@ -242,11 +275,17 @@ describe.skipIf(!FTS_LANDED)("§5.5：旧库 rebuild 迁移", () => {
       "nodes_fts_au",
     ]);
 
-    // 表重建后旧行仍可检索（rebuild 跑过）
-    expect(ftsMatch("重建之前")).toContain(before.id);
-    // 新触发器仍然有效
-    const after = makeGround(db, { content: "重建之后新增的证据" });
-    expect(ftsMatch("重建之后")).toContain(after.id);
+    // 旧行仍可检索：DROP TABLE 之后重跑过 FTS rebuild
+    expect(match("重建之前")).toContain(beforeId.id);
+
+    // 重建之后新写入的行也进索引 —— 触发器若没被建回来，库照样能开、
+    // 写入照样成功，只有检索安静地漏掉这一行。这条是本测试的要害。
+    const afterId = legacy
+      .prepare("INSERT INTO nodes (type, content) VALUES ('statement', ?) RETURNING id")
+      .get("重建之后新增的证据") as { id: number };
+    expect(match("重建之后")).toContain(afterId.id);
+
+    legacy.close();
   });
 });
 

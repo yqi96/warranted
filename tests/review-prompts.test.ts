@@ -12,7 +12,6 @@ describe("buildStatementEvidencePrompt", () => {
         id: 5,
         content: "温度上升2度",
         source: "observed",
-        verification: "verified",
         attachments: ["/data/temp.csv"],
       },
     });
@@ -30,7 +29,6 @@ describe("buildStatementEvidencePrompt", () => {
         id: 5,
         content: "G",
         source: "observed",
-        verification: "verified",
         attachments: [],
       },
     });
@@ -45,11 +43,25 @@ describe("buildStatementEvidencePrompt", () => {
         id: 5,
         content: "G",
         source: "observed",
-        verification: "verified",
         attachments: ["/data.csv"],
       },
     });
 
     expect(prompt).toContain("MUST use your Read tool");
+  });
+
+  test("不把 verification 递给审查者 —— 那是它要判的结论", () => {
+    const prompt = buildStatementEvidencePrompt({
+      statement: {
+        id: 5,
+        content: "G",
+        source: "observed",
+        attachments: ["/data.csv"],
+      },
+    });
+
+    // "The verification will be REJECTED" 是输出契约，合法；
+    // 被审 statement 的当前状态不能出现在输入里。
+    expect(prompt).not.toContain("Verification:");
   });
 });

@@ -54,7 +54,6 @@ export async function reviewStatementEvidencePreCreate(
       id: 0, // 尚未创建
       content: params.content,
       source: params.source,
-      verification: "verified",
       attachments: params.attachments,
     },
   });
@@ -105,7 +104,6 @@ export async function executeStatementReview(
       id: statementId,
       content: statementRow.content,
       source: statementData.source || "unknown",
-      verification: statementData.verification || "pending",
       attachments: statementData.attachments || [],
     },
   });

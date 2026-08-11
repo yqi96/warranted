@@ -76,7 +76,6 @@ describe.skipIf(!dbExists)("真实数据审查测试", () => {
           id: gRow.id,
           content: gRow.content,
           source: groundData.source,
-          verification: groundData.verification,
           attachments: groundData.attachments || [],
         },
       });

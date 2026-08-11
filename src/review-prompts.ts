@@ -10,12 +10,15 @@
 // Statement 证据审查
 // =============================================================================
 
+/**
+ * 审查者的输入里没有 verification：它要判的就是"该不该 verified"，
+ * 把当前值递给它就是把答案递给它（pending 与 verified 各锚定一个方向）。
+ */
 export interface StatementEvidenceReviewData {
   statement: {
     id: number;
     content: string;
     source: string;
-    verification: string;
     attachments: string[];
   };
 }
@@ -35,7 +38,6 @@ IMPORTANT: Before answering, you MUST use your Read tool to read every attachmen
 
 **Statement** (#${statement.id}): ${statement.content}
 - Source: ${statement.source}
-- Verification: ${statement.verification}
 - Attachments:
 ${attachmentsText}
 

@@ -781,8 +781,14 @@ export async function compileClaims(
     // 意味着上次 compile 通过。hash 未变 → 无需重新审查。
     if (prevState && prevState.argumentHash) {
       if (prevState.argumentHash === newArgHash) {
-        // §3: hash 未变不代表结构未变（verification 不入 hash），
-        // 运行结构检查确保 Ground 退回 pending 等场景不被短路掩盖
+        // hash 未变不代表检查一定还成立：verification 和 status 都不进 hash，
+        // 所以这里仍要跑一遍不需要模型的结构检查。
+        //
+        // 但「Ground 退回 pending」这个场景不在这里 —— 撤回核实时 update 路径
+        // (revertUnsupportedClaimStatuses, D27) 已经先把 Claim 退回 proposed，
+        // 而 C4 只在 status=supported 时触发，所以走到这里只会是 no-change。
+        // 按 CLAUDE.md 的分工，证据够不够归结构审查和主 agent，compile 不管，
+        // 那个场景本来就不该由这段代码兜。改这段之前先确认要兜的是哪个场景。
         const failure = nonModelCheck(db, claimId);
         if (failure) {
           const staled = repo.markCompileStale(db, claimId);

@@ -266,9 +266,13 @@ describe("compile_arguments 工具", () => {
 
     expect(result.isError).toBeFalsy();
     expect(text).toContain("passed without logic review");
-    // 提醒必须说到怎么补上，否则用户只知道少了东西、不知道少什么
+    // 提醒必须说到怎么补上，否则用户只知道少了东西、不知道少什么。
+    // 而且必须说对：这里原来断言 "ANTHROPIC_API_KEY"，那是一条做不到的建议 ——
+    // 启用审查的唯一入口是 --review-config，index.ts 和 review-config.ts 里
+    // 没有任何 process.env 回落，设那个环境变量对 reviewConfig 毫无影响。
     expect(text).toContain("no review model is");
-    expect(text).toContain("ANTHROPIC_API_KEY");
+    expect(text).toContain("--review-config");
+    expect(text).not.toContain("ANTHROPIC_API_KEY");
   });
 
   test("未配置 reviewConfig 时，结构不全照样挡下来", async () => {

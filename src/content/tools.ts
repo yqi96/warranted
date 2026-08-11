@@ -111,7 +111,7 @@ export const TOOLS = {
   /**
    * 触发 LLM 审查论证链逻辑一致性。
    * 仅在哈希变化时重新调用 LLM；结果写入 .toulmin/reviews/。
-   * 需要 ANTHROPIC_API_KEY。
+   * 没配审查模型也会跑：只做结构检查，默认通过并附一条 warning。
    */
   compile_arguments: {
     title: "Compile Arguments",

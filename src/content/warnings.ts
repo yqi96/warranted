@@ -119,6 +119,7 @@ export const WARNINGS = {
   compiledWithoutReviewModel: (claimRefs: string) =>
     `Warning: ${claimRefs} recorded as passed without any logic review — no review model is ` +
     `configured, so only the deterministic structural checks ran. Whether the Grounds actually ` +
-    `support the Claim through the Warrant has not been examined. Set ANTHROPIC_API_KEY and ` +
-    `re-run compile_arguments to have the logic reviewed.`,
+    `support the Claim through the Warrant has not been examined. Start the server with ` +
+    `--review-config <file> (a JSON file carrying at least an apiKey) and re-run ` +
+    `compile_arguments to have the logic reviewed.`,
 } as const;

@@ -15,6 +15,11 @@
  *   "auditDir": "/path/to/audit"      // 可选，审计日志目录；null = 禁用；不设置 = dirname(dbPath)/audit
  * }
  *
+ * 这个文件是启用审查的唯一入口：路径只从 `--review-config <file>` 来（见 index.ts
+ * parseArgs），没有任何环境变量回落 —— index.ts 和本文件里都没有 process.env 读取。
+ * 所以「设置 ANTHROPIC_API_KEY 来启用审查」是做不到的事，面向用户的提示不要那么说
+ * （warnings.compiledWithoutReviewModel、messages.review_not_configured 都曾那么说）。
+ *
  * apiKey/baseUrl 由 review-llm.ts 显式递给 SDK 子进程，且子进程以隔离模式启动
  * （settingSources: []），不读 ~/.claude/settings.json。所以这个文件必须自带
  * 完整凭据：以前靠用户 settings 里的 ANTHROPIC_BASE_URL 碰巧能跑通的部署，

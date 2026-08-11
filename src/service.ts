@@ -24,6 +24,7 @@ import type {
   NodeArgument,
   ArgumentGround,
   ArgumentBacking,
+  ArgumentStatement,
   ArgumentWarrant,
   ArgumentRebuttal,
   Stats,
@@ -579,6 +580,28 @@ export function getArgument(db: Database, nodeId: number): ArgumentResult {
   }
 }
 
+/**
+ * 一个 statement 节点在 get_argument 里的形状 —— Ground / Backing / Rebuttal 共用。
+ *
+ * 三个角色共用一个映射，是因为它们曾经各写一遍，而 Backing 和 Rebuttal 那两遍漏了
+ * source 和 verification。角色由关系表决定，字段不该跟着角色变。
+ */
+function toArgumentStatement(row: NodeRow): ArgumentStatement {
+  const data = JSON.parse(row.data);
+  return {
+    id: row.id,
+    content: row.content,
+    attachments: data.attachments || [],
+    source: data.source,
+    verification: data.verification,
+  };
+}
+
+/** 同上，外加"攻击的是哪一条"。目标由调用方给：反驳都是按目标查出来的，那里就知道。 */
+function toArgumentRebuttal(row: NodeRow, targetType: TargetType, targetId: number): ArgumentRebuttal {
+  return { ...toArgumentStatement(row), target_type: targetType, target_id: targetId };
+}
+
 function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
   const claim = toClaimNode(claimRow, db);
 
@@ -593,50 +616,21 @@ function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
 
     const grounds: ArgumentGround[] = groundRows
       .filter((g): g is NodeRow => g !== null && (g.type === "statement" || g.type === "claim"))
-      .map(g => {
-        const gData = JSON.parse(g.data);
-        return {
-          id: g.id,
-          content: g.content,
-          attachments: gData.attachments || [],
-          source: gData.source,
-          verification: gData.verification,
-        };
-      });
+      .map(toArgumentStatement);
 
-    const backingRows = findAllBackingsByWarrant(db, w.id);
-    const backings: ArgumentBacking[] = backingRows.map(b => ({
-      id: b.id,
-      content: b.content,
-      attachments: JSON.parse(b.data).attachments || [],
-    }));
+    const backings: ArgumentBacking[] = findAllBackingsByWarrant(db, w.id).map(toArgumentStatement);
 
     return { id: w.id, content: w.content, grounds, backings };
   });
 
-  // Rebuttals targeting this claim or its warrants
-  const claimRebuttals = findAllRebuttalsByTarget(db, claim.id, "claim");
-  const warrantIds = warrantRows.map(w => w.id);
-  const warrantRebuttals = warrantIds.flatMap(wid => findAllRebuttalsByTarget(db, wid, "warrant"));
-  const allRebuttals = [...claimRebuttals, ...warrantRebuttals];
-
-  const rebuttals: ArgumentRebuttal[] = allRebuttals.map(r => {
-    const rData = JSON.parse(r.data);
-    // For statement nodes, target_type is in rebuttal_targets table, not data JSON
-    let targetType = rData.target_type;
-    if (!targetType) {
-      const rtRow = db.prepare(
-        "SELECT target_type FROM rebuttal_targets WHERE statement_id = ?"
-      ).get(r.id) as { target_type: string } | null;
-      targetType = rtRow?.target_type;
-    }
-    return {
-      id: r.id,
-      target_type: targetType,
-      content: r.content,
-      attachments: rData.attachments || [],
-    };
-  });
+  // Rebuttals targeting this claim or its warrants.
+  // 目标在这里是已知的（是按目标查出来的），所以直接带上，不再回查 rebuttal_targets。
+  const rebuttals: ArgumentRebuttal[] = [
+    ...findAllRebuttalsByTarget(db, claim.id, "claim").map(r => toArgumentRebuttal(r, "claim", claim.id)),
+    ...warrantRows.flatMap(w =>
+      findAllRebuttalsByTarget(db, w.id, "warrant").map(r => toArgumentRebuttal(r, "warrant", w.id))
+    ),
+  ];
 
   return {
     claim: { ...claim, qualifier, compile_status: repo.getCompileState(db, claim.id)?.verdict ?? null },
@@ -647,45 +641,15 @@ function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
 
 function getWarrantArgument(db: Database, warrantRow: NodeRow): WarrantArgument {
   const wData = JSON.parse(warrantRow.data);
-  const groundRows = repo.findGroundsByWarrant(db, warrantRow.id);
 
-  const grounds: ArgumentGround[] = groundRows
+  const grounds: ArgumentGround[] = repo.findGroundsByWarrant(db, warrantRow.id)
     .filter((g): g is NodeRow => g !== null && (g.type === "statement" || g.type === "claim"))
-    .map(g => {
-      const gData = JSON.parse(g.data);
-      return {
-        id: g.id,
-        content: g.content,
-        attachments: gData.attachments || [],
-        source: gData.source,
-        verification: gData.verification,
-      };
-    });
+    .map(toArgumentStatement);
 
-  const backingRows = findAllBackingsByWarrant(db, warrantRow.id);
-  const backings: ArgumentBacking[] = backingRows.map(b => ({
-    id: b.id,
-    content: b.content,
-    attachments: JSON.parse(b.data).attachments || [],
-  }));
+  const backings: ArgumentBacking[] = findAllBackingsByWarrant(db, warrantRow.id).map(toArgumentStatement);
 
-  const rebuttalRows = findAllRebuttalsByTarget(db, warrantRow.id, "warrant");
-  const rebuttals: ArgumentRebuttal[] = rebuttalRows.map(r => {
-    const rData = JSON.parse(r.data);
-    let targetType = rData.target_type;
-    if (!targetType) {
-      const rtRow = db.prepare(
-        "SELECT target_type FROM rebuttal_targets WHERE statement_id = ?"
-      ).get(r.id) as { target_type: string } | null;
-      targetType = rtRow?.target_type;
-    }
-    return {
-      id: r.id,
-      target_type: targetType,
-      content: r.content,
-      attachments: rData.attachments || [],
-    };
-  });
+  const rebuttals: ArgumentRebuttal[] = findAllRebuttalsByTarget(db, warrantRow.id, "warrant")
+    .map(r => toArgumentRebuttal(r, "warrant", warrantRow.id));
 
   return {
     warrant: { id: warrantRow.id, content: warrantRow.content, claim_id: wData.claim_id },
@@ -727,26 +691,8 @@ function getNodeArgument(db: Database, row: NodeRow): NodeArgument {
       });
   }
 
-  // Rebuttals targeting this node
-  const rebuttalRows = findAllRebuttalsByTarget(db, row.id);
-  if (rebuttalRows.length > 0) {
-    result.rebuttals = rebuttalRows.map(r => {
-      const rData = JSON.parse(r.data);
-      let targetType = rData.target_type;
-      if (!targetType) {
-        const rtRow = db.prepare(
-          "SELECT target_type FROM rebuttal_targets WHERE statement_id = ?"
-        ).get(r.id) as { target_type: string } | null;
-        targetType = rtRow?.target_type;
-      }
-      return {
-        id: r.id,
-        target_type: targetType,
-        content: r.content,
-        attachments: rData.attachments || [],
-      };
-    });
-  }
+  // 不查"攻击这个节点的反驳"：这个分支只在节点是 statement 时走到，而反驳只能
+  // 攻击 Claim 或 Warrant（createStatement 的 rebuttal_for 拦住了别的），所以结果恒为空。
 
   return result;
 }

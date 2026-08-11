@@ -157,19 +157,27 @@ export interface UpdateNodeParams {
 // get_argument 返回类型
 // =============================================================================
 
-export interface ArgumentGround {
+/**
+ * Ground / Backing / Rebuttal 在库里是同一种 statement 节点，往外递的形状也一样。
+ *
+ * 写成一个共同的形状是因为它们曾经不一样：Ground 带 source/verification，
+ * Backing 和 Rebuttal 不带，于是"这条反驳核实了没有"在输出里看不出来 ——
+ * 而 A3/A4 门禁恰好只认已核实的反驳。角色由关系表决定，字段不该跟着角色变。
+ *
+ * source/verification 声明为可选：0.4 之前的 backing/rebuttal 节点没写过这两个键，
+ * 迁移也不会替它们编一个（见 db.ts migrateToStatementSchema 步骤 b/c）。
+ */
+export interface ArgumentStatement {
   id: number;
   content: string;
   attachments: string[];
-  source: GroundSource;
-  verification: VerificationStatus;
+  source?: GroundSource;
+  verification?: VerificationStatus;
 }
 
-export interface ArgumentBacking {
-  id: number;
-  content: string;
-  attachments: string[];
-}
+export type ArgumentGround = ArgumentStatement;
+
+export type ArgumentBacking = ArgumentStatement;
 
 export interface ArgumentWarrant {
   id: number;
@@ -178,11 +186,13 @@ export interface ArgumentWarrant {
   backings: ArgumentBacking[];
 }
 
-export interface ArgumentRebuttal {
-  id: number;
+/**
+ * target_id 和 target_type 一起给，缺一个都答不上"是哪一条被攻击了"：
+ * 一个 Claim 挂三条 Warrant 时，只说 target_type="warrant" 等于没说。
+ */
+export interface ArgumentRebuttal extends ArgumentStatement {
   target_type: TargetType;
-  content: string;
-  attachments: string[];
+  target_id: number;
 }
 
 export interface ClaimArgument {
@@ -214,7 +224,9 @@ export interface NodeArgument {
     source?: GroundSource;
     verification?: VerificationStatus;
   };
-  rebuttals?: ArgumentRebuttal[];
+  // 没有 rebuttals：这个分支只在节点是 statement 时才走到（claim/warrant 各有自己的
+  // 返回类型），而反驳只能攻击 Claim 或 Warrant（service.createStatement 拦住了别的），
+  // 所以"攻击这个 statement 的反驳"永远是空集。曾经这里查过一次，查了也永远是空。
   used_in_warrants?: Array<{
     warrant_id: number;
     claim_id: number;

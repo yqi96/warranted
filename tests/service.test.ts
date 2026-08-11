@@ -1187,3 +1187,83 @@ describe("审查规则: Ground 验证留痕", () => {
     expect(warnings.length).toBe(0);
   });
 });
+
+// =============================================================================
+// get_argument — Ground / Backing / Rebuttal 递出同一组字段
+// =============================================================================
+
+describe("getArgument statement 字段一致性", () => {
+  test("claim 视图: backing 与 rebuttal 都带 source/verification", () => {
+    const claim = makeClaim(db, "主张");
+    const g = makeGround(db, { content: "证据" });
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+    makeBacking(db, warrant.id, "依据", ["/ref.pdf"], "literature", "verified");
+    service.createStatement(db, {
+      content: "反驳",
+      source: "observed",
+      verification: "pending",
+      rebuttal_for: { target_id: claim.id, target_type: "claim" },
+    });
+
+    const arg = service.getArgument(db, claim.id) as any;
+    expect(arg.warrants[0].backings[0].source).toBe("literature");
+    expect(arg.warrants[0].backings[0].verification).toBe("verified");
+    expect(arg.warrants[0].backings[0].attachments).toEqual(["/ref.pdf"]);
+    // A3/A4 门禁只认已核实的反驳，所以"这条核实了没有"必须在输出里
+    expect(arg.rebuttals[0].source).toBe("observed");
+    expect(arg.rebuttals[0].verification).toBe("pending");
+  });
+
+  test("claim 视图: rebuttal 带 target_id，指得出是哪一条 warrant 被攻击", () => {
+    const claim = makeClaim(db, "主张");
+    const g = makeGround(db, { content: "证据" });
+    const w1 = makeWarrant(db, claim.id, [g.id], "推理一");
+    const w2 = makeWarrant(db, claim.id, [g.id], "推理二");
+    service.createStatement(db, {
+      content: "只打推理二",
+      source: "observed",
+      verification: "verified",
+      attachments: ["/x.log"],
+      rebuttal_for: { target_id: w2.id, target_type: "warrant" },
+    });
+
+    const arg = service.getArgument(db, claim.id) as any;
+    expect(arg.rebuttals.length).toBe(1);
+    expect(arg.rebuttals[0].target_type).toBe("warrant");
+    expect(arg.rebuttals[0].target_id).toBe(w2.id);
+    expect(arg.rebuttals[0].target_id).not.toBe(w1.id);
+  });
+
+  test("warrant 视图: 攻击这条 warrant 的 rebuttal 出现在返回值里", () => {
+    const claim = makeClaim(db, "主张");
+    const g = makeGround(db, { content: "证据" });
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+    service.createStatement(db, {
+      content: "打推理的反驳",
+      source: "observed",
+      verification: "verified",
+      attachments: ["/y.log"],
+      rebuttal_for: { target_id: warrant.id, target_type: "warrant" },
+    });
+
+    const arg = service.getArgument(db, warrant.id) as any;
+    expect(arg.rebuttals.length).toBe(1);
+    expect(arg.rebuttals[0].content).toBe("打推理的反驳");
+    expect(arg.rebuttals[0].verification).toBe("verified");
+    expect(arg.rebuttals[0].target_type).toBe("warrant");
+    expect(arg.rebuttals[0].target_id).toBe(warrant.id);
+    // ground 在两个视图里字段一样
+    expect(arg.grounds[0].verification).toBe("verified");
+  });
+
+  test("0.4 遗留 backing 没写过 source/verification，字段为 undefined 而不是编一个", () => {
+    const claim = makeClaim(db, "主张");
+    const g = makeGround(db, { content: "证据" });
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+    makeBacking(db, warrant.id, "遗留依据");
+
+    const arg = service.getArgument(db, warrant.id) as any;
+    expect(arg.backings[0].source).toBeUndefined();
+    expect(arg.backings[0].verification).toBeUndefined();
+  });
+});

@@ -1380,3 +1380,79 @@ describe("compile 失效 — rebuttal_ids 变更触发失效", () => {
     expect(rel).toBeNull();
   });
 });
+
+// =============================================================================
+// get_argument 渲染 — 三个角色都印 (来源/核实状态)
+// =============================================================================
+
+describe("get_argument 渲染 statement 标注", () => {
+  test("claim 视图: backing 与 rebuttal 行都带 (来源/核实状态)", async () => {
+    const claim = makeClaim(db, "主张");
+    const g = makeGround(db, { content: "证据" });
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+    const b = makeBacking(db, warrant.id, "依据", ["/ref.pdf"], "literature", "verified");
+    const r = repo.insertNode(db, "statement", "反驳", {
+      source: "observed",
+      verification: "pending",
+      attachments: [],
+    });
+    repo.insertRebuttalTarget(db, r.id, claim.id, "claim");
+
+    const text = (await tools.get_argument.handler({ node_id: claim.id })).content[0].text;
+    expect(text).toContain(`[#${b.id}] 依据 (literature/verified)`);
+    expect(text).toContain(`[#${r.id}] (vs claim #${claim.id}) 反驳 (observed/pending)`);
+  });
+
+  test("claim 视图: rebuttal 行印出被攻击的 warrant id", async () => {
+    const claim = makeClaim(db, "主张");
+    const g = makeGround(db, { content: "证据" });
+    makeWarrant(db, claim.id, [g.id], "推理一");
+    const w2 = makeWarrant(db, claim.id, [g.id], "推理二");
+    const r = repo.insertNode(db, "statement", "只打推理二", {
+      source: "observed",
+      verification: "verified",
+      attachments: ["/x.log"],
+    });
+    repo.insertRebuttalTarget(db, r.id, w2.id, "warrant");
+
+    const text = (await tools.get_argument.handler({ node_id: claim.id })).content[0].text;
+    expect(text).toContain(`(vs warrant #${w2.id})`);
+  });
+
+  test("warrant 视图: ground 行带标注，且有 Rebuttals 段落", async () => {
+    const claim = makeClaim(db, "主张");
+    const g = makeGround(db, { content: "证据", source: "observed", verification: "pending" });
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+    const r = repo.insertNode(db, "statement", "打推理的反驳", {
+      source: "observed",
+      verification: "verified",
+      attachments: ["/y.log"],
+    });
+    repo.insertRebuttalTarget(db, r.id, warrant.id, "warrant");
+
+    const text = (await tools.get_argument.handler({ node_id: warrant.id })).content[0].text;
+    expect(text).toContain(`[#${g.id}] 证据 (observed/pending)`);
+    expect(text).toContain("Rebuttals:");
+    expect(text).toContain(`[#${r.id}] 打推理的反驳 (observed/verified)`);
+  });
+
+  test("字段缺失印 unknown，不猜成 pending", async () => {
+    const claim = makeClaim(db, "主张");
+    const g = makeGround(db, { content: "证据" });
+    const warrant = makeWarrant(db, claim.id, [g.id]);
+    const b = makeBacking(db, warrant.id, "遗留依据");
+
+    const text = (await tools.get_argument.handler({ node_id: warrant.id })).content[0].text;
+    expect(text).toContain(`[#${b.id}] 遗留依据 (unknown/unknown)`);
+    expect(text).not.toContain("遗留依据 (unknown/pending)");
+  });
+
+  test("statement 视图印出自身的 source/verification/attachments", async () => {
+    const g = makeGround(db, { content: "孤立证据", source: "literature", verification: "verified", attachments: ["/p.pdf"] });
+
+    const text = (await tools.get_argument.handler({ node_id: g.id })).content[0].text;
+    expect(text).toContain("source: literature");
+    expect(text).toContain("verification: verified");
+    expect(text).toContain("attachments: [/p.pdf]");
+  });
+});

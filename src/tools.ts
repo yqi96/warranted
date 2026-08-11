@@ -17,7 +17,7 @@ import {
   TypeMismatchError,
   StatusTransitionError,
 } from "./errors.ts";
-import type { ArgumentResult, Stats, ToulminNode, AutoVerifyResult, NodeRow } from "./types.ts";
+import type { ArgumentResult, ArgumentStatement, Stats, ToulminNode, AutoVerifyResult, NodeRow } from "./types.ts";
 import { log, summarizeInput, summarizeOutput } from "./logger.ts";
 import { TOOLS, PARAMS, HINTS, WARNINGS, MESSAGES } from "./content/index.ts";
 import type { ReviewConfig } from "./review-config.ts";
@@ -140,6 +140,21 @@ function formatNodeBrief(node: ToulminNode): string {
   }
 }
 
+/**
+ * statement 行尾的 `(来源/核实状态)` 标注。
+ *
+ * Ground / Backing / Rebuttal 共用一份写法：三个角色的核实状态都要看得见，
+ * 尤其是 Rebuttal —— A3/A4 门禁只认已核实的反驳，而"哪一条已核实"只有这里能答。
+ * 字段缺失时打 unknown，沿用 get_stats 对同一种缺失的说法，不另造词，也不猜成 pending。
+ */
+function statementMark(s: ArgumentStatement): string {
+  return `(${s.source ?? "unknown"}/${s.verification ?? "unknown"})`;
+}
+
+function statementLine(s: ArgumentStatement): string {
+  return `  - [#${s.id}] ${s.content} ${statementMark(s)}`;
+}
+
 function formatArgument(result: ArgumentResult): string {
   if ("claim" in result) {
     // ClaimArgument
@@ -162,15 +177,11 @@ function formatArgument(result: ArgumentResult): string {
       lines.push(w.content);
       if (w.grounds.length > 0) {
         lines.push("Grounds:");
-        for (const g of w.grounds) {
-          lines.push(`  - [#${g.id}] ${g.content} (${g.source}/${g.verification})`);
-        }
+        for (const g of w.grounds) lines.push(statementLine(g));
       }
       if (w.backings.length > 0) {
         lines.push("Backings:");
-        for (const b of w.backings) {
-          lines.push(`  - [#${b.id}] ${b.content}`);
-        }
+        for (const b of w.backings) lines.push(statementLine(b));
       }
       lines.push("");
     }
@@ -178,7 +189,8 @@ function formatArgument(result: ArgumentResult): string {
     if (result.rebuttals.length > 0) {
       lines.push("### Rebuttals");
       for (const r of result.rebuttals) {
-        lines.push(`- [#${r.id}] (${r.target_type}) ${r.content}`);
+        // 一个 Claim 可以挂多条 Warrant，只说 "warrant" 答不上是哪一条被攻击了
+        lines.push(`- [#${r.id}] (vs ${r.target_type} #${r.target_id}) ${r.content} ${statementMark(r)}`);
       }
     }
 
@@ -195,15 +207,16 @@ function formatArgument(result: ArgumentResult): string {
 
     if (result.grounds.length > 0) {
       lines.push("Grounds:");
-      for (const g of result.grounds) {
-        lines.push(`  - [#${g.id}] ${g.content}`);
-      }
+      for (const g of result.grounds) lines.push(statementLine(g));
     }
     if (result.backings.length > 0) {
       lines.push("Backings:");
-      for (const b of result.backings) {
-        lines.push(`  - [#${b.id}] ${b.content}`);
-      }
+      for (const b of result.backings) lines.push(statementLine(b));
+    }
+    // 这一段以前查了不打印 —— 攻击这条 Warrant 的反驳在 Warrant 视图里整段消失
+    if (result.rebuttals.length > 0) {
+      lines.push("Rebuttals:");
+      for (const r of result.rebuttals) lines.push(statementLine(r));
     }
     return lines.join("\n");
   }
@@ -212,6 +225,11 @@ function formatArgument(result: ArgumentResult): string {
   const lines: string[] = [];
   lines.push(`## ${result.node.type} #${result.node.id}`);
   lines.push(result.node.content);
+  if (result.node.type === "statement") {
+    lines.push(`source: ${result.node.source ?? "unknown"}`);
+    lines.push(`verification: ${result.node.verification ?? "unknown"}`);
+    lines.push(`attachments: [${(result.node.attachments ?? []).join(", ")}]`);
+  }
   if (result.used_in_warrants && result.used_in_warrants.length > 0) {
     lines.push("Used in warrants:");
     for (const w of result.used_in_warrants) {

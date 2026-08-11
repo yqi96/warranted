@@ -137,15 +137,23 @@ export function makeWarrant(
   };
 }
 
-/** 创建 Backing/Statement 节点 */
+/**
+ * 创建 Backing/Statement 节点。
+ *
+ * source/verification 默认不写入 data —— 这是 0.4 之前 backing 节点的真实形状
+ * （迁移不会替它们补一个），get_argument 对这种节点应当打 unknown 而不是猜。
+ * 需要"这条 backing 已核实"的用例显式传值。
+ */
 export function makeBacking(
   db: Database,
   warrantId: number,
   content: string = "Test backing",
-  attachments: string[] = []
+  attachments: string[] = [],
+  source?: GroundSource,
+  verification?: VerificationStatus
 ): StatementNode {
   const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({ attachments });
+  const data = JSON.stringify({ attachments, source, verification });
   const stmt = db.prepare(
     "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('statement', ?, ?, ?, ?)"
   );
@@ -157,6 +165,8 @@ export function makeBacking(
     id,
     type: "statement",
     content,
+    source,
+    verification,
     attachments,
     createdAt: now,
     updatedAt: now,

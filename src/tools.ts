@@ -1,7 +1,7 @@
 /**
  * Warranted — MCP 工具注册
  *
- * 14 个工具，每个定义 zod inputSchema + handler。
+ * 每个工具定义 zod inputSchema + handler。
  * Handler 调用 service 层，错误在边界捕获转为文本返回。
  */
 
@@ -436,7 +436,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
     };
   }
   // ===========================================================================
-  // 1. create_claim
+  // create_claim
   // ===========================================================================
   server.registerTool(
     "create_claim",
@@ -463,7 +463,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 2. create_statement
+  // create_statement
   // ===========================================================================
   server.registerTool(
     "create_statement",
@@ -547,7 +547,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 3. create_warrant
+  // create_warrant
   // ===========================================================================
   server.registerTool(
     "create_warrant",
@@ -585,7 +585,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 4. create_statements (batch)
+  // create_statements (batch)
   // ===========================================================================
   server.registerTool(
     "create_statements",
@@ -677,7 +677,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 5. verify_statements (batch)
+  // verify_statements (batch)
   // ===========================================================================
   server.registerTool(
     "verify_statements",
@@ -768,7 +768,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 6. tag_nodes (batch)
+  // tag_nodes (batch)
   // ===========================================================================
   server.registerTool(
     "tag_nodes",
@@ -815,7 +815,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 7. update_tag
+  // update_tag
   // ===========================================================================
   server.registerTool(
     "update_tag",
@@ -840,7 +840,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
 
 
   // ===========================================================================
-  // 8. list_claims
+  // list_claims
   // ===========================================================================
   server.registerTool(
     "list_claims",
@@ -880,7 +880,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 9. list_statements
+  // list_statements
   // ===========================================================================
   server.registerTool(
     "list_statements",
@@ -915,7 +915,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 10. get_argument
+  // get_argument
   // ===========================================================================
   server.registerTool(
     "get_argument",
@@ -937,7 +937,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 11. get_node
+  // get_node
   // ===========================================================================
   server.registerTool(
     "get_node",
@@ -960,7 +960,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 12. search_nodes
+  // search_nodes
   // ===========================================================================
   server.registerTool(
     "search_nodes",
@@ -993,7 +993,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 13. get_stats
+  // get_stats
   // ===========================================================================
   server.registerTool(
     "get_stats",
@@ -1013,7 +1013,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 14. update_node
+  // update_node
   // ===========================================================================
   server.registerTool(
     "update_node",
@@ -1160,7 +1160,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 15. delete_node
+  // delete_node
   // ===========================================================================
   server.registerTool(
     "delete_node",
@@ -1191,7 +1191,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 16. compile_arguments
+  // compile_arguments
   // ===========================================================================
   server.registerTool(
     "compile_arguments",
@@ -1256,7 +1256,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 17. create_tag
+  // create_tag
   // ===========================================================================
   server.registerTool(
     "create_tag",
@@ -1284,7 +1284,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 18. create_tags
+  // create_tags
   // ===========================================================================
   server.registerTool(
     "create_tags",
@@ -1322,7 +1322,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 19. list_tags
+  // list_tags
   // ===========================================================================
   server.registerTool(
     "list_tags",
@@ -1359,7 +1359,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 20. rename_tag
+  // rename_tag
   // ===========================================================================
   server.registerTool(
     "rename_tag",
@@ -1382,7 +1382,7 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
   );
 
   // ===========================================================================
-  // 21. merge_tags
+  // merge_tags
   // ===========================================================================
   server.registerTool(
     "merge_tags",

@@ -1,7 +1,9 @@
 /**
  * Toulmin 论证模型 — 类型定义
  *
- * 5 种节点类型：Claim, Ground, Warrant, Backing, Rebuttal
+ * 节点类型见 NodeType。Ground / Backing / Rebuttal 不是节点类型，是角色：
+ * 由关系表（warrant_grounds / warrant_backings / rebuttal_targets）记录谁在扮演，
+ * 同一个节点可以同时扮演多个，也可以一个都不扮演。
  * 所有节点共享基础字段，类型特有字段存储在 data JSON 中。
  */
 
@@ -323,7 +325,6 @@ export interface ElementReviewResult {
   errors: string[];
   warnings: string[];
   infos?: string[];
-  skipped?: boolean;
   /** true 表示本结果的 errors 与其他 reviewer 的 error 重叠，已被降级为咨询性提示（不代表 compile 失败原因的唯一来源） */
   advisory?: boolean;
 }

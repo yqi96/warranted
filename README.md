@@ -44,25 +44,32 @@ Release history: [CHANGELOG.md](CHANGELOG.md)
 
 ## Upgrading to 0.5.0
 
-0.5.0's behavior changes split into two classes with completely different discovery methods, so upgrading needs **two** actions, not one. Running a full compile finds the first class and structurally cannot find the second.
+0.5.0's behavior changes split into three classes with completely different discovery methods, so upgrading needs **three** actions, not one. Running a full compile finds the first class and structurally cannot find the other two.
 
 **① Graph-state changes — run `compile_arguments` over every Claim.**
 
 Claim-type Grounds are now judged by their own status, and Claims that report new errors are the places where an upper conclusion sits on an unsettled or refuted lower conclusion. That state has existed all along with no rule ever looking at it. Handle them one at a time: if the lower Claim is `proposed`, settle it first; if it is `refuted`, re-hang the upper Claim on a narrower Claim that survives the refutation (typically "this approach exists in the literature" rather than "this approach works"). A `disputed` lower Claim is fine and needs no action.
 
-The same pass surfaces the new ordering constraint. Because settling a lower status now invalidates the compiled state above it, work layer by layer — compile a layer, settle that layer's statuses, then move up — rather than compiling everything first and settling statuses afterwards.
+Expect this first pass to call the review model for every Claim, even ones you compiled before: the compile verdict moved out of the Claim node, which changed every argument hash, so nothing short-circuits on `no-change` this once.
+
+Expect it to also move some statuses. A Claim that comes out of this pass without a passed verdict has its `supported`/`disputed`/`refuted` status reverted to `proposed`, and Claims resting on it are rechecked and may follow. That rule is not new — a non-`proposed` status has always required a passed compile — but it used to be checked only when the status was written, so a Claim settled before this release could be holding a verdict its argument no longer earns. Each revert is reported on the call, naming the Claim and why.
+
+Settling statuses afterwards is safe — a lower status change does not invalidate the compile above it. What it can do is revert an upper `supported`/`disputed`/`refuted` back to `proposed`, when the lower Claim it counted on no longer counts as verified evidence. Those reverts are reported as warnings on the call that caused them; re-settle the lower Claim and you can set the upper one back without recompiling.
 
 **② Call-habit changes — audit your write-path callers now.**
 
-Compile **cannot see these**; they fire only on your next write. If you have scripts, automation, or custom skills that call `create_statement` or `update_node`, check them against these five before your next recording session:
+Compile **cannot see these**; they fire only on your next write. If you have scripts, automation, or custom skills that call `create_statement` or `update_node`, check them against these six before your next recording session:
 
 - `source` is now required on `create_statement`.
 - `source="literature"` must carry attachments.
 - Every attachment path must resolve from the review working directory (URLs do not qualify).
 - A review-infrastructure error now leaves the Statement `pending` and reports the error, rather than resting at `verified`.
 - `update_node(attachments=[])` against a `verified` Statement now errors.
+- `update_node(status="disputed")` and `status="refuted"` now require a **verified** Rebuttal on the Claim or one of its Warrants. Recording the Rebuttal still always succeeds and lands `pending`; it is the status call that is gated, so a caller that recorded a contradiction and settled the Claim in one go now needs a verification step between the two.
 
-Among these is recording a contradiction — the write that should least be allowed to fail in an argument graph. A compile-only upgrade check gives you two of the seven changes.
+**③ Review configuration — make your config file self-sufficient.**
+
+The reviewer subprocess now runs isolated: it no longer reads `~/.claude/settings.json`. If your review worked because the gateway address or the key lived in your own Claude Code settings rather than in the file you pass to `--review-config`, review will now fail to reach the endpoint. Put `baseUrl` and `apiKey` in that file. Also drop `debounceMs` if you set it (it was never read), and check that `maxTurns`/`maxConcurrency` are positive integers — an invalid value now warns and falls back to the default instead of being taken literally.
 
 ---
 

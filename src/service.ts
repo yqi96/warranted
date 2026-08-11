@@ -195,15 +195,28 @@ export function hasVerifiedRebuttal(db: Database, claimId: number): boolean {
  *
  * `blockers` 只服务 A1 的错误文案（要指出是哪条 Warrant 的哪个 Ground 没核实）；
  * 复检只看 `satisfied`。
+ *
+ * satisfied=false 时 blockers 必须非空。调用点把它拼在破折号后面，空数组会印出一句
+ * 以 "— " 结尾的半句话。会漏掉原因的两种形状都不是「Ground 没核实」：一条 Warrant
+ * 都没有（循环不进），以及某条 Warrant 没挂 Ground（不能算满足——「全部已核实」在空集
+ * 上恒真——但也得留下原因）。今天两种都被更前面的 A0 挡着走不到，写在这里是因为
+ * 「不满足就必须说出为什么」是这个返回值的约定，不该依赖调用顺序才成立。
  */
 export function hasWarrantWithAllGroundsVerified(
   db: Database,
   claimId: number
 ): { satisfied: boolean; blockers: string[] } {
   const blockers: string[] = [];
-  for (const w of repo.findWarrantsByClaim(db, claimId)) {
+  const warrants = repo.findWarrantsByClaim(db, claimId);
+  if (warrants.length === 0) {
+    return { satisfied: false, blockers: [`Claim #${claimId} has no Warrants`] };
+  }
+  for (const w of warrants) {
     const groundRows = repo.findGroundsByWarrant(db, w.id);
-    if (groundRows.length === 0) continue;
+    if (groundRows.length === 0) {
+      blockers.push(`Warrant #${w.id}: no Grounds attached`);
+      continue;
+    }
     const unverified = groundRows.filter(gRow => !isClaimOrStatementVerified(gRow));
     if (unverified.length === 0) return { satisfied: true, blockers: [] };
     blockers.push(`Warrant #${w.id}: ${unverified.map(describeUnverifiedGround).join(", ")}`);

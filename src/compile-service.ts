@@ -743,6 +743,39 @@ function passWithoutReviewModel(
 }
 
 /**
+ * compile 跑完之后，这条 Claim 手上没有一条 verdict=passed 的记录 → status 退回 proposed。
+ *
+ * 这不是让 compile 去判断证据够不够（那是主 agent 的事，compile 只审论证的形式）。
+ * 它执行的是 A0 那条本来就存在的结构规则：非 proposed 的 status 必须有一条通过的 compile
+ * 记录。以前这条规则只在写入那一刻查一次，于是「先定成 supported、之后 compile 没过」
+ * 会留下一个 A0 自己都不允许的组合：状态还挂着 supported，记录却是 failed。
+ * 在 compile 之后补这一刀，规则就变成随时都成立，而不是只在某个时刻成立。
+ *
+ * 判据取的是**实际存下来的 verdict**，不是从 action 推断的：五种 action 到底落成
+ * passed / failed / stale 分散在三个函数里，照着 action 猜是 D26 犯过的那个错。
+ *
+ * 向上传播沿用 revertUnsupportedClaimStatuses：这条 Claim 退回 proposed 之后，按规则 C′
+ * 它作为上层 Warrant 的 Ground 不再算已核实的证据，上层垮掉的同样只是充分性依据
+ * ——上层论证的形式一个字没变，所以上层的 compile 记录不动。
+ */
+function revertStatusWithoutPassedCompile(db: Database, claimId: number): string[] {
+  const verdict = repo.getCompileState(db, claimId)?.verdict ?? null;
+  if (verdict === "passed") return [];
+
+  const row = repo.getNodeById(db, claimId);
+  if (!row || row.type !== "claim") return [];
+  const previousStatus = (JSON.parse(row.data).status || "proposed") as string;
+  if (previousStatus === "proposed") return [];
+
+  repo.setClaimStatus(db, claimId, "proposed");
+  const warnings = [
+    WARNINGS.statusRevertedCompileNotPassed(claimId, previousStatus, verdict ?? "none"),
+  ];
+  warnings.push(...revertUnsupportedClaimStatuses(db, claimId, new Set([claimId])));
+  return warnings;
+}
+
+/**
  * Compile 调度器。由 compile_arguments 工具显式调用，不是 mutation 自动触发。
  * 按需决定是否重新 compile：
  *
@@ -762,8 +795,7 @@ export async function compileClaims(
 ): Promise<AutoVerifyResult[]> {
   log("auto_review", "OK", 0, `triggered for ${affectedClaimIds.length} claim(s): [${affectedClaimIds.join(", ")}]`);
 
-  // §4: use mapLimit to cap concurrency
-  const results = await mapLimit(affectedClaimIds, undefined, async (claimId): Promise<AutoVerifyResult> => {
+  const compileOne = async (claimId: number): Promise<AutoVerifyResult> => {
     const t0 = Date.now();
     const claimRow = repo.getNodeById(db, claimId);
     if (!claimRow || claimRow.type !== "claim") {
@@ -824,6 +856,15 @@ export async function compileClaims(
       message: structuralErrors.join("; "),
       staled,
     };
+  };
+
+  // §4: use mapLimit to cap concurrency
+  const results = await mapLimit(affectedClaimIds, undefined, async (claimId): Promise<AutoVerifyResult> => {
+    const result = await compileOne(claimId);
+    // skipped 是"这个 id 不是 Claim"，没有状态可退。
+    if (result.action === "skipped") return result;
+    const statusWarnings = revertStatusWithoutPassedCompile(db, claimId);
+    return statusWarnings.length > 0 ? { ...result, statusWarnings } : result;
   });
 
   const summary = results.map(r => `claim=#${r.claimId}:${r.action}`).join(", ");

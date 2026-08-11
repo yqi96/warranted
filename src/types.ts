@@ -359,6 +359,12 @@ export interface AutoVerifyResult {
    * 不是从分支位置推断的——D26 就是把"叫 marked-stale"当成"真的标了"。
    */
   staled?: boolean;
+  /**
+   * 这次 compile 之后因为「没有通过的 compile 记录」而被退回 proposed 的 Claim 的警告，
+   * 包含沿规则 C′ 向上连带退回的那些。与 action 无关：一次 auto-reviewed 和一次
+   * structure-incomplete 都可能带上它，也都可能不带（原本就是 proposed 时不带）。
+   */
+  statusWarnings?: string[];
   compileResult?: CompileResult;
   message?: string;
 }

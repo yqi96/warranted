@@ -84,6 +84,18 @@ export const WARNINGS = {
       `Settle #${nodeId} to a status that counts as evidence, or reground the argument`
     ),
 
+  /**
+   * compile 跑完之后这条 Claim 手上没有一条 passed 的记录 → status 退回 proposed。
+   *
+   * 刻意不走 sufficiencyLostRevert：那个模板的核心是"论证没变，不要重跑 compile"，
+   * 这条正相反——是 compile 自己没通过，重跑正是要做的事。两者都是"回退 status"，
+   * 但要 agent 做的下一步完全不同，合成一条就会有一半的场合在说反话。
+   */
+  statusRevertedCompileNotPassed: (claimId: number, previousStatus: string, verdict: string) =>
+    `Warning: Claim #${claimId} status reverted from "${previousStatus}" to "proposed" ` +
+    `because its compile verdict is now "${verdict}", and any non-"proposed" status requires a ` +
+    `passed compile. Fix what compile reported, re-run compile_arguments, then set the status again.`,
+
   /** G_CONTENT: Statement 正文变更 → verification 自动退回 pending。
    *  文案自带 "Warning: " 前缀，与本模块其余条目一致：它经由 service 的 warnings
    *  渠道进入 formatReviewIssues，写成 "Hint: ..." 会渲染成 "Warning: Hint: ..."。

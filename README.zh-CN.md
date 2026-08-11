@@ -44,25 +44,32 @@
 
 ## 升级到 0.5.0
 
-0.5.0 的行为变更分成两类，发现方式完全不同，所以升级需要**两个**动作而不是一个。跑一遍全量 compile 只能发现第一类，第二类结构上不可能被 compile 看见。
+0.5.0 的行为变更分成三类，发现方式完全不同，所以升级需要**三个**动作而不是一个。跑一遍全量 compile 只能发现第一类，另两类结构上不可能被 compile 看见。
 
 **① 图状态类变更 —— 对每个 Claim 跑一遍 `compile_arguments`。**
 
 claim 型 Ground 现在按它自身的 status 判定。新报错的 Claim 就是"上层结论压在一个未定案或已被推翻的下层结论上"的位置——这个状态一直存在，只是从来没有规则去看它。逐个处理：下层是 `proposed` 就先把它定案；下层是 `refuted` 就把上层改挂到一个能在推翻中存活的更窄的 Claim 上（通常是"该做法在文献中存在"而不是"该做法有效"）。下层是 `disputed` 属于正常，无需处理。
 
-同一遍扫描也会暴露新的顺序约束。因为定下层的 status 现在会失效它上方的 compile，所以要逐层推进——compile 一层、定这一层的 status、再往上——而不是先把所有层 compile 完再统一定状态。
+这一遍会对每个 Claim 都调用一次审查模型，包括你以前 compile 过的：compile 结论已经从 Claim 节点里搬走，所有 Claim 的论证指纹因此都变了，这一次没有 `no-change` 可短路。
+
+它也会动一部分 status。这一遍跑完手上没有通过记录的 Claim，其 `supported`/`disputed`/`refuted` 会被退回 `proposed`，压在它上面的 Claim 会跟着复检、可能一起退。这条规则本身不是新的——非 `proposed` 的状态一直都要求有一条通过的 compile——但它以前只在写入那一刻查，所以本次发布之前定过案的 Claim 可能正拿着一个它的论证已经不再支撑的结论。每一次回退都会在这次调用里报出来，写明是哪条 Claim、为什么。
+
+之后再定 status 是安全的：定下层的 status 不会失效它上方的 compile。它能做的是把上层的 `supported`/`disputed`/`refuted` 退回 `proposed`——当上层依赖的那条下层 Claim 不再算已核实的证据时。这类回退会作为警告出现在触发它的那次调用里；把下层重新定案，上层不必重跑 compile 就能标回去。
 
 **② 调用习惯类变更 —— 现在就检查你的写入侧调用方。**
 
-compile **看不见这些**，它们只在你下一次写入时才触发。如果你有脚本、自动化或自定义 skill 在调用 `create_statement` 或 `update_node`，在下一次记录证据之前先对照这五条检查：
+compile **看不见这些**，它们只在你下一次写入时才触发。如果你有脚本、自动化或自定义 skill 在调用 `create_statement` 或 `update_node`，在下一次记录证据之前先对照这六条检查：
 
 - `create_statement` 的 `source` 现在是必填项。
 - `source="literature"` 必须携带 attachments。
 - 每个 attachment 路径都必须能从审查工作目录解析（URL 不算）。
 - 审查基础设施本身出错时，Statement 现在会落到 `pending` 并报出错误，而不是停留在 `verified`。
 - 对已经 `verified` 的 Statement 调用 `update_node(attachments=[])` 现在会报错。
+- `update_node(status="disputed")` 和 `status="refuted"` 现在要求该 Claim 或它的某条 Warrant 上有一条**已核实**的 Rebuttal。记录 Rebuttal 本身仍然永远成功、落在 `pending`；被拦的是定状态那一步，所以"记录一个矛盾、顺手把 Claim 定案"这种一次到底的调用，中间现在需要一个核实动作。
 
-这五条里包含"记录一个矛盾"——在论证图里最不该被允许失败的写入。只做 compile 检查的升级，覆盖率是七分之二。
+**③ 审查配置 —— 让配置文件自给自足。**
+
+审查子进程现在隔离运行，不再读 `~/.claude/settings.json`。如果你的审查之所以能跑通，是因为网关地址或密钥放在你自己的 Claude Code 设置里而不在 `--review-config` 指向的文件里，那么现在它连不上端点。把 `baseUrl` 和 `apiKey` 写进那个文件。另外，`debounceMs` 如果设过就删掉（它从来没被读过），并检查 `maxTurns`/`maxConcurrency` 是正整数——非法值现在会警告并回落到默认值，而不是被当真。
 
 ---
 

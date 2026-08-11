@@ -1252,6 +1252,10 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         } else {
           lines.push(`${claimRef}: ${r.action}`);
         }
+
+        // 状态回退跟着它那一行走：它说的是"这次 compile 顺带改了图里的什么"，
+        // 和这条 Claim 的结局是同一件事的两半。
+        if (r.statusWarnings) warnings.push(...r.statusWarnings);
       }
 
       const unreviewed = results.filter(r => r.action === "passed-unreviewed");

@@ -3,11 +3,10 @@
  *
  * 对应设计文档 `.omc/plans/0.5.0/pr1-tags.md`（§8 的十条用例为骨架，另补边界）。
  *
- * ── 门控说明 ─────────────────────────────────────────────────────────
- * PR1 尚未实现 ⇒ `service.createTagService` 不存在 ⇒ 整份文件跳过。
- * 门控是**对实现求值的探针**，不是硬编码的 false 开关：`createTagService`
- * 一旦出现，这些用例立即生效并对真实实现打分。跳过状态无法比实现活得更久，
- * 也就不会出现"测试文件在，但它保护的东西早就没了"这种静默失守。
+ * ── 前提说明 ─────────────────────────────────────────────────────────
+ * 本文件依赖 `service.createTagService` 存在。这一条写成下面"前提"那节的断言，
+ * 不写成跳过条件：跳过状态会比实现活得更久，也就会出现"测试文件在，但它保护的
+ * 东西早就没了"这种静默失守。
  *
  * ── 本文件锁死的三条 ─────────────────────────────────────────────────
  * 1. **tag 操作永不失效 compile**（§0.1 第一条不变量，第 5 组）。
@@ -29,8 +28,14 @@ import { ValidationError, TypeMismatchError } from "../src/errors.ts";
 const svc = service as any;
 const tagRepo = repo as any;
 
-/** 探针：PR1 是否已落地。 */
-const TAGS_LANDED = typeof svc.createTagService === "function";
+// tag 服务是本文件的前提，不是条件。以前这里是一个探针，配 skipIf 用：PR1 还没落地
+// 时先跳过。落地之后探针再没有第二种真值可报，只剩一个副作用——哪天 tag 服务被改没了，
+// 本文件所有测试会安静地跳过，跑出来仍然是 0 fail。改成断言，缺了就在这里红一条。
+describe("前提", () => {
+  test("tag 服务已落地", () => {
+    expect(typeof svc.createTagService).toBe("function");
+  });
+});
 
 let db: Database;
 
@@ -69,7 +74,7 @@ function seedCompiledClaim(): { claimId: number; groundId: number } {
 // 1. 注册与格式校验
 // =============================================================================
 
-describe.skipIf(!TAGS_LANDED)("1. 注册与格式校验", () => {
+describe("1. 注册与格式校验", () => {
   test("合法 tag 注册成功", () => {
     const { tag } = svc.createTagService(db, "theme:retrieval-aug", "检索增强");
     expect(tag.name).toBe("theme:retrieval-aug");
@@ -139,7 +144,7 @@ describe.skipIf(!TAGS_LANDED)("1. 注册与格式校验", () => {
 // 2. 硬门在"使用"侧：未注册 tag 创建节点 → 报错含近似建议
 // =============================================================================
 
-describe.skipIf(!TAGS_LANDED)("2. 未注册 tag 不能用于写入", () => {
+describe("2. 未注册 tag 不能用于写入", () => {
   test("报错消息里出现近似的既有 tag 与它的节点数", () => {
     svc.createTagService(db, "theme:retrieval-aug", "检索增强");
     const n1 = makeGround(db, { content: "a" });
@@ -237,7 +242,7 @@ describe.skipIf(!TAGS_LANDED)("2. 未注册 tag 不能用于写入", () => {
 // 3. rename 级联
 // =============================================================================
 
-describe.skipIf(!TAGS_LANDED)("3. rename_tag 级联", () => {
+describe("3. rename_tag 级联", () => {
   test("两个节点都跟着改名，返回受影响节点数", () => {
     svc.createTagService(db, "theme:old", "旧名");
     const n1 = makeGround(db, { content: "a" });
@@ -285,7 +290,7 @@ describe.skipIf(!TAGS_LANDED)("3. rename_tag 级联", () => {
 // 4. merge
 // =============================================================================
 
-describe.skipIf(!TAGS_LANDED)("4. merge_tags", () => {
+describe("4. merge_tags", () => {
   test("重叠节点去重：同时挂 from + to 的节点合并后只剩一条", () => {
     svc.createTagService(db, "theme:from", "f");
     svc.createTagService(db, "theme:to", "t");
@@ -332,7 +337,7 @@ describe.skipIf(!TAGS_LANDED)("4. merge_tags", () => {
 // 5. tag 操作永不失效 compile（§0.1 第一条不变量）
 // =============================================================================
 
-describe.skipIf(!TAGS_LANDED)("5. tag 操作永不失效 compile", () => {
+describe("5. tag 操作永不失效 compile", () => {
   test("打 tag / 改 tag / rename / merge 之后 compile_status 仍是 passed", () => {
     const { claimId } = seedCompiledClaim();
     const hashBefore = computeArgumentHash(db, claimId);
@@ -381,7 +386,7 @@ describe.skipIf(!TAGS_LANDED)("5. tag 操作永不失效 compile", () => {
 // 6. delete_node 级联
 // =============================================================================
 
-describe.skipIf(!TAGS_LANDED)("6. 删除节点的级联", () => {
+describe("6. 删除节点的级联", () => {
   test("删节点清 node_tags，tag 本身留在词表里", () => {
     svc.createTagService(db, "theme:x", "x");
     const g = makeGround(db, { content: "证据" });
@@ -420,7 +425,7 @@ describe.skipIf(!TAGS_LANDED)("6. 删除节点的级联", () => {
 // 7. create_tags 逐条独立
 // =============================================================================
 
-describe.skipIf(!TAGS_LANDED)("7. create_tags 逐条独立（与 create_statements 的整批原子相反）", () => {
+describe("7. create_tags 逐条独立（与 create_statements 的整批原子相反）", () => {
   test("一批 5 条里第 3 条非法 → 其余 4 条成功，failed 报第 3 条", () => {
     const result = svc.createTagsService(db, [
       { name: "paper:a1", description: "1" },
@@ -482,7 +487,7 @@ describe.skipIf(!TAGS_LANDED)("7. create_tags 逐条独立（与 create_statemen
 // 8/9/10. 基数类别声明 —— 判别变量是基数，不是名字来源
 // =============================================================================
 
-describe.skipIf(!TAGS_LANDED)("8. 声明为 dense 的命名空间跳过近似检查", () => {
+describe("8. 声明为 dense 的命名空间跳过近似检查", () => {
   test("批级声明 dense 后，后续成员无近似警告且不必重传参数", () => {
     const first = svc.createTagsService(
       db,
@@ -510,7 +515,7 @@ describe.skipIf(!TAGS_LANDED)("8. 声明为 dense 的命名空间跳过近似检
   });
 });
 
-describe.skipIf(!TAGS_LANDED)("9. 未声明的命名空间默认跑检查", () => {
+describe("9. 未声明的命名空间默认跑检查", () => {
   test("metric:accuracy 之后注册 metric:acc → 产生近似警告", () => {
     // metric: 的名字来自外部标识符 —— 按"名字来源"判会被跳过，按基数判要检查。
     // 这一条就是这两条判据的分道处。
@@ -552,7 +557,7 @@ describe.skipIf(!TAGS_LANDED)("9. 未声明的命名空间默认跑检查", () =
   });
 });
 
-describe.skipIf(!TAGS_LANDED)("10. 重复声明不静默改写", () => {
+describe("10. 重复声明不静默改写", () => {
   test("先 dense 后 bounded → warning，表里仍是 dense", () => {
     svc.createTagService(db, "run:0041", "扫描 41", undefined, "dense");
     const { warnings } = svc.createTagService(db, "run:0042", "扫描 42", undefined, "bounded");
@@ -589,7 +594,7 @@ describe.skipIf(!TAGS_LANDED)("10. 重复声明不静默改写", () => {
 // 11. 词表读取
 // =============================================================================
 
-describe.skipIf(!TAGS_LANDED)("11. listTagsWithCount", () => {
+describe("11. listTagsWithCount", () => {
   test("按名字排序并带节点计数", () => {
     svc.createTagService(db, "theme:b", "b");
     svc.createTagService(db, "theme:a", "a");

@@ -3,17 +3,18 @@
  *
  * 对应 `.omc/plans/0.5.0/pr3-batch.md` §9 的二十一条。
  *
- * ── 三档门控 ─────────────────────────────────────────────────────────
+ * ── 三档，前提与写法不同 ────────────────────────────────────────────
  *
  * A. **新工具（`create_statements` / `verify_statements` / `tag_nodes` /
- *    `update_tag`）** —— 探针查工具注册表。工具一注册，断言自动开始判分。
+ *    `update_tag`）** —— 这四个今天都注册了，写成下面"前提"那节的断言。
+ *    少了哪一个就在那里红一条并点名，不再把依赖它的测试静静跳过。
  *
- * B. **两个入口统一（5 / 9 / 10 / 11 / 17 / 18）—— 不门控，今天就是红的。**
+ * B. **两个入口统一（5 / 9 / 10 / 11 / 17 / 18）—— 今天就是红的。**
  *    这些条目修的是既有入口上的活缺陷：`create_statement` 的
  *    `?? "observed"`、`update_node` 的 attachments 分支无条件赋值、H1 只
  *    挂在 verification 分支里。修法都是就地改，**不产生新的实现表面**，
- *    所以没有探针能测出"修好了没有"。可探测性缺失时唯一诚实的写法是
- *    让它红着 —— 与 `fts.test.ts` 的 DISTINCT 同类。
+ *    所以没有任何前提断言能表达"修好了没有"。可探测性缺失时唯一诚实的
+ *    写法是让它红着 —— 与 `fts.test.ts` 的 DISTINCT 同类。
  *
  *    §4.0.2 的活缺陷（测试 18）尤其要红着：它是一次调用、零信号，
  *    `update_node(<已 verified>, attachments=[])` 今天零报错零 warning。
@@ -125,33 +126,43 @@ function dataOf(nodeId: number): any {
 }
 
 // =============================================================================
-// 探针
+// 前提
 // =============================================================================
+//
+// 这些能力是本文件的前提，不是条件。以前这里是一组探针，配 skipIf 用：0.5.0 开发期
+// 功能一个一个落地，探针让还没落地的部分先跳过。功能全落地之后，探针再没有第二种
+// 真值可报，只剩一个副作用——删掉 create_statements 的注册，本文件 19 条测试会安静
+// 地跳过，跑出来仍然是 0 fail。现在改成断言：少了哪个能力就在这里红一条，并说出少
+// 的是什么。
 
-const PROBE = (() => {
+function registeredTools(): Record<string, { schema: any; handler: Function }> {
   const probeDb = createTestDb();
   try {
     const server = createMockServer();
     registerTools(server as any, probeDb, null);
-    const names = Object.keys(server._tools);
-    return {
-      createStatements: names.includes("create_statements"),
-      verifyStatements: names.includes("verify_statements"),
-      tagNodes: names.includes("tag_nodes"),
-      updateTag: names.includes("update_tag"),
-      warrantBackingIds: "backing_ids" in ((server._tools as any)["create_warrant"]?.schema ?? {}),
-      tags: typeof svc.createTagService === "function",
-      reviewCwd: typeof _reviewCwd === "function",
-    };
+    return server._tools as any;
   } finally {
     cleanupDb(probeDb);
   }
-})();
+}
 
-const BATCH_CREATE = PROBE.createStatements;
-const BATCH_VERIFY = PROBE.verifyStatements;
-const TAG_NODES = PROBE.tagNodes && PROBE.tags;
-const UPDATE_TAG = PROBE.updateTag && PROBE.tags;
+describe("前提", () => {
+  test("本文件依赖的批量工具都已注册", () => {
+    const names = Object.keys(registeredTools());
+    for (const tool of ["create_statements", "verify_statements", "tag_nodes", "update_tag"]) {
+      expect(names).toContain(tool);
+    }
+  });
+
+  test("create_warrant 接受 backing_ids", () => {
+    expect(Object.keys(registeredTools()["create_warrant"]!.schema)).toContain("backing_ids");
+  });
+
+  test("tag 服务与 reviewCwd 都可用", () => {
+    expect(typeof svc.createTagService).toBe("function");
+    expect(typeof _reviewCwd).toBe("function");
+  });
+});
 
 /** PR1 的 tag 注册；PR3 单测里只当前置条件用。 */
 function registerTag(name: string): void {
@@ -162,7 +173,7 @@ function registerTag(name: string): void {
 // 1–4：create_statements 的原子性与返回契约
 // =============================================================================
 
-describe.skipIf(!BATCH_CREATE)("§9.1–4：整批原子与 validate-all 返回契约", () => {
+describe("§9.1–4：整批原子与 validate-all 返回契约", () => {
   test("1. 3 条里第 2 条 tag 未注册 ⇒ 零条写入，错误点名 item[1]", async () => {
     registerTag("theme:cache");
     const before = statementCount();
@@ -274,7 +285,7 @@ describe("§9.5：source 必填，两个入口一致", () => {
     ).toThrow(/source/i);
   });
 
-  test.skipIf(!BATCH_CREATE)("create_statements 省略 source ⇒ 拒绝", async () => {
+  test("create_statements 省略 source ⇒ 拒绝", async () => {
     const r = await call("create_statements", { statements: [{ content: "没写来源的一条" }] });
     expect(r.isError).toBe(true);
     expect(statementCount()).toBe(0);
@@ -285,7 +296,7 @@ describe("§9.5：source 必填，两个入口一致", () => {
 // 6：§4.2 是 warning 不是拒绝
 // =============================================================================
 
-describe.skipIf(!BATCH_CREATE || !TAG_NODES)("§9.6：paper: + observed 是 warning 不是拒绝", () => {
+describe("§9.6：paper: + observed 是 warning 不是拒绝", () => {
   test("paper: tag + source=observed ⇒ 写入成功且带 warning", async () => {
     // 复现场景下这是正确用法：论文自述结果是待检验对象本身
     registerTag("paper:smith2019a");
@@ -364,7 +375,7 @@ describe("§9.7 & §9.11：literature 无附件 ⇒ 拒绝", () => {
     ).toThrow(/attachment/i);
   });
 
-  test.skipIf(!BATCH_CREATE)("create_statements ⇒ 拒绝且零写入", async () => {
+  test("create_statements ⇒ 拒绝且零写入", async () => {
     const r = await call("create_statements", {
       statements: [{ content: "一条文献命题", source: "literature" }],
     });
@@ -531,7 +542,7 @@ describe("§9.17–18：检查块落在结果状态上", () => {
 // 12 / 13：tag_nodes
 // =============================================================================
 
-describe.skipIf(!TAG_NODES)("§9.12–13：tag_nodes", () => {
+describe("§9.12–13：tag_nodes", () => {
   test("12a. 未注册 tag ⇒ 整体拒绝且零写入", async () => {
     registerTag("theme:cache");
     const a = makeGround(db, { content: "证据甲" });
@@ -578,7 +589,7 @@ describe.skipIf(!TAG_NODES)("§9.12–13：tag_nodes", () => {
 // 14 / 15 / 19 / 20 / 21：verify_statements
 // =============================================================================
 
-describe.skipIf(!BATCH_VERIFY)("§9.14–15 & 19–21：verify_statements", () => {
+describe("§9.14–15 & 19–21：verify_statements", () => {
   /** 注入式替换审查实现 —— 不起真实会话。 */
   function stubReview(impl: (id: number) => any): void {
     mock.module("../src/review-sync.ts", () => ({
@@ -758,7 +769,7 @@ describe("§9.19：单条入口的空 catch", () => {
 // =============================================================================
 
 describe("§9.16：create_warrant 加 backing_ids", () => {
-  test.skipIf(!PROBE.warrantBackingIds)(
+  test(
     "建时挂 Backing，该 Claim 不因此额外失效一次",
     async () => {
       // compile 之前挂：零成本。compile 之后挂：整条祖先链 × (2+N) 次 LLM 调用重跑
@@ -784,7 +795,7 @@ describe("§9.16：create_warrant 加 backing_ids", () => {
 // update_tag（§6）
 // =============================================================================
 
-describe.skipIf(!UPDATE_TAG)("§6：update_tag", () => {
+describe("§6：update_tag", () => {
   test("改描述", async () => {
     registerTag("paper:smith2019a");
     const r = await call("update_tag", {
@@ -826,7 +837,7 @@ describe.skipIf(!UPDATE_TAG)("§6：update_tag", () => {
 // =============================================================================
 
 describe("§8：工具注册", () => {
-  test.skipIf(!BATCH_CREATE || !BATCH_VERIFY || !TAG_NODES || !UPDATE_TAG)(
+  test(
     "PR1 + PR3 全部落地后共 21 个工具",
     () => {
       expect(Object.keys(tools).length).toBe(21);
@@ -838,7 +849,7 @@ describe("§8：工具注册", () => {
 // 回归：批量入口的 tag 校验必须走同一个 assertTagsRegistered
 // =============================================================================
 
-describe.skipIf(!BATCH_CREATE || !TAG_NODES)("回归：批量 tag 校验的近似建议", () => {
+describe("回归：批量 tag 校验的近似建议", () => {
   // 近似建议是词表一致性机制的核心。批量入口自己手搓一遍存在性检查，
   // 报的是裸的 `Tag "x" is not registered.` —— 检查"过了没有"这一位是对的，
   // 而 agent 拿不到"你是不是想写 theme:cache"，于是继续注册第二个近义 tag。
@@ -869,7 +880,7 @@ describe.skipIf(!BATCH_CREATE || !TAG_NODES)("回归：批量 tag 校验的近�
 // 回归：validate-all 必须跑完每条校验，不能把一部分漏给写入阶段
 // =============================================================================
 
-describe.skipIf(!BATCH_CREATE)("回归：validate-all 的完整性（§2.2 第 1 条）", () => {
+describe("回归：validate-all 的完整性（§2.2 第 1 条）", () => {
   test("content 为空的一条也要在校验阶段点名 item[i]，且与其它失败一并列出", async () => {
     // 校验阶段只查了 source / tag / §4.1 / §4.3 时，content 为空要到写入阶段
     // 才被 service.createStatement 抛出 —— 那时事务回滚、异常直奔外层 catch，
@@ -922,7 +933,7 @@ describe("回归：根外附件的判定与告警面（§4.3.2）", () => {
     expect(r.text.toLowerCase()).not.toContain("outside the review working directory");
   });
 
-  test.skipIf(!BATCH_CREATE)("批量入口同样给出根外 warning，不是只有单条入口给", async () => {
+  test("批量入口同样给出根外 warning，不是只有单条入口给", async () => {
     const abs = outOfRootAttachment();
     const r = await call("create_statements", {
       statements: [{ content: "Zotero 库里的论文", source: "literature", attachments: [abs] }],

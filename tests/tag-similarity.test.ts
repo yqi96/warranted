@@ -12,41 +12,18 @@
  * 拼写与措辞漂移，不防概念漂移 —— 概念漂移的唯一防线是定期读一遍词表
  * 计数，那归协议层。把反例调成命中，等于把这条边界悄悄挪走。
  *
- * ── 门控 ─────────────────────────────────────────────────────────────
- * `src/tag-similarity.ts` 尚不存在 ⇒ 整份文件跳过；文件一出现即自动生效。
- * 设计文档没有钉死导出名，所以下面用一个薄适配层接受两种合理形态之一；
- * 两种都没有时 **抛错而不是跳过** —— 契约必须有一个落点。
+ * ── 前提 ─────────────────────────────────────────────────────────────
+ * `src/tag-similarity.ts` 必须导出 `isSimilar(a, b)` 与
+ * `findSimilarTags(name, candidates)`。这里静态导入，导不进来就是编译期或
+ * 加载期的错，不是跳过：以前这份文件用动态导入配 `catch { return null }`，
+ * 模块里出一个语法错误，三组测试会安静地全跳过，跑出来仍然是 0 fail。
  */
 
 import { describe, test, expect } from "bun:test";
-
-const MODULE = "../src/tag-similarity.ts";
-const mod: any = await (async () => {
-  try {
-    const specifier = MODULE;
-    return await import(specifier);
-  } catch {
-    return null;
-  }
-})();
-
-const LANDED = !!mod;
-
-/**
- * 适配层：只吸收"函数叫什么名字"这一个自由度，判定内容一律走真实实现。
- */
-function isSimilar(a: string, b: string): boolean {
-  if (typeof mod.isSimilarTag === "function") return !!mod.isSimilarTag(a, b);
-  if (typeof mod.isSimilar === "function") return !!mod.isSimilar(a, b);
-  if (typeof mod.findSimilarTags === "function") return mod.findSimilarTags(a, [b]).length > 0;
-  throw new Error(
-    "src/tag-similarity.ts 必须导出 isSimilarTag(a, b) 或 findSimilarTags(name, candidates) 之一"
-  );
-}
+import { isSimilar, findSimilarTags } from "../src/tag-similarity.ts";
 
 function rank(name: string, candidates: string[]): any[] {
-  if (typeof mod.findSimilarTags === "function") return mod.findSimilarTags(name, candidates);
-  throw new Error("src/tag-similarity.ts 必须导出 findSimilarTags(name, candidates) 用于排序与截断");
+  return findSimilarTags(name, candidates);
 }
 
 // =============================================================================
@@ -112,7 +89,7 @@ const DRIFT_FORMS: Array<{ form: string; a: string; b: string; hit: boolean; why
   },
 ];
 
-describe.skipIf(!LANDED)("漂移形态表（阈值的验收基准）", () => {
+describe("漂移形态表（阈值的验收基准）", () => {
   for (const { form, a, b, hit, why } of DRIFT_FORMS) {
     test(`${form}：${a} ~ ${b} ⇒ ${hit ? "命中" : "不命中"}（${why}）`, () => {
       expect(isSimilar(a, b)).toBe(hit);
@@ -134,7 +111,7 @@ describe.skipIf(!LANDED)("漂移形态表（阈值的验收基准）", () => {
 // 边界（§5.2）
 // =============================================================================
 
-describe.skipIf(!LANDED)("边界", () => {
+describe("边界", () => {
   test("只比同命名空间：theme:cache 与 run:cache 不构成近似", () => {
     expect(isSimilar("theme:cache", "run:cache")).toBe(false);
   });
@@ -161,7 +138,7 @@ describe.skipIf(!LANDED)("边界", () => {
 // 排序与截断（§5.2）
 // =============================================================================
 
-describe.skipIf(!LANDED)("排序与截断", () => {
+describe("排序与截断", () => {
   test("最多返回 3 条", () => {
     const results = rank("theme:retrieval-aug", [
       "theme:retrieval-augmentation",

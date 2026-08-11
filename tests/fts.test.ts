@@ -3,18 +3,17 @@
  *
  * 对应 `.omc/plans/0.5.0/pr2-search.md` §5 的十二条。
  *
- * ── 三种门控，对应三种"今天是什么状态" ──────────────────────────────
+ * ── 两组测试，前提不同 ──────────────────────────────────────────────
  *
- * 1. **FTS 相关（1–9）**：`nodes_fts` 虚表尚不存在 ⇒ 探针关掉。探针查
- *    `sqlite_master`，不是硬编码布尔 —— 建表那天这些断言自动开始判分。
+ * 1. **FTS 相关（1–9）与规模块（11–12）**：依赖 `nodes_fts` 虚表和 `get_stats`
+ *    的 scale 块。这两样今天都在，所以下面"前提"那一节把它们写成断言：缺了
+ *    就红一条并说出缺的是什么，而不是把几十条测试静静跳过。
  *
- * 2. **DISTINCT（10）——   不门控，今天就是红的。** `service.ts:550` 的
+ * 2. **DISTINCT（10）——   今天就是红的。** `service.ts:550` 的
  *    `searchNodesService` 已经存在且三个虚拟角色分支都缺 `DISTINCT`，修复
- *    是就地改 SQL，**不产生任何新的实现表面**，所以没有探针能测出"修好了
- *    没有"。可探测性缺失的时候，唯一诚实的写法是让它红着。这条与
+ *    是就地改 SQL，**不产生任何新的实现表面**，所以没有任何前提断言能表达
+ *    "修好了没有"。可探测性缺失的时候，唯一诚实的写法是让它红着。这条与
  *    `claim-ground.test.ts` 里的存量 bug 同类：锁的是 HEAD 上的活缺陷。
- *
- * 3. **规模块（11–12）**：探针跑一次 `svc.getStats`，看返回里有没有 `scale`。
  *
  * ── 为什么 11、12 单独立案 ───────────────────────────────────────────
  * 缺口矩阵与 Attachments 位是规模块里**唯二会被"优化输出体积"的人改坏而
@@ -35,7 +34,7 @@ const svc = service as any;
 const tagRepo = repo as any;
 
 // =============================================================================
-// 探针
+// 前提
 // =============================================================================
 
 function ftsTableExists(db: Database): boolean {
@@ -55,28 +54,33 @@ function createMockServer() {
   };
 }
 
-/** 一次性探针：跑真实工具链，看 FTS 与规模块在不在。 */
-const PROBE = (() => {
-  const db = createTestDb();
-  try {
-    const fts = ftsTableExists(db);
-    // Check scale block via sync service.getStats
-    let scale = false;
+// 全文检索表、规模块、tag 服务是本文件的前提，不是条件。以前这里是探针配 skipIf：
+// 0.5.0 开发期功能一个一个落地，没落地的部分先跳过。功能全落地之后，探针再没有第二
+// 种真值可报，只剩一个副作用——哪天建表的迁移丢了，本文件几十条测试会安静地跳过，
+// 跑出来仍然是 0 fail。现在改成断言：少了哪个前提就在这里红一条，并说出少的是什么。
+describe("前提", () => {
+  test("nodes_fts 表由迁移建好", () => {
+    const probeDb = createTestDb();
     try {
-      const stats = svc.getStats(db);
-      scale = !!(stats.scale);
-    } catch {
-      scale = false;
+      expect(ftsTableExists(probeDb)).toBe(true);
+    } finally {
+      cleanupDb(probeDb);
     }
-    return { fts, scale, tags: typeof svc.createTagService === "function" };
-  } finally {
-    cleanupDb(db);
-  }
-})();
+  });
 
-const FTS_LANDED = PROBE.fts;
-const SCALE_LANDED = PROBE.scale;
-const TAGS_LANDED = PROBE.tags;
+  test("get_stats 带 scale 块", () => {
+    const probeDb = createTestDb();
+    try {
+      expect(svc.getStats(probeDb).scale).toBeDefined();
+    } finally {
+      cleanupDb(probeDb);
+    }
+  });
+
+  test("tag 服务可用", () => {
+    expect(typeof svc.createTagService).toBe("function");
+  });
+});
 
 // =============================================================================
 // 夹具
@@ -117,7 +121,7 @@ function rowsOf(result: any): any[] {
 // 1–2：子串命中（中文与英文）
 // =============================================================================
 
-describe.skipIf(!FTS_LANDED)("§5.1–2：子串命中", () => {
+describe("§5.1–2：子串命中", () => {
   test("中文子串命中 —— unicode61 不切中文词，这是选 trigram 的全部理由", () => {
     const g = makeGround(db, { content: "长上下文模型在检索增强任务上的表现" });
     makeGround(db, { content: "完全无关的另一条证据" });
@@ -151,7 +155,7 @@ describe.skipIf(!FTS_LANDED)("§5.1–2：子串命中", () => {
 // 3：rank 排序
 // =============================================================================
 
-describe.skipIf(!FTS_LANDED)("§5.3：rank 排序", () => {
+describe("§5.3：rank 排序", () => {
   test("MATCH 结果按 f.rank 排序，且服务层保留这个顺序（不是按 id）", () => {
     // 命中密度高的短文本应排在被长文本稀释的前面
     const dense = makeGround(db, { content: "缓存淘汰 缓存淘汰 缓存淘汰" });
@@ -171,7 +175,7 @@ describe.skipIf(!FTS_LANDED)("§5.3：rank 排序", () => {
 // 4：三个触发器
 // =============================================================================
 
-describe.skipIf(!FTS_LANDED)("§5.4：insert / update / delete 三个触发器", () => {
+describe("§5.4：insert / update / delete 三个触发器", () => {
   test("AFTER INSERT：新节点立刻可检索", () => {
     const g = makeGround(db, { content: "新插入的证据内容" });
     expect(ftsMatch("新插入")).toContain(g.id);
@@ -208,7 +212,7 @@ describe.skipIf(!FTS_LANDED)("§5.4：insert / update / delete 三个触发器",
 // 5：旧库 rebuild 迁移
 // =============================================================================
 
-describe.skipIf(!FTS_LANDED)("§5.5：旧库 rebuild 迁移", () => {
+describe("§5.5：旧库 rebuild 迁移", () => {
   test("绕过触发器直插 nodes ⇒ 无 FTS 结果 ⇒ rebuild 之后命中", () => {
     // 模拟"库比虚表老"：先卸触发器再插，等价于旧库里已有的历史行
     // 对 FTS5 external content 表，COUNT(*) 读的是 nodes 表，所以要检查查询结果
@@ -293,7 +297,7 @@ describe.skipIf(!FTS_LANDED)("§5.5：旧库 rebuild 迁移", () => {
 // 6：<3 字符回落 LIKE
 // =============================================================================
 
-describe.skipIf(!FTS_LANDED)("§5.6：<3 字符回落 LIKE", () => {
+describe("§5.6：<3 字符回落 LIKE", () => {
   test("2 字符查询走 LIKE 而不是返回空 —— trigram 对 <3 字符无结果", () => {
     const g = makeGround(db, { content: "缓存淘汰实测" });
     expect(rowsOf(search("缓存")).map((n: any) => n.id)).toContain(g.id);
@@ -314,7 +318,7 @@ describe.skipIf(!FTS_LANDED)("§5.6：<3 字符回落 LIKE", () => {
 // 7：tag 过滤与 FTS 组合
 // =============================================================================
 
-describe.skipIf(!FTS_LANDED || !TAGS_LANDED)("§5.7：tag 过滤与 FTS 组合", () => {
+describe("§5.7：tag 过滤与 FTS 组合", () => {
   function tagIt(nodeId: number, tag: string) {
     tagRepo.addNodeTags(db, nodeId, [tag]);
   }
@@ -346,7 +350,7 @@ describe.skipIf(!FTS_LANDED || !TAGS_LANDED)("§5.7：tag 过滤与 FTS 组合",
 // 8：分页 total
 // =============================================================================
 
-describe.skipIf(!FTS_LANDED)("§5.8：分页 total 与 limit 无关", () => {
+describe("§5.8：分页 total 与 limit 无关", () => {
   function seed(n: number): void {
     for (let i = 0; i < n; i++) makeGround(db, { content: `缓存淘汰实测第 ${i} 条` });
   }
@@ -391,7 +395,7 @@ describe.skipIf(!FTS_LANDED)("§5.8：分页 total 与 limit 无关", () => {
 // 9：phrase 引号转义
 // =============================================================================
 
-describe.skipIf(!FTS_LANDED)("§5.9：phrase 引号转义", () => {
+describe("§5.9：phrase 引号转义", () => {
   test('查询里含 " 时不抛 FTS 语法错', () => {
     const g = makeGround(db, { content: '论文里写的是 "retrieval-augmented" 这个词' });
     expect(() => search('"retrieval')).not.toThrow();
@@ -472,7 +476,7 @@ describe("§5.10：虚拟角色过滤的 DISTINCT（三个分支各一条）", (
 // 11：缺口矩阵只出 (稠密, 有界) 有序对
 // =============================================================================
 
-describe.skipIf(!SCALE_LANDED || !TAGS_LANDED)("§5.11：缺口矩阵的有序对范围", () => {
+describe("§5.11：缺口矩阵的有序对范围", () => {
   function gapText(): string {
     const stats = svc.getStats(db);
     if (!stats.scale) return "";
@@ -516,7 +520,7 @@ describe.skipIf(!SCALE_LANDED || !TAGS_LANDED)("§5.11：缺口矩阵的有序�
 // 12：Attachments 位列文件名并标失效
 // =============================================================================
 
-describe.skipIf(!SCALE_LANDED)("§5.12：Attachments 位", () => {
+describe("§5.12：Attachments 位", () => {
   function attText(): string {
     const stats = svc.getStats(db);
     if (!stats.scale) return "";
@@ -676,7 +680,7 @@ describe("§13：过滤在分页之前完成，total 反映过滤后的集合", 
 // 读起来与"这个类目下确实没有节点"完全一样。
 // =============================================================================
 
-describe.skipIf(!TAGS_LANDED)("§14：tag 通配的入口一致性", () => {
+describe("§14：tag 通配的入口一致性", () => {
   beforeEach(() => {
     svc.createTagService(db, "theme:cache", "缓存类目");
   });
@@ -732,7 +736,7 @@ describe("§15：角色分支同样受 limit / offset / tag 约束", () => {
     expect(r.total).toBe(30);
   });
 
-  test.skipIf(!TAGS_LANDED)("tag 过滤在角色分支里不被丢弃", () => {
+  test("tag 过滤在角色分支里不被丢弃", () => {
     const ids = seedGrounds(10);
     svc.createTagService(db, "theme:cache", "缓存类目");
     tagRepo.addNodeTags(db, ids[0], ["theme:cache"]);
@@ -774,7 +778,7 @@ describe("§15：角色分支同样受 limit / offset / tag 约束", () => {
 // 与实现必须同真同假，否则说明文字本身成了错误信息源。
 // =============================================================================
 
-describe.skipIf(!TAGS_LANDED)("§16：list_tags 的截断可见与 min_count=0", () => {
+describe("§16：list_tags 的截断可见与 min_count=0", () => {
   test("超过 limit 时头行报总数与 offset", async () => {
     for (let i = 0; i < 120; i++) {
       svc.createTagService(db, `paper:k${String(i).padStart(3, "0")}`, `论文 ${i}`);
@@ -842,7 +846,7 @@ describe.skipIf(!TAGS_LANDED)("§16：list_tags 的截断可见与 min_count=0",
 // 事"），所以它们的和恒不等于 Claim 总数：任何已裁决的 Claim 都不在其中。
 // =============================================================================
 
-describe.skipIf(!SCALE_LANDED)("§17：Statements / Claims 汇总行的量纲", () => {
+describe("§17：Statements / Claims 汇总行的量纲", () => {
   async function statsText(): Promise<string> {
     const out = await tools["get_stats"].handler({});
     return out.content[0].text as string;
@@ -850,15 +854,13 @@ describe.skipIf(!SCALE_LANDED)("§17：Statements / Claims 汇总行的量纲", 
 
   test("Statements 行报 Statement 数，不是标签数之和", async () => {
     for (let i = 0; i < 7; i++) makeGround(db, { content: `证据 ${i}`, attachments: ["README.md"] });
-    if (TAGS_LANDED) {
-      svc.createTagService(db, "theme:cache", "缓存类目");
-      const rows = repo.listNodesByType(db, "statement");
-      tagRepo.addNodeTags(db, rows[0].id, ["theme:cache"]);
-    }
+    svc.createTagService(db, "theme:cache", "缓存类目");
+    const rows = repo.listNodesByType(db, "statement");
+    tagRepo.addNodeTags(db, rows[0].id, ["theme:cache"]);
     const text = await statsText();
     const line = text.split("\n").find(l => l.startsWith("Statements:")) ?? "";
     expect(line).toContain("Statements: 7");
-    if (TAGS_LANDED) expect(line).toContain("(1 tagged, 6 untagged)");
+    expect(line).toContain("(1 tagged, 6 untagged)");
   });
 
   test("Claims 行报 Claim 总数，不是三个子状态之和", async () => {
@@ -903,7 +905,7 @@ describe.skipIf(!SCALE_LANDED)("§17：Statements / Claims 汇总行的量纲", 
 // §0.2 更隐蔽 —— 读者不知道矩阵原本有多大。
 // =============================================================================
 
-describe.skipIf(!SCALE_LANDED)("§18：矩阵与 Attachments 在真实输出里", () => {
+describe("§18：矩阵与 Attachments 在真实输出里", () => {
   async function statsText(): Promise<string> {
     const out = await tools["get_stats"].handler({});
     return out.content[0].text as string;
@@ -929,7 +931,7 @@ describe.skipIf(!SCALE_LANDED)("§18：矩阵与 Attachments 在真实输出里"
     expect(line).not.toContain("docs/f0.md");
   });
 
-  test.skipIf(!TAGS_LANDED)("矩阵在真实输出里只出 (稠密, 有界) 有序对", async () => {
+  test("矩阵在真实输出里只出 (稠密, 有界) 有序对", async () => {
     tagRepo.setNamespaceCardinality(db, "paper", "dense");
     tagRepo.setNamespaceCardinality(db, "theme", "bounded");
     tagRepo.setNamespaceCardinality(db, "meta", "bounded");
@@ -945,7 +947,7 @@ describe.skipIf(!SCALE_LANDED)("§18：矩阵与 Attachments 在真实输出里"
     expect(text).not.toContain("theme: -> paper:");
   });
 
-  test.skipIf(!TAGS_LANDED)("矩阵超过 8 行时截断，且头行报省略了多少对", async () => {
+  test("矩阵超过 8 行时截断，且头行报省略了多少对", async () => {
     // 1 个稠密 × 10 个有界 = 10 对，全部非零 ⇒ 触发 8 行上限
     tagRepo.setNamespaceCardinality(db, "paper", "dense");
     svc.createTagService(db, "paper:smith2024", "论文甲");
@@ -965,7 +967,7 @@ describe.skipIf(!SCALE_LANDED)("§18：矩阵与 Attachments 在真实输出里"
     expect(header).toContain("2 more pair(s) omitted");
   });
 
-  test.skipIf(!TAGS_LANDED)("未省略时头行不带省略说明", async () => {
+  test("未省略时头行不带省略说明", async () => {
     tagRepo.setNamespaceCardinality(db, "paper", "dense");
     tagRepo.setNamespaceCardinality(db, "theme", "bounded");
     svc.createTagService(db, "paper:smith2024", "论文甲");

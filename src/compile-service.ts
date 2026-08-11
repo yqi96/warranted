@@ -189,8 +189,7 @@ export function structuralPreCheck(db: Database, claimId: number): string[] {
   }
 
   for (const w of warrants) {
-    const wData = JSON.parse(w.data);
-    const groundIds: number[] = wData.ground_ids || [];
+    const groundIds: number[] = repo.findGroundIdsByWarrant(db, w.id);
     if (groundIds.length === 0) {
       errors.push(`Warrant #${w.id} has no Grounds.`);
       continue;
@@ -279,8 +278,7 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
 
   // Helper: check if all grounds in a warrant are verified
   function allGroundsVerified(warrantIdx: number): boolean {
-    const wd = ctx!.warrantDatas[warrantIdx];
-    const gIds = (wd.ground_ids || []) as number[];
+    const gIds = ctx!.warrantGroundIds[warrantIdx];
     if (gIds.length === 0) return false;
     return gIds.every(gid => {
       const gr = ctx!.groundRows.find(g => g.id === gid);
@@ -293,8 +291,7 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
 
   for (let i = 0; i < ctx.warrantRows.length; i++) {
     const w = ctx.warrantRows[i];
-    const wd = ctx.warrantDatas[i];
-    const gIds = (wd.ground_ids || []) as number[];
+    const gIds = ctx.warrantGroundIds[i];
 
     totalRebuttals += warrantRebuttalCounts.get(w.id) ?? 0;
 
@@ -318,7 +315,7 @@ export function structuralQualityCheck(db: Database, claimId: number): ElementRe
   const hasVerifiedWarrant = ctx.warrantRows.some((_, i) => allGroundsVerified(i));
   if (!hasVerifiedWarrant) {
     const blockers = ctx.warrantRows.map((w, i) => {
-      const gIds = (ctx!.warrantDatas[i].ground_ids || []) as number[];
+      const gIds = ctx!.warrantGroundIds[i];
       const unverified = gIds
         .map(gid => ctx!.groundRows.find(g => g.id === gid))
         .filter((g): g is NodeRow => !!g && !isClaimOrStatementVerified(g));

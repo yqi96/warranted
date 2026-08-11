@@ -29,25 +29,25 @@ describe("detectConnectedChain", () => {
     const claim = makeClaim(db);
     // 直接插入一个无 ground 的 warrant（绕过 service 校验）
     const now = new Date().toISOString().slice(0, 19);
-    db.prepare(
+    const res = db.prepare(
       "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('warrant', ?, ?, ?, ?)"
-    ).run("empty warrant", JSON.stringify({ claim_id: claim.id, ground_ids: [] }), now, now);
-    const wId = db.prepare("SELECT last_insert_rowid()").get() as any;
+    ).run("empty warrant", JSON.stringify({ claim_id: claim.id }), now, now);
+    const wId = res.lastInsertRowid as number;
 
-    const result = detectConnectedChain(db, wId.last_insert_rowid);
-    expect(result).toBeNull();
+    expect(detectConnectedChain(db, wId)).toBeNull();
   });
 
   test("Warrant 无 Claim 时返回 null", () => {
     const ground = makeGround(db);
     const now = new Date().toISOString().slice(0, 19);
-    db.prepare(
+    const res = db.prepare(
       "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('warrant', ?, ?, ?, ?)"
-    ).run("orphan warrant", JSON.stringify({ claim_id: 999, ground_ids: [ground.id] }), now, now);
-    const wId = db.prepare("SELECT last_insert_rowid()").get() as any;
+    ).run("orphan warrant", JSON.stringify({ claim_id: 999 }), now, now);
+    const wId = res.lastInsertRowid as number;
+    // 必须真的给它一个 ground，否则会因为"没有 ground"返回 null，测不到"没有 claim"
+    db.prepare("INSERT INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(wId, ground.id);
 
-    const result = detectConnectedChain(db, wId.last_insert_rowid);
-    expect(result).toBeNull();
+    expect(detectConnectedChain(db, wId)).toBeNull();
   });
 
   test("多 Ground 链路返回所有 groundIds", () => {

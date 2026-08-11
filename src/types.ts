@@ -115,7 +115,9 @@ export interface ClaimData {
 
 export interface WarrantData {
   claim_id: number;
-  ground_ids: number[];
+  // ground 集合不在这里 —— 唯一记录是 warrant_grounds 表，用
+  // repo.findGroundIdsByWarrant 读。曾经这里存过一份 ground_ids 副本，
+  // 两边各有消费者，于是逻辑审查和结构审查会看到不同的 ground 集合。
 }
 
 export interface StatementData {

@@ -239,63 +239,6 @@ export function countNodesByType(db: Database): Record<string, number> {
 }
 
 // =============================================================================
-// JSON 数组操作（ground_ids）
-// =============================================================================
-
-/** 向 Warrant 的 ground_ids 追加 ID，并同步 warrant_grounds 关系表 */
-export function addGroundIds(db: Database, warrantId: number, ids: number[]): NodeRow | null {
-  const row = getNodeById(db, warrantId);
-  if (!row || row.type !== "warrant") return null;
-
-  const data = JSON.parse(row.data);
-  const existing: number[] = data.ground_ids || [];
-  const newIds = [...new Set([...existing, ...ids])];
-  data.ground_ids = newIds;
-
-  // Also insert into warrant_grounds
-  for (const id of ids) {
-    db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(warrantId, id);
-  }
-
-  return updateNodeFields(db, warrantId, { data });
-}
-
-/** 从 Warrant 的 ground_ids 移除 ID，并同步 warrant_grounds 关系表 */
-export function removeGroundIds(db: Database, warrantId: number, ids: number[]): NodeRow | null {
-  const row = getNodeById(db, warrantId);
-  if (!row || row.type !== "warrant") return null;
-
-  const data = JSON.parse(row.data);
-  const existing: number[] = data.ground_ids || [];
-  data.ground_ids = existing.filter((id: number) => !ids.includes(id));
-
-  // Also remove from warrant_grounds
-  for (const id of ids) {
-    db.prepare("DELETE FROM warrant_grounds WHERE warrant_id = ? AND ground_id = ?").run(warrantId, id);
-  }
-
-  return updateNodeFields(db, warrantId, { data });
-}
-
-/** 从所有 Warrant 的 ground_ids 中移除指定 Ground，并从 warrant_grounds 关系表删除 */
-export function removeGroundFromAllWarrants(db: Database, groundId: number): void {
-  // Remove from relationship table
-  db.prepare("DELETE FROM warrant_grounds WHERE ground_id = ?").run(groundId);
-  // Also update JSON ground_ids for any warrant that still references this ground
-  const stmt = db.prepare("SELECT * FROM nodes WHERE type = 'warrant'");
-  const warrants = stmt.all() as NodeRow[];
-
-  for (const w of warrants) {
-    const data = JSON.parse(w.data);
-    const ids: number[] = data.ground_ids || [];
-    if (ids.includes(groundId)) {
-      data.ground_ids = ids.filter((id: number) => id !== groundId);
-      updateNodeFields(db, w.id, { data });
-    }
-  }
-}
-
-// =============================================================================
 // 关系表操作
 // =============================================================================
 
@@ -305,6 +248,27 @@ export function findGroundsByWarrant(db: Database, warrantId: number): NodeRow[]
     "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.ground_id WHERE wg.warrant_id = ? ORDER BY n.id"
   );
   return stmt.all(warrantId) as NodeRow[];
+}
+
+/**
+ * 查找 Warrant 的 Ground ID 列表 —— warrant_grounds 是这个集合的唯一记录。
+ *
+ * 只要 id 就走这里，不要读节点 blob 里的 ground_ids：那个字段已经删掉了。
+ * 之前它和本表并存，两边各有消费者，重复的 id 只进得了 blob 一边，于是
+ * 逻辑审查看到 3 条 ground 而结构审查看到 2 条。
+ *
+ * 返回按 id 升序，与 findGroundsByWarrant 同序。
+ */
+export function findGroundIdsByWarrant(db: Database, warrantId: number): number[] {
+  const rows = db.prepare(
+    "SELECT ground_id FROM warrant_grounds WHERE warrant_id = ? ORDER BY ground_id"
+  ).all(warrantId) as Array<{ ground_id: number }>;
+  return rows.map(r => r.ground_id);
+}
+
+/** 从 warrant_grounds 删除某个 Ground 的全部关系 */
+export function removeGroundFromAllWarrants(db: Database, groundId: number): void {
+  db.prepare("DELETE FROM warrant_grounds WHERE ground_id = ?").run(groundId);
 }
 
 /** 插入 warrant_grounds 关系 */

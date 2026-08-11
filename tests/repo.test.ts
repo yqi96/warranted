@@ -49,11 +49,11 @@ describe("insertNode", () => {
   test("插入 Warrant 节点", () => {
     const row = repo.insertNode(db, "warrant", "推理规则", {
       claim_id: 1,
-      ground_ids: [2, 3],
     });
     const data = JSON.parse(row.data);
     expect(data.claim_id).toBe(1);
-    expect(data.ground_ids).toEqual([2, 3]);
+    // ground 集合不在 blob 里，唯一记录是 warrant_grounds 表
+    expect(data.ground_ids).toBeUndefined();
   });
 
   test("插入 Backing 节点", () => {
@@ -178,9 +178,9 @@ describe("关联查询", () => {
   test("findWarrantsByClaim 返回正确的 Warrant", () => {
     repo.insertNode(db, "claim", "C1", { status: "proposed" });
     repo.insertNode(db, "claim", "C2", { status: "proposed" });
-    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [] });
-    repo.insertNode(db, "warrant", "W2", { claim_id: 2, ground_ids: [] });
-    repo.insertNode(db, "warrant", "W3", { claim_id: 1, ground_ids: [] });
+    repo.insertNode(db, "warrant", "W1", { claim_id: 1 });
+    repo.insertNode(db, "warrant", "W2", { claim_id: 2 });
+    repo.insertNode(db, "warrant", "W3", { claim_id: 1 });
 
     const w = repo.findWarrantsByClaim(db, 1);
     expect(w.length).toBe(2);
@@ -189,7 +189,7 @@ describe("关联查询", () => {
   });
 
   test("findBackingsByWarrant 返回正确的 Backing", () => {
-    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [] });
+    repo.insertNode(db, "warrant", "W1", { claim_id: 1 });
     const b1 = repo.insertNode(db, "statement", "B1", { attachments: [] });
     const b2 = repo.insertNode(db, "statement", "B2", { attachments: [] });
     db.prepare("INSERT INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(1, b1.id);
@@ -201,7 +201,7 @@ describe("关联查询", () => {
 
   test("findRebuttalsByTarget 按 target 过滤", () => {
     repo.insertNode(db, "claim", "C1", { status: "proposed" });
-    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [] });
+    repo.insertNode(db, "warrant", "W1", { claim_id: 1 });
     const r1 = repo.insertNode(db, "statement", "R1", { attachments: [] });
     const r2 = repo.insertNode(db, "statement", "R2", { attachments: [] });
     db.prepare("INSERT INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, ?)").run(r1.id, 1, "claim");
@@ -271,41 +271,41 @@ describe("countNodesByType", () => {
 });
 
 // =============================================================================
-// JSON 数组操作
+// warrant_grounds —— Warrant 的 ground 集合，唯一记录
 // =============================================================================
 
-describe("ground_ids 操作", () => {
-  test("addGroundIds 追加 ID", () => {
-    const g1 = repo.insertNode(db, "statement", "G1", { source: "observed", verification: "verified", attachments: [] });
-    const g2 = repo.insertNode(db, "statement", "G2", { source: "observed", verification: "verified", attachments: [] });
-    const g3 = repo.insertNode(db, "statement", "G3", { source: "observed", verification: "verified", attachments: [] });
-    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [g1.id] });
-    repo.addGroundIds(db, 4, [g2.id, g3.id]);
-    const row = repo.getNodeById(db, 4)!;
-    const data = JSON.parse(row.data);
-    expect(data.ground_ids).toEqual([g1.id, g2.id, g3.id]);
+describe("warrant_grounds", () => {
+  test("findGroundIdsByWarrant 按 id 升序返回", () => {
+    const g1 = repo.insertNode(db, "statement", "G1", { attachments: [] });
+    const g2 = repo.insertNode(db, "statement", "G2", { attachments: [] });
+    const g3 = repo.insertNode(db, "statement", "G3", { attachments: [] });
+    const w1 = repo.insertNode(db, "warrant", "W1", { claim_id: 1 });
+    // 故意逆序插入。实测：把 SQL 里的 ORDER BY 删掉，这条断言照样通过 ——
+    // warrant_grounds 的主键是 (warrant_id, ground_id)，走主键索引出来的
+    // ground_id 本来就是升序。所以这条是在记录"升序"这个对外承诺，
+    // 而不是在盯住那句 ORDER BY；主键换了形状它才会开始报警。
+    db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w1.id, g3.id);
+    db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w1.id, g1.id);
+    db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w1.id, g2.id);
+
+    expect(repo.findGroundIdsByWarrant(db, w1.id)).toEqual([g1.id, g2.id, g3.id]);
   });
 
-  test("addGroundIds 跳过重复 ID", () => {
-    const g1 = repo.insertNode(db, "statement", "G1", { source: "observed", verification: "verified", attachments: [] });
-    const g2 = repo.insertNode(db, "statement", "G2", { source: "observed", verification: "verified", attachments: [] });
-    const g3 = repo.insertNode(db, "statement", "G3", { source: "observed", verification: "verified", attachments: [] });
-    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [g1.id, g2.id] });
-    repo.addGroundIds(db, 4, [g2.id, g3.id]);
-    const row = repo.getNodeById(db, 4)!;
-    const data = JSON.parse(row.data);
-    expect(data.ground_ids).toEqual([g1.id, g2.id, g3.id]);
+  test("findGroundIdsByWarrant 与 findGroundsByWarrant 同序", () => {
+    const g1 = repo.insertNode(db, "statement", "G1", { attachments: [] });
+    const g2 = repo.insertNode(db, "statement", "G2", { attachments: [] });
+    const w1 = repo.insertNode(db, "warrant", "W1", { claim_id: 1 });
+    db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w1.id, g2.id);
+    db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w1.id, g1.id);
+
+    expect(repo.findGroundIdsByWarrant(db, w1.id)).toEqual(
+      repo.findGroundsByWarrant(db, w1.id).map(r => r.id)
+    );
   });
 
-  test("removeGroundIds 移除指定 ID", () => {
-    const g1 = repo.insertNode(db, "statement", "G1", { source: "observed", verification: "verified", attachments: [] });
-    const g2 = repo.insertNode(db, "statement", "G2", { source: "observed", verification: "verified", attachments: [] });
-    const g3 = repo.insertNode(db, "statement", "G3", { source: "observed", verification: "verified", attachments: [] });
-    repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [g1.id, g2.id, g3.id] });
-    repo.removeGroundIds(db, 4, [g2.id]);
-    const row = repo.getNodeById(db, 4)!;
-    const data = JSON.parse(row.data);
-    expect(data.ground_ids).toEqual([g1.id, g3.id]);
+  test("没有 ground 的 Warrant 返回空数组", () => {
+    const w1 = repo.insertNode(db, "warrant", "W1", { claim_id: 1 });
+    expect(repo.findGroundIdsByWarrant(db, w1.id)).toEqual([]);
   });
 
   test("removeGroundFromAllWarrants 清理所有引用", () => {
@@ -313,10 +313,9 @@ describe("ground_ids 操作", () => {
     const g2 = repo.insertNode(db, "statement", "G2", { attachments: [] });
     const g3 = repo.insertNode(db, "statement", "G3", { attachments: [] });
     const g4 = repo.insertNode(db, "statement", "G4", { attachments: [] });
-    const w1 = repo.insertNode(db, "warrant", "W1", { claim_id: 1, ground_ids: [g1.id, g2.id] });
-    const w2 = repo.insertNode(db, "warrant", "W2", { claim_id: 2, ground_ids: [g2.id, g3.id] });
-    const w3 = repo.insertNode(db, "warrant", "W3", { claim_id: 1, ground_ids: [g4.id] });
-    // Populate warrant_grounds
+    const w1 = repo.insertNode(db, "warrant", "W1", { claim_id: 1 });
+    const w2 = repo.insertNode(db, "warrant", "W2", { claim_id: 2 });
+    const w3 = repo.insertNode(db, "warrant", "W3", { claim_id: 1 });
     db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w1.id, g1.id);
     db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w1.id, g2.id);
     db.prepare("INSERT INTO warrant_grounds VALUES (?,?)").run(w2.id, g2.id);
@@ -325,13 +324,9 @@ describe("ground_ids 操作", () => {
 
     repo.removeGroundFromAllWarrants(db, g2.id);
 
-    const wd1 = JSON.parse(repo.getNodeById(db, w1.id)!.data);
-    const wd2 = JSON.parse(repo.getNodeById(db, w2.id)!.data);
-    const wd3 = JSON.parse(repo.getNodeById(db, w3.id)!.data);
-
-    expect(wd1.ground_ids).toEqual([g1.id]);
-    expect(wd2.ground_ids).toEqual([g3.id]);
-    expect(wd3.ground_ids).toEqual([g4.id]); // 不含 g2，不变
+    expect(repo.findGroundIdsByWarrant(db, w1.id)).toEqual([g1.id]);
+    expect(repo.findGroundIdsByWarrant(db, w2.id)).toEqual([g3.id]);
+    expect(repo.findGroundIdsByWarrant(db, w3.id)).toEqual([g4.id]); // 不含 g2，不变
   });
 });
 

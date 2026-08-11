@@ -119,7 +119,7 @@ function formatNodeDetail(row: NodeRow, db: Database): string {
     }
     case "warrant":
       lines.push(`claim_id: ${data.claim_id}`);
-      lines.push(`ground_ids: [${(data.ground_ids ?? []).join(", ")}]`);
+      lines.push(`ground_ids: [${repo.findGroundIdsByWarrant(db, row.id).join(", ")}]`);
       break;
   }
   return lines.join("\n");

@@ -312,18 +312,19 @@ describe("updateNode", () => {
 });
 
 // =============================================================================
-// updateNode ground_ids 双存储一致性 (Bugs 1/2/3, Option C)
+// updateNode 的 ground_ids 增量操作
+//
+// 这批测试原本叫 "dual-storage"：ground 集合曾经同时存在节点 blob 和 warrant_grounds
+// 表两份，每个测试都要断言两边相等。现在只有关系表一份，"两边不一致"这件事不存在了，
+// 所以只剩一个读法。原 T9/T10 是"人为把 blob 改歪，再验证下一次写入会自愈"，
+// 一份存储之后无法构造那个初始状态，已随存储一起删除。
 // =============================================================================
 
-describe("updateNode ground_ids dual-storage (Bugs 1/2/3)", () => {
-  // blob 缓存读取（get_node/toWarrantNode 路径）
-  const blobIds = (wid: number): number[] =>
-    JSON.parse(repo.getNodeById(db, wid)!.data).ground_ids || [];
-  // 关系表读取（get_argument/findGroundsByWarrant 路径）
-  const relIds = (wid: number): number[] =>
-    repo.findGroundsByWarrant(db, wid).map(r => r.id);
+describe("updateNode ground_ids 增量操作", () => {
+  const groundIdsOf = (wid: number): number[] =>
+    repo.findGroundIdsByWarrant(db, wid);
 
-  test("T1 mixed add+remove: [G9] + {add:[G27],remove:[G9]} → both = [G27]", () => {
+  test("T1 mixed add+remove: [G9] + {add:[G27],remove:[G9]} → [G27]", () => {
     const claim = makeClaim(db);
     const g9 = makeGround(db, { content: "G9" });
     const g27 = makeGround(db, { content: "G27" });
@@ -334,11 +335,10 @@ describe("updateNode ground_ids dual-storage (Bugs 1/2/3)", () => {
     });
 
     expect((node as any).groundIds).toEqual([g27.id]);
-    expect(blobIds(warrant.id)).toEqual([g27.id]);
-    expect(relIds(warrant.id)).toEqual([g27.id]);
+    expect(groundIdsOf(warrant.id)).toEqual([g27.id]);
   });
 
-  test("T2 add+remove same id resolves to defined net-effect state, no divergence", () => {
+  test("T2 add+remove same id resolves to defined net-effect state", () => {
     const claim = makeClaim(db);
     const g9 = makeGround(db, { content: "G9" });
     const g27 = makeGround(db, { content: "G27" });
@@ -349,11 +349,10 @@ describe("updateNode ground_ids dual-storage (Bugs 1/2/3)", () => {
       ground_ids: { add: [g27.id], remove: [g27.id] },
     });
 
-    expect(blobIds(warrant.id)).toEqual(relIds(warrant.id));
-    expect([...blobIds(warrant.id)].sort()).toEqual([g9.id]);
+    expect(groundIdsOf(warrant.id)).toEqual([g9.id]);
   });
 
-  test("T3 Bug 2 regression: all three read paths agree after {add,remove}", () => {
+  test("T3 所有读法一致: 返回值 / get_argument / 关系表", () => {
     const claim = makeClaim(db);
     const g7 = makeGround(db, { content: "G7" });
     const g9 = makeGround(db, { content: "G9" });
@@ -368,7 +367,7 @@ describe("updateNode ground_ids dual-storage (Bugs 1/2/3)", () => {
     const argIds = (service.getArgument(db, warrant.id) as any).grounds
       .map((g: any) => g.id)
       .sort((a: number, b: number) => a - b);
-    const repoIds = relIds(warrant.id).sort((a, b) => a - b);
+    const repoIds = groundIdsOf(warrant.id).sort((a, b) => a - b);
 
     expect(returnIds).toEqual(argIds);
     expect(argIds).toEqual(repoIds);
@@ -387,16 +386,16 @@ describe("updateNode ground_ids dual-storage (Bugs 1/2/3)", () => {
         ground_ids: { add: [g27.id], remove: [g9.id] },
       })
     ).not.toThrow();
-    expect(blobIds(warrant.id)).toEqual([g27.id]);
+    expect(groundIdsOf(warrant.id)).toEqual([g27.id]);
 
     // removing the last remaining ground is now allowed
     expect(() =>
       service.updateNode(db, warrant.id, { ground_ids: { remove: [g27.id] } })
     ).not.toThrow();
-    expect(blobIds(warrant.id)).toEqual([]);
+    expect(groundIdsOf(warrant.id)).toEqual([]);
   });
 
-  test("T5 atomicity: failed backing add rolls back ground writes (blob & relation)", () => {
+  test("T5 atomicity: failed backing add rolls back ground writes", () => {
     const claim = makeClaim(db);
     const g9 = makeGround(db, { content: "G9" });
     const g27 = makeGround(db, { content: "G27" });
@@ -409,9 +408,8 @@ describe("updateNode ground_ids dual-storage (Bugs 1/2/3)", () => {
       })
     ).toThrow(NotFoundError);
 
-    // transaction rollback → both stores unchanged at [G9]
-    expect(blobIds(warrant.id)).toEqual([g9.id]);
-    expect(relIds(warrant.id)).toEqual([g9.id]);
+    // transaction rollback → unchanged at [G9]
+    expect(groundIdsOf(warrant.id)).toEqual([g9.id]);
   });
 
   test("T6 idempotence: add [G27] then remove [G27] returns to [G9]", () => {
@@ -423,11 +421,10 @@ describe("updateNode ground_ids dual-storage (Bugs 1/2/3)", () => {
     service.updateNode(db, warrant.id, { ground_ids: { add: [g27.id] } });
     service.updateNode(db, warrant.id, { ground_ids: { remove: [g27.id] } });
 
-    expect(blobIds(warrant.id)).toEqual([g9.id]);
-    expect(relIds(warrant.id)).toEqual([g9.id]);
+    expect(groundIdsOf(warrant.id)).toEqual([g9.id]);
   });
 
-  test("T7 add-only unaffected: {add:[G27]} on [G9] → both = [G9,G27]", () => {
+  test("T7 add-only: {add:[G27]} on [G9] → [G9,G27]", () => {
     const claim = makeClaim(db);
     const g9 = makeGround(db, { content: "G9" });
     const g27 = makeGround(db, { content: "G27" });
@@ -435,11 +432,10 @@ describe("updateNode ground_ids dual-storage (Bugs 1/2/3)", () => {
 
     service.updateNode(db, warrant.id, { ground_ids: { add: [g27.id] } });
 
-    expect([...blobIds(warrant.id)].sort((a, b) => a - b)).toEqual([g9.id, g27.id]);
-    expect([...relIds(warrant.id)].sort((a, b) => a - b)).toEqual([g9.id, g27.id]);
+    expect([...groundIdsOf(warrant.id)].sort((a, b) => a - b)).toEqual([g9.id, g27.id]);
   });
 
-  test("T8 remove-only unaffected: {remove:[G27]} on [G9,G27] → both = [G9]", () => {
+  test("T8 remove-only: {remove:[G27]} on [G9,G27] → [G9]", () => {
     const claim = makeClaim(db);
     const g9 = makeGround(db, { content: "G9" });
     const g27 = makeGround(db, { content: "G27" });
@@ -447,53 +443,46 @@ describe("updateNode ground_ids dual-storage (Bugs 1/2/3)", () => {
 
     service.updateNode(db, warrant.id, { ground_ids: { remove: [g27.id] } });
 
-    expect(blobIds(warrant.id)).toEqual([g9.id]);
-    expect(relIds(warrant.id)).toEqual([g9.id]);
+    expect(groundIdsOf(warrant.id)).toEqual([g9.id]);
+  });
+});
+
+// =============================================================================
+// ground 集合只有一份记录
+//
+// 这两条钉住的是当年两份存储各自漏出来的症状：
+// 1. create_warrant 传重复 id，blob 里留 3 个元素，关系表只有 2 行；
+// 2. update_node(ground_ids: {}) 什么也没改，却因为重写 blob 让论证哈希翻了个身
+//    （ea12fc1e81bd → 8fa20f54bb8d），下游据此判定论证已过期。
+// =============================================================================
+
+describe("ground 集合的唯一记录", () => {
+  test("create_warrant 传重复 id，每条读法都只看到一条", () => {
+    const claim = makeClaim(db);
+    const g1 = makeGround(db, { content: "G1" });
+    const g2 = makeGround(db, { content: "G2" });
+
+    const warrant = service.createWarrant(db, {
+      content: "W",
+      claimId: claim.id,
+      groundIds: [g1.id, g1.id, g2.id],
+    });
+
+    expect(warrant.groundIds).toEqual([g1.id, g2.id]);
+    expect(repo.findGroundIdsByWarrant(db, warrant.id)).toEqual([g1.id, g2.id]);
+    expect((service.getArgument(db, warrant.id) as any).grounds.map((g: any) => g.id))
+      .toEqual([g1.id, g2.id]);
+    expect(repo.findGroundsByWarrant(db, warrant.id).map(r => r.id)).toEqual([g1.id, g2.id]);
   });
 
-  test("T9 self-heal: diverged blob heals to match relation after updateNode", () => {
+  test("空的 ground_ids 更新不改动论证哈希", () => {
     const claim = makeClaim(db);
     const g9 = makeGround(db, { content: "G9" });
     const warrant = makeWarrant(db, claim.id, [g9.id]);
 
-    // synthetically diverge: blob [] via raw SQL, relation keeps [G9]
-    const wData = JSON.parse(repo.getNodeById(db, warrant.id)!.data);
-    wData.ground_ids = [];
-    db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(
-      JSON.stringify(wData),
-      warrant.id
-    );
-    expect(blobIds(warrant.id)).toEqual([]);
-    expect(relIds(warrant.id)).toEqual([g9.id]);
-
-    // any ground_ids write re-derives the blob from the relation table
-    service.updateNode(db, warrant.id, { ground_ids: { add: [g9.id] } });
-
-    expect(blobIds(warrant.id)).toEqual(relIds(warrant.id));
-    expect(blobIds(warrant.id)).toEqual([g9.id]);
-  });
-
-  test("T10 structuralPreCheck self-heal after divergence", () => {
-    const claim = makeClaim(db);
-    const g9 = makeGround(db, { content: "G9", verification: "verified", attachments: ["/e.csv"] });
-    const warrant = makeWarrant(db, claim.id, [g9.id]);
-
-    // diverge: blob [] via raw SQL, relation [G9]
-    const wData = JSON.parse(repo.getNodeById(db, warrant.id)!.data);
-    wData.ground_ids = [];
-    db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(
-      JSON.stringify(wData),
-      warrant.id
-    );
-
-    const before = structuralPreCheck(db, claim.id);
-    expect(before.some(e => e.includes("no Grounds"))).toBe(true);
-
-    // heal via a ground_ids write
-    service.updateNode(db, warrant.id, { ground_ids: { add: [g9.id] } });
-
-    const after = structuralPreCheck(db, claim.id);
-    expect(after.some(e => e.includes("no Grounds"))).toBe(false);
+    const before = computeArgumentHash(db, claim.id);
+    service.updateNode(db, warrant.id, { ground_ids: {} });
+    expect(computeArgumentHash(db, claim.id)).toBe(before);
   });
 });
 

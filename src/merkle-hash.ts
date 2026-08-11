@@ -71,8 +71,7 @@ export function computeArgumentHash(
   const warrantRows = repo.findWarrantsByClaim(db, claimId);
   const warrantHashes = warrantRows.map(w => {
     const warrantNodeHash = computeNodeHash(w);
-    const wData = JSON.parse(w.data);
-    const groundIds: number[] = wData.ground_ids || [];
+    const groundIds: number[] = repo.findGroundIdsByWarrant(db, w.id);
 
     // 5. Grounds（递归关键点）
     const groundHashes = groundIds.map(gid => {

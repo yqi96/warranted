@@ -16,6 +16,7 @@ import type { NodeRow, ElementReviewResult } from "./types.ts";
 import * as repo from "./repo.ts";
 import { callAndParse } from "./review-llm.ts";
 import { buildChainReviewPrompt } from "./compile-prompts.ts";
+import type { ChainReviewData } from "./compile-prompts.ts";
 import { log } from "./logger.ts";
 
 // =============================================================================
@@ -28,6 +29,8 @@ export interface ArgumentContext {
   claimData: Record<string, unknown>;
   warrantRows: NodeRow[];
   warrantDatas: Array<Record<string, unknown>>;
+  /** 每个 Warrant 的 ground id，与 warrantRows 同序；唯一来源是 warrant_grounds 表 */
+  warrantGroundIds: number[][];
   groundRows: NodeRow[];
   backingRows: NodeRow[];
   rebuttalRows: Array<{ row: NodeRow; targetType: "claim" | "warrant"; targetId: number }>;
@@ -42,12 +45,8 @@ export function loadArgumentContext(db: Database, claimId: number): ArgumentCont
   const warrantDatas = warrantRows.map(w => JSON.parse(w.data));
 
   // 收集所有 Ground（去重）
-  const groundIdSet = new Set<number>();
-  for (const wd of warrantDatas) {
-    for (const gid of (wd.ground_ids || []) as number[]) {
-      groundIdSet.add(gid);
-    }
-  }
+  const warrantGroundIds = warrantRows.map(w => repo.findGroundIdsByWarrant(db, w.id));
+  const groundIdSet = new Set<number>(warrantGroundIds.flat());
 
   const groundRows: NodeRow[] = [];
   for (const gid of groundIdSet) {
@@ -75,6 +74,7 @@ export function loadArgumentContext(db: Database, claimId: number): ArgumentCont
     claimData,
     warrantRows,
     warrantDatas,
+    warrantGroundIds,
     groundRows,
     backingRows,
     rebuttalRows,
@@ -86,21 +86,22 @@ export function loadArgumentContext(db: Database, claimId: number): ArgumentCont
 // =============================================================================
 
 
-async function reviewChain(
-  config: ReviewConfig,
-  ctx: ArgumentContext,
-  cwd: string,
-  db: Database
-): Promise<ElementReviewResult> {
-  const prompt = buildChainReviewPrompt({
+/**
+ * 把论证上下文整理成审查提示词的输入。
+ *
+ * 单独导出是为了能被测试直接调用：这里的 ground 集合就是审查模型看到的
+ * ground 集合，写错了不会报错，只会让审查模型看到一张与图不一致的图。
+ * 唯一来源是 ctx.warrantGroundIds（即 warrant_grounds 表）。
+ */
+export function buildChainReviewData(ctx: ArgumentContext, db: Database): ChainReviewData {
+  return {
     claim: {
       id: ctx.claimRow.id,
       content: ctx.claimRow.content,
       qualifier: ctx.claimData.qualifier as string | null | undefined,
     },
     warrants: ctx.warrantRows.map((w, i) => {
-      const wData = ctx.warrantDatas[i];
-      const groundIds = (wData.ground_ids || []) as number[];
+      const groundIds = ctx.warrantGroundIds[i];
       return {
         id: w.id,
         content: w.content,
@@ -124,7 +125,16 @@ async function reviewChain(
       targetType: rr.targetType,
       targetId: rr.targetId,
     })),
-  });
+  };
+}
+
+async function reviewChain(
+  config: ReviewConfig,
+  ctx: ArgumentContext,
+  cwd: string,
+  db: Database
+): Promise<ElementReviewResult> {
+  const prompt = buildChainReviewPrompt(buildChainReviewData(ctx, db));
 
   try {
     const t0 = Date.now();

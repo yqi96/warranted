@@ -116,13 +116,13 @@ export function makeWarrant(
   content: string = "Test warrant"
 ): WarrantNode {
   const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({ claim_id: claimId, ground_ids: groundIds });
+  const data = JSON.stringify({ claim_id: claimId });
   const stmt = db.prepare(
     "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('warrant', ?, ?, ?, ?)"
   );
   const result = stmt.run(content, data, now, now);
   const id = result.lastInsertRowid as number;
-  // Also populate warrant_grounds relationship table
+  // warrant_grounds 是 ground 集合的唯一记录，节点 blob 里没有副本
   for (const gid of groundIds) {
     db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(id, gid);
   }

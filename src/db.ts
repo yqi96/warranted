@@ -193,6 +193,7 @@ export function initializeSchema(db: Database): void {
   tightenCheckConstraint(db);
   migrateCompileStateForeignKey(db);
   migrateRefClaimIdData(db);
+  migrateDropGroundIdsBlob(db);
 
 }
 
@@ -262,23 +263,61 @@ export function migrateRefClaimIdData(db: Database): void {
         // Replace proxy reference with direct claim reference
         db.prepare("DELETE FROM warrant_grounds WHERE warrant_id = ? AND ground_id = ?").run(warrant_id, proxy.id);
         db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(warrant_id, refClaimId);
-
-        // Update warrant's ground_ids JSON
-        const wRow = db.prepare("SELECT data FROM nodes WHERE id = ?").get(warrant_id) as { data: string } | null;
-        if (wRow) {
-          const wData = JSON.parse(wRow.data);
-          const gIds: number[] = wData.ground_ids || [];
-          const newIds = gIds.map((id: number) => id === proxy.id ? refClaimId : id);
-          const deduped = [...new Set(newIds)];
-          wData.ground_ids = deduped;
-          db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(wData), warrant_id);
-        }
       }
 
       // Delete proxy statement node (no longer referenced)
       db.prepare("DELETE FROM nodes WHERE id = ?").run(proxy.id);
     }
     db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/**
+ * 删掉 warrant 节点 data 里的 ground_ids 副本 —— warrant_grounds 表是唯一记录。
+ *
+ * 副本存在期间，两边各有消费者：逻辑审查（compile）和 argument 哈希读 blob，
+ * 结构审查和 get_argument 读关系表。重复的 id 只进得了 blob 一边，于是同一个
+ * warrant 在两层审查眼里 ground 条数不同。
+ *
+ * 删之前先把"只在 blob 里、关系表没有"的边补进关系表，否则旧库里万一真有
+ * 这种偏差，删除就成了静默丢边。补进去时报一条警告：这种偏差本身值得知道。
+ * 指向已消失节点的 id 直接丢弃（补也会撞外键）。
+ *
+ * 必须排在 migrateToStatementSchema 之后：那一步正是从这个 blob 往关系表灌数据的。
+ * 幂等：没有任何 warrant 还带这个键时直接返回。
+ */
+function migrateDropGroundIdsBlob(db: Database): void {
+  const rows = db.prepare(
+    "SELECT id, data FROM nodes WHERE type = 'warrant' AND json_extract(data, '$.ground_ids') IS NOT NULL"
+  ).all() as Array<{ id: number; data: string }>;
+
+  if (rows.length === 0) return;
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const recovered: string[] = [];
+    for (const row of rows) {
+      const blobIds: number[] = JSON.parse(row.data).ground_ids || [];
+      const inTable = new Set(
+        (db.prepare("SELECT ground_id FROM warrant_grounds WHERE warrant_id = ?").all(row.id) as Array<{ ground_id: number }>)
+          .map(r => r.ground_id)
+      );
+      for (const gid of new Set(blobIds)) {
+        if (inTable.has(gid)) continue;
+        const gRow = db.prepare("SELECT type FROM nodes WHERE id = ?").get(gid) as { type: string } | null;
+        if (!gRow || (gRow.type !== "statement" && gRow.type !== "claim")) continue;
+        db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(row.id, gid);
+        recovered.push(`#${row.id}->#${gid}`);
+      }
+    }
+    db.exec("UPDATE nodes SET data = json_remove(data, '$.ground_ids') WHERE type = 'warrant' AND json_extract(data, '$.ground_ids') IS NOT NULL");
+    db.exec("COMMIT");
+    if (recovered.length > 0) {
+      console.warn(`[warranted] Recovered ${recovered.length} warrant->ground edge(s) that existed only in the node blob: [${recovered.join(", ")}]`);
+    }
   } catch (e) {
     db.exec("ROLLBACK");
     throw e;
@@ -352,7 +391,9 @@ export function migrateToStatementSchema(db: Database): void {
     // d. ground → statement (keep data JSON as-is)
     db.prepare("UPDATE nodes SET type = 'statement' WHERE type = 'ground'").run();
 
-    // e. warrant: populate warrant_grounds from ground_ids JSON
+    // e. warrant: populate warrant_grounds from the legacy ground_ids blob.
+    // 这是排空旧字段的那一步 —— 之后 migrateDropGroundIdsBlob 会把它删掉，
+    // 所以这里读 blob 是对的，不要改成读关系表（那就成了空转）。
     const warrantRows = db.prepare("SELECT id, data FROM nodes WHERE type = 'warrant'").all() as Array<{ id: number; data: string }>;
     for (const row of warrantRows) {
       const data = JSON.parse(row.data);

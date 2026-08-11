@@ -71,7 +71,7 @@ function toWarrantNode(row: NodeRow, db: Database): WarrantNode {
     type: "warrant",
     content: row.content,
     claimId: data.claim_id,
-    groundIds: data.ground_ids || [],
+    groundIds: repo.findGroundIdsByWarrant(db, row.id),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     tags: repo.getNodeTags(db, row.id),
@@ -432,9 +432,9 @@ export function createWarrant(
 
   const row = repo.insertNode(db, "warrant", content.trim(), {
     claim_id: claimId,
-    ground_ids: gIds,
   });
-  // Also populate warrant_grounds relationship table
+  // warrant_grounds 是 ground 集合的唯一记录，节点 blob 不再存 ground_ids 副本。
+  // INSERT OR IGNORE 顺带吸收调用方传进来的重复 id。
   for (const gid of gIds) {
     db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(row.id, gid);
   }
@@ -1185,9 +1185,6 @@ export function updateNode(
         db.prepare("DELETE FROM warrant_grounds WHERE warrant_id = ? AND ground_id = ?").run(nodeId, gid);
       }
     }
-
-    // Option C: warrant_grounds 关系表是唯一真源，从其重新派生 blob 缓存
-    data.ground_ids = repo.findGroundsByWarrant(db, nodeId).map(r => r.id);
   }
 
   // 更新 backing_ids（Warrant only）

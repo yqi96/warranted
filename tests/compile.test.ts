@@ -17,10 +17,11 @@ import {
   compileVerdictOf,
 } from "./helpers.ts";
 import { structuralPreCheck, findAffectedClaimIds, invalidateCompiledClaims } from "../src/compile-service.ts";
-import { loadArgumentContext } from "../src/compile-reviewers.ts";
+import { loadArgumentContext, buildChainReviewData } from "../src/compile-reviewers.ts";
 import { buildChainReviewPrompt } from "../src/compile-prompts.ts";
 import { computeNodeHash, computeArgumentHash } from "../src/merkle-hash.ts";
 import * as repo from "../src/repo.ts";
+import * as service from "../src/service.ts";
 import type { Database } from "bun:sqlite";
 
 let db: Database;
@@ -66,12 +67,29 @@ describe("structuralPreCheck", () => {
     expect(errors[0]).toContain("no Grounds");
   });
 
+  test("Warrant 的 Ground 指向非 Ground 类型节点时返回错误", () => {
+    const claim = makeClaim(db, "Test claim");
+    const other = makeClaim(db, "Another claim");
+    // 用另一个 Claim 的 Warrant 冒充 ground —— warrant_grounds 的外键只要求
+    // 目标节点存在，不检查类型，所以这是能真实发生的一种
+    const bogus = makeWarrant(db, other.id, [], "not a ground");
+    const w = makeWarrant(db, claim.id, [], "Test warrant");
+    db.prepare("INSERT INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(w.id, bogus.id);
+
+    const errors = structuralPreCheck(db, claim.id);
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("is not a Ground");
+  });
+
   test("Warrant 引用不存在的 Ground 时返回错误", () => {
     const claim = makeClaim(db, "Test claim");
-    // Manually create warrant with non-existent ground ID
-    const now = new Date().toISOString().slice(0, 19);
-    const data = JSON.stringify({ claim_id: claim.id, ground_ids: [999] });
-    db.prepare("INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('warrant', 'test', ?, ?, ?)").run(data, now, now);
+    const w = makeWarrant(db, claim.id, [], "Test warrant");
+    // warrant_grounds.ground_id 有外键，正常连接下插不进悬空 id。
+    // 这一条防的是"别的工具在关外键的连接上写过这个文件"，所以只能这样构造。
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.prepare("INSERT INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(w.id, 999);
+    db.exec("PRAGMA foreign_keys = ON");
+
     const errors = structuralPreCheck(db, claim.id);
     expect(errors.length).toBe(1);
     expect(errors[0]).toContain("not found");
@@ -149,6 +167,58 @@ describe("loadArgumentContext", () => {
   test("不存在的 Claim 返回 null", () => {
     const ctx = loadArgumentContext(db, 999);
     expect(ctx).toBeNull();
+  });
+});
+
+// =============================================================================
+// 审查模型的输入 = warrant_grounds 表
+//
+// ground 集合曾经在关系表和节点 blob 里各存一份，读 blob 的一路（审查提示词、
+// 论证哈希）和读表的一路（结构预检、get_argument）会看到不同的集合：
+// create_warrant(ground_ids=[S1,S1,S2]) 之后提示词里列 3 条 ground，
+// get_argument 报 2 条。现在只有表一份，这里把"提示词看到的 = 表里的"钉住。
+// =============================================================================
+
+describe("审查提示词的 ground 集合与 warrant_grounds 一致", () => {
+  test("重复传入的 ground id 在表、上下文、提示词里都只算一条", () => {
+    const claim = makeClaim(db, "重复 ground 的主张");
+    const g1 = makeGround(db, { content: "证据一" });
+    const g2 = makeGround(db, { content: "证据二" });
+    // 同一个 id 传两次 —— 曾经 blob 里会留下 3 个元素，表里只有 2 行
+    const warrant = service.createWarrant(db, {
+      content: "推理规则",
+      claimId: claim.id,
+      groundIds: [g1.id, g1.id, g2.id],
+    });
+
+    const fromTable = repo.findGroundIdsByWarrant(db, warrant.id);
+    expect(fromTable).toEqual([g1.id, g2.id]);
+
+    const ctx = loadArgumentContext(db, claim.id)!;
+    expect(ctx.warrantGroundIds[0]).toEqual(fromTable);
+
+    const prompt = buildChainReviewPrompt(buildChainReviewData(ctx, db));
+    const groundLines = prompt.split("\n").filter(l => l.includes("- Ground #"));
+    expect(groundLines.length).toBe(fromTable.length);
+    expect(prompt).not.toContain("(not found)");
+  });
+
+  test("多个 Warrant 时各自的 ground 集合不串位", () => {
+    const claim = makeClaim(db, "两条推理路径");
+    const g1 = makeGround(db, { content: "证据一" });
+    const g2 = makeGround(db, { content: "证据二" });
+    const w1 = service.createWarrant(db, { content: "路径一", claimId: claim.id, groundIds: [g1.id] });
+    const w2 = service.createWarrant(db, { content: "路径二", claimId: claim.id, groundIds: [g1.id, g2.id] });
+
+    const ctx = loadArgumentContext(db, claim.id)!;
+    // warrantGroundIds 与 warrantRows 同序，按行取而不是按创建顺序假设
+    const idxOf = (wid: number) => ctx.warrantRows.findIndex(w => w.id === wid);
+    expect(ctx.warrantGroundIds[idxOf(w1.id)]).toEqual(repo.findGroundIdsByWarrant(db, w1.id));
+    expect(ctx.warrantGroundIds[idxOf(w2.id)]).toEqual(repo.findGroundIdsByWarrant(db, w2.id));
+
+    const prompt = buildChainReviewPrompt(buildChainReviewData(ctx, db));
+    const groundLines = prompt.split("\n").filter(l => l.includes("- Ground #"));
+    expect(groundLines.length).toBe(3); // 1 + 2，同一个 ground 在两个 Warrant 下各列一次
   });
 });
 

@@ -74,11 +74,15 @@ describe("P1: Collateral deletion invalidates dependent Claims", () => {
 });
 
 // =============================================================================
-// P2: data.ground_ids and warrant_grounds agree after collateral deletion
+// P2: a collaterally deleted ground leaves no dangling edge behind
+//
+// 原来这条叫 "data.ground_ids and warrant_grounds agree"：ground 集合曾经存两份，
+// 删除路径要同时清两边，漏一边就不一致。现在只有 warrant_grounds 一份，
+// "两边一致"无从谈起，剩下的真问题是删除有没有真的把边清掉。
 // =============================================================================
 
-describe("P2: data.ground_ids and warrant_grounds agree after deletion", () => {
-  test("After deleting shared ground from collateral, W2's data.ground_ids and warrant_grounds agree", () => {
+describe("P2: 被连带删除的 ground 不留下悬空关系", () => {
+  test("共享 ground 被连带删除后，另一个 Warrant 的 ground 集合里没有它", () => {
     const claim1 = makeClaim(db, "Claim 1");
     const claim2 = makeClaim(db, "Claim 2");
     const S = makeGround(db, { content: "Shared statement", source: "observed", verification: "verified" });
@@ -89,20 +93,7 @@ describe("P2: data.ground_ids and warrant_grounds agree after deletion", () => {
     // Delete claim1 (cascade). S is a backing of W1, so it gets deleted as collateral.
     service.deleteNode(db, claim1.id, true);
 
-    // Check W2's data.ground_ids
-    const w2Row = repo.getNodeById(db, W2.id)!;
-    const w2Data = JSON.parse(w2Row.data);
-    const groundIdsFromJson: number[] = w2Data.ground_ids || [];
-
-    // Check warrant_grounds for W2
-    const wgRows = db.prepare("SELECT ground_id FROM warrant_grounds WHERE warrant_id = ?").all(W2.id) as Array<{ ground_id: number }>;
-    const groundIdsFromTable = wgRows.map(r => r.ground_id);
-
-    // Both should agree (S was deleted, so it should be removed from both)
-    expect(groundIdsFromJson).toEqual(groundIdsFromTable);
-    // S should NOT appear in either (since it was deleted as collateral)
-    expect(groundIdsFromJson).not.toContain(S.id);
-    expect(groundIdsFromTable).not.toContain(S.id);
+    expect(repo.findGroundIdsByWarrant(db, W2.id)).not.toContain(S.id);
   });
 });
 
@@ -190,30 +181,21 @@ describe("P7: Failed delete is atomic with its invalidation", () => {
 });
 
 // =============================================================================
-// P8: Claim-as-Ground deletion keeps JSON and relation table in agreement
+// P8: Claim-as-Ground deletion removes the warrant->ground edge
 // =============================================================================
 
-describe("P8: Deleting a Claim used as a Ground cleans both stores", () => {
-  test("W2's data.ground_ids drops the deleted Claim, matching warrant_grounds", async () => {
+describe("P8: 删除被当作 Ground 的 Claim 会清掉那条关系", () => {
+  test("W2 的 ground 集合丢掉被删的 Claim，保留另一个 ground", async () => {
     const parent = makeClaim(db, "Parent claim");
     const sub = makeClaim(db, "Sub-claim used as ground");
     // sub is a ground of parent's warrant (chain reasoning)
-    const W2 = makeWarrant(db, parent.id, [sub.id]);
     const other = makeGround(db, { content: "Plain ground", source: "observed" });
-    db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(W2.id, other.id);
-    const w2Data0 = JSON.parse(repo.getNodeById(db, W2.id)!.data);
-    w2Data0.ground_ids = [sub.id, other.id];
-    db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(w2Data0), W2.id);
+    const W2 = makeWarrant(db, parent.id, [sub.id, other.id]);
 
     const res = await callDeleteNode(sub.id, true);
     expect(res.isError).toBeUndefined();
 
-    const fromJson: number[] = JSON.parse(repo.getNodeById(db, W2.id)!.data).ground_ids || [];
-    const fromTable = (db.prepare("SELECT ground_id FROM warrant_grounds WHERE warrant_id = ?").all(W2.id) as Array<{ ground_id: number }>)
-      .map(r => r.ground_id);
-
-    expect(fromJson).not.toContain(sub.id);
-    expect(fromJson.slice().sort()).toEqual(fromTable.slice().sort());
+    expect(repo.findGroundIdsByWarrant(db, W2.id)).toEqual([other.id]);
   });
 });
 

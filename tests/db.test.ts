@@ -332,3 +332,95 @@ describe("外键子列索引", () => {
     db.close();
   });
 });
+
+// =============================================================================
+// migrateDropGroundIdsBlob —— 把 ground 集合的第二份记录从节点 blob 里删掉
+// =============================================================================
+
+describe("migrateDropGroundIdsBlob", () => {
+  let dir: string;
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const groundIdsOf = (db: Database, warrantId: number): number[] =>
+    (
+      db
+        .prepare("SELECT ground_id FROM warrant_grounds WHERE warrant_id = ? ORDER BY ground_id")
+        .all(warrantId) as Array<{ ground_id: number }>
+    ).map((r) => r.ground_id);
+
+  const blobGroundIdsOf = (db: Database, warrantId: number): unknown =>
+    JSON.parse((db.prepare("SELECT data FROM nodes WHERE id = ?").get(warrantId) as { data: string }).data).ground_ids;
+
+  test("删掉 blob 键，补进只在 blob 里的边并报警，跳过已消失的节点，二次打开幂等", () => {
+    dir = mkdtempSync(join(tmpdir(), "warranted-groundblob-"));
+    const dbPath = join(dir, "legacy.db");
+
+    const seed = new Database(dbPath, { create: true });
+    seed.exec(LEGACY_SCHEMA_SQL);
+    // 节点类型全是新的（claim/statement/warrant），migrateToStatementSchema 会因为
+    // "没有旧类型节点"整段跳过 —— 排空 blob 的责任因此完全落在被测的那一步上。
+    seed.prepare("INSERT INTO nodes (type, content, data) VALUES ('claim', 'C', ?)").run(JSON.stringify({ status: "proposed" }));
+    seed.prepare("INSERT INTO nodes (type, content, data) VALUES ('statement', 'GA', ?)").run(JSON.stringify({ source: "observed", verification: "verified", attachments: [] }));
+    seed.prepare("INSERT INTO nodes (type, content, data) VALUES ('statement', 'GB', ?)").run(JSON.stringify({ source: "observed", verification: "verified", attachments: [] }));
+    // #2 已经在关系表里；#3 只在 blob 里（该被补进去）；#3 写两遍（重复该被吞掉）；
+    // #999 的节点不存在（该被跳过，补也会撞外键）。
+    seed.prepare("INSERT INTO nodes (type, content, data) VALUES ('warrant', 'W', ?)").run(JSON.stringify({ claim_id: 1, ground_ids: [2, 3, 3, 999] }));
+    seed.prepare("INSERT INTO warrant_grounds (warrant_id, ground_id) VALUES (4, 2)").run();
+    seed.close();
+
+    const warnings: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+
+    let db1: Database;
+    try {
+      db1 = openDatabase(dbPath);
+    } finally {
+      console.warn = realWarn;
+    }
+
+    expect(blobGroundIdsOf(db1, 4)).toBeUndefined();
+    expect(groundIdsOf(db1, 4)).toEqual([2, 3]);
+    // 补边这件事本身值得知道 —— 旧库里真有偏差才会走到这里
+    expect(warnings.join("\n")).toContain("#4->#3");
+    db1.close();
+
+    // 二次打开：没有 warrant 还带这个键，整段跳过，数据不变
+    const db2 = openDatabase(dbPath);
+    expect(blobGroundIdsOf(db2, 4)).toBeUndefined();
+    expect(groundIdsOf(db2, 4)).toEqual([2, 3]);
+    db2.close();
+  });
+
+  test("blob 与关系表本来一致时不报补边的警告", () => {
+    dir = mkdtempSync(join(tmpdir(), "warranted-groundblob-clean-"));
+    const dbPath = join(dir, "legacy.db");
+
+    const seed = new Database(dbPath, { create: true });
+    seed.exec(LEGACY_SCHEMA_SQL);
+    seed.prepare("INSERT INTO nodes (type, content, data) VALUES ('claim', 'C', ?)").run(JSON.stringify({ status: "proposed" }));
+    seed.prepare("INSERT INTO nodes (type, content, data) VALUES ('statement', 'GA', ?)").run(JSON.stringify({ source: "observed", verification: "verified", attachments: [] }));
+    seed.prepare("INSERT INTO nodes (type, content, data) VALUES ('warrant', 'W', ?)").run(JSON.stringify({ claim_id: 1, ground_ids: [2] }));
+    seed.prepare("INSERT INTO warrant_grounds (warrant_id, ground_id) VALUES (3, 2)").run();
+    seed.close();
+
+    const warnings: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+
+    let db: Database;
+    try {
+      db = openDatabase(dbPath);
+    } finally {
+      console.warn = realWarn;
+    }
+
+    expect(blobGroundIdsOf(db, 3)).toBeUndefined();
+    expect(groundIdsOf(db, 3)).toEqual([2]);
+    expect(warnings.join("\n")).not.toContain("existed only in the node blob");
+    db.close();
+  });
+});

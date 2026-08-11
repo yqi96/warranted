@@ -38,7 +38,7 @@ Object-layer work in this channel — implementation, data download, computation
 | A claimed blocker would halt an obligation | route to `discrepancy-auditor` before accepting it |
 | A result supports its Ground | `update_node(verification="verified", attachments=[...])` |
 | Reproduction differs but audit finds a setup issue | keep the Ground `pending`; fix and rerun |
-| Audit confirms a real contradiction | `create_statement(rebuttal_for=...)`; move the Claim to `disputed`/`refuted` only after compile and evidence assessment |
+| Audit confirms a real contradiction | `create_statement(rebuttal_for=...)`, then verify that Rebuttal with the audit's own output attached; the Claim moves to `disputed`/`refuted` only after that, a passing compile, and evidence assessment |
 | A result reveals something the paper never claimed | new observed Statement or Claim; never rewrite the paper Claim |
 | A full-scope test looks too slow, large, or costly | do NOT narrow scope for cost or time alone — long-running experiments are expected and accepted; profile via `discrepancy-auditor`, then delegate the fix to `code-optimizer` to make the full test feasible |
 | Only a narrower scope is verifiable (after optimization is exhausted) | bound the Claim with a `qualifier` that honestly records the verified scope and degree; the Claim may then be `supported` **within that qualifier** — never present the full, unqualified Claim as `supported` on scoped evidence |

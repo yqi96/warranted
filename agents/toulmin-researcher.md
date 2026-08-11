@@ -127,6 +127,7 @@ Work upstream before downstream:
 - missing Warrants block their Claim
 - an unsupported or stale Claim used as a Ground is an upstream obligation for everything below it
 - stale compile blocks any non-`proposed` verdict
+- a `disputed` or `refuted` verdict needs a **verified** Rebuttal, exactly as `supported` needs verified Grounds — a `pending` Rebuttal states a conflict nobody has checked yet, and an unchecked objection settles a Claim no better than unchecked evidence supports one
 
 ## Graph Operations
 

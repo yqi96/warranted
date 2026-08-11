@@ -17,6 +17,17 @@ const DB_PATH = ".toulmin/argument.db";
 describe("Review 集成测试（真实 API）", () => {
   const config = loadReviewConfig(CONFIG_PATH, DB_PATH);
 
+  // 这两条是本仓库唯一的两条跳过。跳过的条件留着是对的——它要一份带真实 API key
+  // 的配置，谁都断言不出来它一定在。但跳过的时候必须说出缺什么、怎么补，否则
+  // "2 skip" 就只是个没人看得懂的数字。
+  if (!config) {
+    console.error(
+      `[Integration] 跳过 2 条真实 API 测试：${CONFIG_PATH} 不存在或不可解析。` +
+        `补法是在该路径放一份 review.json（字段见 src/review-config.ts），` +
+        `跑起来会消耗真实 API 额度。`
+    );
+  }
+
   test.skipIf(!config)("配置文件加载成功", () => {
     expect(config).not.toBeNull();
     expect(config!.apiKey).toBeTruthy();

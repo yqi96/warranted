@@ -17,7 +17,6 @@ const testConfig: ReviewConfig = {
   provider: "anthropic",
   model: "claude-opus-4-7",
   apiKey: "test-key",
-  debounceMs: 30000,
   maxTurns: 10,
   reviewDir: null,
   auditDir: null,

@@ -9,15 +9,42 @@
  *   "apiKey": "sk-xxx",              // 必需
  *   "baseUrl": "https://...",         // 可选，转发站地址
  *   "model": "claude-sonnet-4-...",   // 可选，默认 claude-sonnet-4-20250514
- *   "debounceMs": 30000,              // 可选，去重窗口（毫秒），默认 30000
- *   "maxTurns": 10,                   // 可选，agent 最大轮数，默认 10
- *   "maxConcurrency": 4,              // 可选，全局并发上限（所有 callAgent 调用共享），默认 4
+ *   "maxTurns": 10,                   // 可选，agent 最大轮数（正整数），默认 10
+ *   "maxConcurrency": 4,              // 可选，全局并发上限（所有 callAgent 调用共享，正整数），默认 4
  *   "auditDir": "/path/to/audit"      // 可选，审计日志目录；null = 禁用；不设置 = dirname(dbPath)/audit
  * }
  */
 
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, resolve } from "path";
+
+/**
+ * 校验一个"正整数"配置项：合法就返回它，缺失或非法都返回 undefined，
+ * 由调用处的 `?? 默认值` 决定回落到什么。
+ *
+ * 这里原来用 `isNaN(x)`。那道检查只拦得住 "abc" 和 {}：0、负数、""、[]、false、
+ * Infinity、字符串 "8" 全部放行。而 JSON 语法里没有 NaN 字面量，配置文件是 JSON 文件，
+ * 所以它守的恰好是唯一送不进来的值。放行 0 的实际后果不是"取默认值"，而是
+ * review-llm.ts acquirePermit 的闸门开度为 0 —— 第一个请求挂进等待队列，
+ * 而唤醒队列的条件是"有请求结束"，于是永久静默卡死，连网络请求都没发出去。
+ *
+ * 同一条规则在 concurrency.ts getDefaultLimit 里写对过一次（Number.isFinite && > 0）。
+ * 两处没有合并：那边校验的是环境变量字符串（parseInt 的产物），这边是 JSON 解析出的任意值，
+ * 且改完之后两种写法对所有输入判定一致。改其中一处时记得看另一处。
+ *
+ * 非法值只警告 + 回落，不关闭审查：一个旋钮填错不等于整套功能没法工作
+ * （对比 apiKey 缺失 —— 那是真的没法工作，直接返回 null）。
+ */
+function positiveInt(name: string, value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  // 数字单独走 String()：JSON.stringify(Infinity) 是 "null"，会把 1e400 报成 null。
+  const shown = typeof value === "number" ? String(value) : JSON.stringify(value);
+  console.error(
+    `[Warranted] Invalid ${name}: ${shown}. Must be a positive integer. Falling back to the default.`
+  );
+  return undefined;
+}
 
 /**
  * Compute the review working directory from the database path.
@@ -37,7 +64,6 @@ export interface ReviewConfig {
   model: string;
   apiKey: string;
   baseUrl?: string;
-  debounceMs: number;
   maxTurns: number;
   /** 所有 callAgent 调用共享的全局并发上限。默认 4（见 review-llm.ts DEFAULT_MAX_CONCURRENCY） */
   maxConcurrency?: number;
@@ -51,7 +77,6 @@ interface ReviewConfigFile {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
-  debounceMs?: number;
   maxTurns?: number;
   maxConcurrency?: number;
   /** 审计日志目录。null = 禁用审计。不设置时默认 dirname(dbPath)/audit */
@@ -99,9 +124,8 @@ export function loadReviewConfig(
   }
 
   const model = fileConfig.model ?? "claude-sonnet-4-20250514";
-  const debounceMs = fileConfig.debounceMs ?? 30000;
-  const maxTurns = fileConfig.maxTurns ?? 10;
-  const maxConcurrency = fileConfig.maxConcurrency;
+  const maxTurns = positiveInt("maxTurns", fileConfig.maxTurns) ?? 10;
+  const maxConcurrency = positiveInt("maxConcurrency", fileConfig.maxConcurrency);
   const baseUrl = fileConfig.baseUrl ?? undefined;
   const reviewDir = dirname(dbPath) + "/reviews";
 
@@ -128,9 +152,10 @@ export function loadReviewConfig(
     model,
     apiKey,
     baseUrl,
-    debounceMs: isNaN(debounceMs) ? 30000 : debounceMs,
-    maxTurns: isNaN(maxTurns) ? 10 : maxTurns,
-    ...(maxConcurrency !== undefined && !isNaN(maxConcurrency) ? { maxConcurrency } : {}),
+    maxTurns,
+    // 非法值在 positiveInt 里已经变成 undefined，这里整个键不出现，
+    // 由消费处的默认值接管（review-llm.ts DEFAULT_MAX_CONCURRENCY）。
+    ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
     reviewDir,
     auditDir,
     dbPath,

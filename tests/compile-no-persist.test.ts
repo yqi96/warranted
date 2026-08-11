@@ -23,7 +23,6 @@ function makeNoPersistConfig(): ReviewConfig {
     provider: "anthropic",
     model: "claude-sonnet-4-6",
     apiKey: "sk-test",
-    debounceMs: 30000,
     maxTurns: 5,
     reviewDir: null,   // --no-persist 设置
     auditDir: null,    // --no-persist 设置

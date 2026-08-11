@@ -68,7 +68,6 @@ function makeReviewConfig(): any {
     provider: "anthropic",
     model: "test-model",
     apiKey: "test-key",
-    debounceMs: 0,
     maxTurns: 3,
     maxConcurrency: 4,
     reviewDir: null,

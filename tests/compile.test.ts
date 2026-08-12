@@ -488,7 +488,7 @@ describe("BFS 链式传播 — claim-type ground", () => {
     expect(affected).toContain(parentClaim.id);
   });
 
-  test("修改 sub-claim 的 ground statement → 父 Claim 也失效（二跳）", () => {
+  test("修改 sub-claim 的 ground statement → 父 Claim 不失效（子证据不在上层审查输入里）", () => {
     const subGround = makeGround(db, { content: "Sub-level evidence" });
     const subClaim = makeClaim(db, "Sub claim");
     makeWarrant(db, subClaim.id, [subGround.id], "Sub warrant");
@@ -498,13 +498,12 @@ describe("BFS 链式传播 — claim-type ground", () => {
 
     repo.saveCompileState(db, parentClaim.id, "passed", "ok");
 
-    // 修改 sub-claim 的 ground → sub-claim 失效 → BFS → 父 Claim 也失效
     const affected = findAffectedClaimIds(db, subGround.id);
     expect(affected).toContain(subClaim.id);
-    expect(affected).toContain(parentClaim.id);
+    expect(affected).not.toContain(parentClaim.id);
   });
 
-  test("三层链：A ← B(ground:C) ← D(ground:stmt) → 修改 stmt 传播到 A", () => {
+  test("三层链：A ← B(ground:C) ← D(ground:stmt) → 修改 stmt 只传播到 C，不继续到 B 和 A", () => {
     const stmt = makeGround(db, { content: "Base evidence" });
     const claimC = makeClaim(db, "Claim C");
     makeWarrant(db, claimC.id, [stmt.id], "Warrant C");
@@ -519,8 +518,8 @@ describe("BFS 链式传播 — claim-type ground", () => {
 
     const affected = findAffectedClaimIds(db, stmt.id);
     expect(affected).toContain(claimC.id);
-    expect(affected).toContain(claimB.id);
-    expect(affected).toContain(claimA.id);
+    expect(affected).not.toContain(claimB.id);
+    expect(affected).not.toContain(claimA.id);
   });
 
   test("invalidateCompiledClaims: 修改 sub-claim → 父 Claim 降级为 stale", () => {

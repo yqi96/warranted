@@ -79,11 +79,9 @@ export function computeArgumentHash(
       if (!gRow) return "";
 
       if (gRow.type === "claim") {
-        // 递归：Claim-type ground 的哈希包含该 subclaim 的 argument 哈希
-        const refArgHash = computeArgumentHash(db, gid, memo);
-        return createHash("sha256").update(
-          JSON.stringify({ node: computeNodeHash(gRow), refArg: refArgHash })
-        ).digest("hex");
+        // claim-type ground 与 claim-type backing/rebuttal 一致：只算自己的 content 哈希，
+        // 不递归子树。递归进子树会让上层哈希包含上层审查看不到的东西，白花一次重跑。
+        return computeNodeHash(gRow);
       }
 
       if (gRow.type !== "statement") return "";

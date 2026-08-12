@@ -558,19 +558,11 @@ export function registerTools(server: any, db: Database, reviewConfig: ReviewCon
         claim_id: z.number().describe(PARAMS.warrant_claim_id),
         content: z.string().describe(PARAMS.warrant_content),
         ground_ids: z.array(z.number()).optional().describe(PARAMS.warrant_ground_ids),
-        backing_ids: z.array(z.number()).optional().describe(PARAMS.backing_ids_incremental),
+        backing_ids: z.array(z.number()).optional().describe(PARAMS.warrant_backing_ids),
       },
     },
     withLog("create_warrant", async ({ claim_id, content, ground_ids, backing_ids }: { claim_id: number; content: string; ground_ids?: number[]; backing_ids?: number[] }) => {
       try {
-        // Validate backing_ids: each must exist and be type 'statement'
-        if (backing_ids && backing_ids.length > 0) {
-          for (const bid of backing_ids) {
-            const row = repo.getNodeById(db, bid);
-            if (!row) return fail(`Backing node #${bid} not found.`);
-            if (row.type !== "statement") return fail(`Node #${bid} is type "${row.type}", expected "statement".`);
-          }
-        }
         const warrant = service.createWarrant(db, { content, claimId: claim_id, groundIds: ground_ids, backingIds: backing_ids });
         let text = appendInvalidateHint(
           `Created warrant #${warrant.id}`,

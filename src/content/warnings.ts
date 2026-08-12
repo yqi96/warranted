@@ -17,7 +17,7 @@ function sufficiencyLostRevert(
     `Warning: Claim #${claimId} status reverted from "${previousStatus}" to "proposed" ` +
     `because ${reason}, so the Claim no longer meets the structural requirement for "${previousStatus}". ` +
     `Its compile verdict is deliberately left untouched: the argument's logic did not change, so ` +
-    `do NOT re-run compile_arguments. ${remedy}, then re-assess the status directly.`
+    `do NOT re-run compile_arguments for Claim #${claimId}. ${remedy}, then re-assess the status directly.`
   );
 }
 

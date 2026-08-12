@@ -325,7 +325,7 @@ describe("findAffectedClaimIds 链式传播", () => {
     expect(affected).toContain(parentClaim.id);
   });
 
-  test("链式传播多级：C3 变 → C2, C1 全部发现", () => {
+  test("链式传播多级：C3 变 → C2 被发现，C1 不被发现（子证据不在上层审查输入里）", () => {
     // C3 (bottom)
     const c3 = makeClaim(db, "C3");
     const g3 = makeGround(db, { content: "G3" });
@@ -339,12 +339,12 @@ describe("findAffectedClaimIds 链式传播", () => {
     const c1 = makeClaim(db, "C1");
     makeChainReasoning(db, c1.id, c2.id);
 
-    // Modify C3 → should find C3, C2, C1
+    // Modify C3 → should find C3, C2, but NOT C1 (C2's content didn't change)
     const affected = findAffectedClaimIds(db, c3.id);
 
     expect(affected).toContain(c3.id);
     expect(affected).toContain(c2.id);
-    expect(affected).toContain(c1.id);
+    expect(affected).not.toContain(c1.id);
   });
 
   test("无链式引用时只返回直接受影响的 Claim", () => {

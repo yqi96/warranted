@@ -258,7 +258,16 @@ export function detectConnectedChain(
   return { claimId, warrantId, groundIds };
 }
 
-/** BFS cycle detection: check if adding claimId as ground of a warrant for targetClaimId creates a cycle */
+/**
+ * BFS cycle detection: check if adding groundClaimId as ground/backing/rebuttal of a
+ * node belonging to targetClaimId creates a cycle.
+ *
+ * 依赖图的判据只有一条：要定 current 的案，得先知道谁的结论。三种角色都会造出这种
+ * 依赖，所以三条边都要走：
+ *   - current 的 warrant 的 claim 型 Ground / Backing（要它们成立才能推出 current）
+ *   - 反驳 current 或 current 的 warrant 的 claim（current 的 disputed/refuted 依赖它已核实）
+ * 只下探 claim 型节点；statement 是叶子，不会把依赖继续往下传。
+ */
 function wouldCreateCycle(db: Database, groundClaimId: number, targetClaimId: number): boolean {
   const visited = new Set<number>();
   const queue = [groundClaimId];
@@ -267,16 +276,31 @@ function wouldCreateCycle(db: Database, groundClaimId: number, targetClaimId: nu
     if (visited.has(current)) continue;
     visited.add(current);
     if (current === targetClaimId) return true;
-    // Find warrants for this claim, then find claim-type grounds of those warrants
+
     const warrants = repo.findWarrantsByClaim(db, current);
+    const enqueue = (rows: NodeRow[]) => {
+      for (const r of rows) if (!visited.has(r.id)) queue.push(r.id);
+    };
+
     for (const w of warrants) {
-      const groundRows = db.prepare(
-        "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.ground_id WHERE wg.warrant_id = ? AND n.type = 'claim'"
-      ).all(w.id) as NodeRow[];
-      for (const gRow of groundRows) {
-        if (!visited.has(gRow.id)) queue.push(gRow.id);
-      }
+      // claim 型 Ground + claim 型 Backing：current 的成立依赖它们
+      enqueue(
+        db.prepare(
+          `SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.ground_id WHERE wg.warrant_id = ? AND n.type = 'claim'
+           UNION
+           SELECT n.* FROM nodes n JOIN warrant_backings wb ON n.id = wb.statement_id WHERE wb.warrant_id = ? AND n.type = 'claim'`
+        ).all(w.id, w.id) as NodeRow[]
+      );
     }
+
+    // 反驳 current 或 current 任一 warrant 的 claim：current 的状态依赖它已核实
+    const targetIds = [current, ...warrants.map(w => w.id)];
+    const placeholders = targetIds.map(() => "?").join(",");
+    enqueue(
+      db.prepare(
+        `SELECT n.* FROM nodes n JOIN rebuttal_targets rt ON n.id = rt.statement_id WHERE rt.target_id IN (${placeholders}) AND n.type = 'claim'`
+      ).all(...targetIds) as NodeRow[]
+    );
   }
   return false;
 }
@@ -457,7 +481,14 @@ export function createWarrant(
   const bIds = backingIds || [];
   for (const bid of bIds) {
     const backingRow = assertNodeExists(repo.getNodeById(db, bid), bid);
-    assertNodeType(backingRow, "statement");
+    if (backingRow.type !== "statement" && backingRow.type !== "claim") {
+      throw new TypeMismatchError(bid, "statement", backingRow.type);
+    }
+    if (backingRow.type === "claim" && wouldCreateCycle(db, backingRow.id, claimId)) {
+      throw new ValidationError(
+        `Circular chain reasoning detected: Claim #${claimId} would reference itself through Claim #${bid}.`
+      );
+    }
     db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(row.id, bid);
   }
   return toWarrantNode(row, db);
@@ -1097,7 +1128,12 @@ export function updateNode(
       for (const bid of params.backing_ids.add) {
         const bRow = repo.getNodeById(db, bid);
         if (!bRow) throw new NotFoundError(bid);
-        if (bRow.type !== "statement") throw new TypeMismatchError(bid, "statement", bRow.type);
+        if (bRow.type !== "statement" && bRow.type !== "claim") throw new TypeMismatchError(bid, "statement", bRow.type);
+        if (bRow.type === "claim" && wouldCreateCycle(db, bRow.id, data.claim_id)) {
+          throw new ValidationError(
+            `Circular chain reasoning detected: Claim #${data.claim_id} would reference itself through Claim #${bid}.`
+          );
+        }
       }
       repo.addWarrantBackings(db, nodeId, params.backing_ids.add);
     }
@@ -1112,10 +1148,16 @@ export function updateNode(
       throw new ValidationError("Only Claim and Warrant nodes support rebuttal_ids");
     }
     if (params.rebuttal_ids.add) {
+      const targetClaimId = row.type === "warrant" ? data.claim_id : nodeId;
       for (const rid of params.rebuttal_ids.add) {
         const rRow = repo.getNodeById(db, rid);
         if (!rRow) throw new NotFoundError(rid);
-        if (rRow.type !== "statement") throw new TypeMismatchError(rid, "statement", rRow.type);
+        if (rRow.type !== "statement" && rRow.type !== "claim") throw new TypeMismatchError(rid, "statement", rRow.type);
+        if (rRow.type === "claim" && wouldCreateCycle(db, rRow.id, targetClaimId)) {
+          throw new ValidationError(
+            `Circular chain reasoning detected: Claim #${targetClaimId} would reference itself through Claim #${rid}.`
+          );
+        }
         repo.insertRebuttalTarget(db, rid, nodeId, row.type);
       }
     }

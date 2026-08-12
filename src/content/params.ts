@@ -27,6 +27,7 @@ export const PARAMS = {
   warrant_content: ELEMENTS.warrant.content,
   warrant_claim_id: ELEMENTS.warrant.claimId,
   warrant_ground_ids: ELEMENTS.warrant.groundIds,
+  warrant_backing_ids: ELEMENTS.warrant.backingIds,
 
   // create_statement.rebuttal_for 内嵌对象字段
   rebuttal_target_id: ELEMENTS.rebuttal.targetId,
@@ -84,15 +85,15 @@ export const PARAMS = {
   /** Warrant 的 ground_ids 增量更新；{ add?: number[], remove?: number[] } */
   ground_ids_incremental:
     "Incrementally update the node IDs used as grounds for this warrant. Use Statement node IDs for factual evidence; Claim node IDs are allowed only for chain reasoning.",
-  /** Warrant 的 backing statements 增量更新；{ add?: number[], remove?: number[] } */
+  /** Warrant 的 backing 增量更新；{ add?: number[], remove?: number[] } */
   backing_ids_incremental:
-    "Incrementally update the Statement node IDs used as backing for this warrant. Each backing statement should substantiate the warrant's inference-licensing principle.",
+    "Incrementally update the node IDs used as backing for this warrant. If the thing you rely on is a record (observed or read), it is a Statement; if it is itself a conclusion you argued, it is a Claim. Both are accepted. Each backing should substantiate the warrant's inference-licensing principle.",
   /**
    * Claim/Warrant 的 rebuttal 增量更新；{ add?: number[], remove?: number[] }。
    * target_type 由被更新节点的类型推断，不需要显式传入。
    */
   rebuttal_ids_incremental:
-    "Incrementally update the Statement node IDs used as rebuttals for this Claim or Warrant. Each rebuttal statement should name a genuine counter-condition, exception, or contradiction; target_type is inferred from the updated node's type.",
+    "Incrementally update the node IDs used as rebuttals for this Claim or Warrant. If the thing you rely on is a record (observed or read), it is a Statement; if it is itself a conclusion you argued, it is a Claim. Both are accepted. Each rebuttal should name a genuine counter-condition, exception, or contradiction; target_type is inferred from the updated node's type.",
   qualifier_update:
     "Claim qualifier: degree of certainty ('probably', 'presumably', 'certainly')",
 

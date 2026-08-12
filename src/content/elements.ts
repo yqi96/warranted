@@ -62,7 +62,9 @@ export const ELEMENTS = {
     ].join(" "),
     claimId: "The claim this warrant supports.",
     groundIds:
-      "Node IDs to use as grounds for this warrant. Use Statement node IDs for factual evidence; Claim node IDs are allowed only for chain reasoning when a subclaim serves as a ground.",
+      "Node IDs to use as grounds for this warrant. If the thing you rely on is a record (something observed or read), it is a Statement; if it is itself a conclusion you argued, it is a Claim. Both are accepted.",
+    backingIds:
+      "Node IDs that back this warrant's inference-licensing principle. Same rule as grounds: a record is a Statement, an argued conclusion is a Claim. Both are accepted.",
   },
 
   rebuttal: {

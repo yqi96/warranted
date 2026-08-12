@@ -488,6 +488,19 @@ function findAffectedClaimIdsDirect(db: Database, nodeId: number): number[] {
         const groundWarrantsForClaim = db.prepare("SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.warrant_id WHERE wg.ground_id = ?").all(nodeId) as NodeRow[];
         for (const w of groundWarrantsForClaim) { const d = JSON.parse(w.data); if (d.claim_id) claimIds.add(d.claim_id); }
       }
+      // Also find warrants that use this claim as a backing
+      {
+        const backingWarrantsForClaim = db.prepare("SELECT n.* FROM nodes n JOIN warrant_backings wb ON n.id = wb.warrant_id WHERE wb.statement_id = ?").all(nodeId) as NodeRow[];
+        for (const w of backingWarrantsForClaim) { const d = JSON.parse(w.data); if (d.claim_id) claimIds.add(d.claim_id); }
+      }
+      // Also find claims/warrants that this claim rebuts
+      {
+        const targets = db.prepare("SELECT * FROM rebuttal_targets WHERE statement_id = ?").all(nodeId) as Array<{target_id:number, target_type:string}>;
+        for (const t of targets) {
+          if (t.target_type === "claim") claimIds.add(t.target_id);
+          else { const w = repo.getNodeById(db, t.target_id); if (w) { const d = JSON.parse(w.data); if (d.claim_id) claimIds.add(d.claim_id); } }
+        }
+      }
       break;
 
     case "warrant":
@@ -515,29 +528,14 @@ function findAffectedClaimIdsDirect(db: Database, nodeId: number): number[] {
 }
 
 /**
- * 根据被修改节点，向上查找所有受影响的 Claim ID（含链式推理 BFS 传播）。
+ * 根据被修改节点，向上查找所有受影响的 Claim ID。
+ *
+ * 只做一跳：直接依赖被修改节点的 Claim。不做 BFS 传播，因为子证据不在上层审查
+ * 输入里（标准 A），哈希也不递归。如果一层层的 claim 自己 content 变了，那每一层
+ * 的 direct 反查都会找到它的上一层；不需要 BFS 来补。
  */
 export function findAffectedClaimIds(db: Database, nodeId: number): number[] {
-  const directIds = findAffectedClaimIdsDirect(db, nodeId);
-  const allAffected = new Set<number>(directIds);
-  const queue = [...directIds];
-
-  while (queue.length > 0) {
-    const claimId = queue.shift()!;
-    // Find warrants that use this claim directly as a ground (claim nodes in warrant_grounds)
-    const usingWarrants = db.prepare(
-      "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.warrant_id WHERE wg.ground_id = ?"
-    ).all(claimId) as NodeRow[];
-    for (const w of usingWarrants) {
-      const wData = JSON.parse(w.data);
-      if (wData.claim_id && !allAffected.has(wData.claim_id)) {
-        allAffected.add(wData.claim_id);
-        queue.push(wData.claim_id);
-      }
-    }
-  }
-
-  return [...allAffected];
+  return findAffectedClaimIdsDirect(db, nodeId);
 }
 
 /**
@@ -660,6 +658,18 @@ export function revertUnsupportedClaimStatuses(
     ).all(claimId) as NodeRow[];
     for (const w of usingWarrants) {
       const parentId = JSON.parse(w.data).claim_id;
+      if (parentId && !visited.has(parentId)) {
+        visited.add(parentId);
+        queue.push({ claimId: parentId, causeId: claimId });
+      }
+    }
+    // 也是通过"这条 Claim 算不算已核实的 Rebuttal"受影响的：rebuttal 降级后，
+    // 被反驳的 Claim/Warrant 的上层可能失去结构依据（A3/A4 gate）。
+    const rebuttalTargets = db.prepare(
+      "SELECT * FROM rebuttal_targets WHERE statement_id = ?"
+    ).all(claimId) as Array<{ target_id: number; target_type: string }>;
+    for (const rt of rebuttalTargets) {
+      const parentId = rt.target_type === "claim" ? rt.target_id : JSON.parse(repo.getNodeById(db, rt.target_id)?.data || "{}").claim_id;
       if (parentId && !visited.has(parentId)) {
         visited.add(parentId);
         queue.push({ claimId: parentId, causeId: claimId });

@@ -9,7 +9,7 @@ The Toulmin graph is the governing structure of the work. It is not a notebook, 
 
 ## Two Layers
 
-The **Toulmin layer** is the argument graph. There are **three node types** — Claim, Warrant, and Statement — plus a qualifier and status tracking. Ground, Backing, and Rebuttal are not node types; they are **roles a Statement plays** once it is linked into an argument (a Statement used as a Warrant's evidence is a Ground, as a Warrant's authority is a Backing, as a challenge to a Claim/Warrant is a Rebuttal). A Claim can itself serve as a Ground for another Warrant — this is how multi-level arguments are built. This layer gives every decision a structural home, so you never chase whatever **seems** useful in the moment.
+The **Toulmin layer** is the argument graph. There are **three node types** — Claim, Warrant, and Statement — plus a qualifier and status tracking. Ground, Backing, and Rebuttal are not node types; they are **roles a node plays** once it is linked into an argument (a Statement used as a Warrant's evidence is a Ground, as a Warrant's authority is a Backing, as a challenge to a Claim/Warrant is a Rebuttal). A Claim can itself serve as a Ground, Backing, or Rebuttal — this is how multi-level arguments are built. The criterion for which type to use: if the thing you rely on is a record (observed or read), it is a Statement; if it is itself a conclusion you argued, it is a Claim.
 
 The **object layer** is concrete execution — search, source reading, experiment, analysis, implementation, audit. Research action in this layer exists to discharge Toulmin obligations that graph operations alone cannot; support work (next section) needs no obligation.
 
@@ -125,7 +125,7 @@ Work upstream before downstream:
 
 - missing or pending Grounds block their Warrant
 - missing Warrants block their Claim
-- an unsupported or stale Claim used as a Ground is an upstream obligation for everything below it
+- an unsupported or stale Claim used as a Ground, Backing, or Rebuttal is an upstream obligation for everything below it
 - stale compile blocks any non-`proposed` verdict
 - a `disputed` or `refuted` verdict needs a **verified** Rebuttal, exactly as `supported` needs verified Grounds — a `pending` Rebuttal states a conflict nobody has checked yet, and an unchecked objection settles a Claim no better than unchecked evidence supports one
 
@@ -138,10 +138,10 @@ Work upstream before downstream:
 | Record a finding from a paper | `create_statement(source="literature")` |
 | Record an expected result to be tested | `create_statement(source="observed", verification="pending")` |
 | Attach evidence to an inference (the Ground role) | `create_warrant(ground_ids=[...])`, or `update_node(<warrant>, ground_ids={add:[...]})` |
-| Use another Claim as evidence | pass the Claim's id into `ground_ids` |
+| Use another Claim as evidence | pass the Claim's id into `ground_ids` / `backing_ids` / `rebuttal_ids` |
 | Explain why evidence licenses a conclusion | `create_warrant` |
-| Support the authority of an inference principle (the Backing role) | `create_statement(...)` then `update_node(<warrant>, backing_ids={add:[...]})` |
-| Record a contradiction, exception, or boundary condition (the Rebuttal role) | `create_statement(rebuttal_for={target_id, target_type})` |
+| Support the authority of an inference principle (the Backing role) | `create_statement(...)` then `update_node(<warrant>, backing_ids={add:[...]})`, or pass a Claim's id into `backing_ids` if the backing is itself an argued conclusion |
+| Record a contradiction, exception, or boundary condition (the Rebuttal role) | `create_statement(rebuttal_for={target_id, target_type})`, or pass a Claim's id into `rebuttal_ids` via `update_node` if the rebuttal is itself an argued conclusion |
 | Mark evidence as established | `update_node(verification="verified", attachments=[...])`, or `verify_statements(ids=[...])` for a batch — this *submits* the evidence to review; it holds only if the review passes, otherwise the node stays `pending` with reasons |
 | Record an unexpected result after a discrepancy audit | `create_statement(source="observed")` or a Rebuttal via `create_statement(rebuttal_for=...)` |
 | Mark an earned verdict | `update_node(status="supported" \| "disputed" \| "refuted")` |

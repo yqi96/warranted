@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-12
+
+### Added
+
+- **Claim nodes can now play Backing and Rebuttal roles**, completing the symmetry with Ground. All three roles accept both Statement and Claim nodes. The criterion: a record (observed or read) is a Statement; an argued conclusion is a Claim. Schema-level compatibility is maintained — no migration needed for existing graphs.
+- **Cycle detection covers all three role types.** BFS now traverses `warrant_backings` and `rebuttal_targets` in addition to `warrant_grounds`, preventing circular dependencies through any role.
+- **Invalidation propagation covers Backing and Rebuttal.** Changing a claim-type Backing or Rebuttal's content marks the upstream Claim stale. A demoted claim-type Rebuttal (status → proposed) reverts the upstream Claim's status while leaving its compile record `passed`.
+- **37 new tests** in `tests/claim-subrole.test.ts` covering type gates, cycle detection, invalidation propagation, Merkle hash invariants, and role counting.
+
+### Changed
+
+- **Merkle hash tightened to standard A.** Claim-type Grounds no longer recurse into sub-trees (`refArg` removed), matching Backing/Rebuttal behavior. The hash now covers exactly what the upper review input contains — content and relations, not sub-evidence.
+- **`findAffectedClaimIds` no longer does BFS propagation.** Only the direct hop is traversed. Sub-evidence changes are not in the upper review input, so they should not mark the upper claim stale. A changed claim's own content still reaches its parent via `findAffectedClaimIdsDirect`'s reverse lookups, and status changes propagate via `revertUnsupportedClaimStatuses` without touching compile records.
+- **Warning message for status reversion clarified.** `do NOT re-run compile_arguments for Claim #N` now names the specific claim, avoiding ambiguity when multiple claims are affected.
+- **Agent descriptions updated.** `toulmin-researcher.md` and `toulmin-explorer.md` describe the general role rule (Statement vs Claim criterion) rather than enumerating specific roles.
+- **Parameter descriptions updated.** `ground_ids`, `backing_ids`, `rebuttal_ids` in `params.ts` and `elements.ts` all carry the same discriminant.
+
 ### Changed — behavior changes that affect existing graphs and existing call sites
 
 See the [Upgrading to 0.5.0](README.md#upgrading-to-050) section for the three actions that surface these.

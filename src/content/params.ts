@@ -84,7 +84,7 @@ export const PARAMS = {
   new_attachments: "New attachment file paths",
   /** Warrant 的 ground_ids 增量更新；{ add?: number[], remove?: number[] } */
   ground_ids_incremental:
-    "Incrementally update the node IDs used as grounds for this warrant. Use Statement node IDs for factual evidence; Claim node IDs are allowed only for chain reasoning.",
+    "Incrementally update the node IDs used as grounds for this warrant. If the thing you rely on is a record (observed or read), it is a Statement; if it is itself a conclusion you argued, it is a Claim. Both are accepted.",
   /** Warrant 的 backing 增量更新；{ add?: number[], remove?: number[] } */
   backing_ids_incremental:
     "Incrementally update the node IDs used as backing for this warrant. If the thing you rely on is a record (observed or read), it is a Statement; if it is itself a conclusion you argued, it is a Claim. Both are accepted. Each backing should substantiate the warrant's inference-licensing principle.",

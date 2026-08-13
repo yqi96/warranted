@@ -8,3 +8,4 @@ memory/
 CLAUDE.md
 operation.log
 tests/agent-eval/results/
+skills/paper-download-scihub/

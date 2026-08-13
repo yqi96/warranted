@@ -72,7 +72,7 @@ This writes `leaf.toml` into `LATEX_DIR`. The push script copies it into staging
 
 ## Step 5 — Write the hook
 
-Determine `SKILL_DIR` (absolute path to `${CLAUDE_PLUGIN_ROOT}/skills/overleaf-sync`) and `DB_PATH` (absolute path to `.toulmin/argument.db`).
+Determine `SKILL_DIR` (absolute path to `${CLAUDE_PLUGIN_ROOT}/skills/overleaf-setup`) and `DB_PATH` (absolute path to `.toulmin/argument.db`).
 
 Merge the following into `.claude/settings.local.json`, preserving any existing hooks:
 

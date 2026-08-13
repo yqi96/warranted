@@ -1,6 +1,7 @@
 ---
 name: literature-extractor
 description: Extracts literature Statements from papers for a survey. Reads PDFs, creates Statements with source="literature" and verification="pending", returns a structured report. Never registers theme tags, never creates Warrants or Claims.
+model: sonnet
 tools:
   - Read
   - Grep

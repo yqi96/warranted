@@ -1,6 +1,7 @@
 ---
 name: toulmin-explorer
 description: Fast read-only agent for locating nodes in a Toulmin argument graph. Use to find Claims by topic or status, check verification state of Grounds, survey argument structure, or answer "which Claims reference X / where is Y in the graph." Do NOT use for argument quality review, logical analysis, verification work, or any graph modifications.
+model: haiku
 tools:
   - mcp__plugin_warranted_toulmin__list_claims
   - mcp__plugin_warranted_toulmin__get_argument

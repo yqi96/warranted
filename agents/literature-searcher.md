@@ -1,12 +1,15 @@
 ---
 name: literature-searcher
 description: Searches and/or screens literature for a survey. Writes candidate CSV records and applies screening decisions. Never writes graph nodes.
+model: sonnet
 tools:
   - WebSearch
   - WebFetch
   - Read
   - Grep
   - Write
+  - Skill
+  - Bash
 ---
 
 ## Mode A — Search and screen (runs exactly once per survey)

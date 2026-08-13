@@ -41,17 +41,17 @@ css/
   styles.css        — 全部样式（包含 dot-grid 背景、动画关键帧）
 ```
 
-## 三类型 + 角色模型 (v0.4.0)
+## 三类型 + 角色模型
 
-`nodes.type` 现在只有三种值：**claim / warrant / statement**。Ground、Backing、Rebuttal 是 statement 节点扮演的**语境角色**，由关系表决定：
+`nodes.type` 只有三种值：**claim / warrant / statement**。Ground、Backing、Rebuttal 是**语境角色**，由关系表决定。三种角色都接受 Statement 或 Claim 节点：
 
 | 角色 | 来源 | 语义 |
 |------|------|------|
-| ground | `warrant_grounds.ground_id` | 该 statement 为某 warrant 的证据基础 |
-| backing | `warrant_backings.statement_id` | 该 statement 为某 warrant 提供补充支撑 |
-| rebuttal | `rebuttal_targets.statement_id` | 该 statement 反驳某 claim 或 warrant |
+| ground | `warrant_grounds.ground_id` | 某 warrant 的证据基础 |
+| backing | `warrant_backings.statement_id` | 某 warrant 的权威支撑 |
+| rebuttal | `rebuttal_targets.statement_id` | 反驳某 claim 或 warrant |
 
-一个 statement 可同时扮演多个角色（multi-role）。服务端 `buildGraph` 为每个 statement 计算并注入：
+一个节点可同时扮演多个角色（multi-role）。服务端 `buildGraph` 为每个节点计算并注入：
 - `data.roles: string[]` — 全部角色集合
 - `data.primary_role: string` — 主导角色（优先级：rebuttal > backing > ground）
 

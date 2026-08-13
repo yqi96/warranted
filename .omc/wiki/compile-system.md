@@ -2,14 +2,14 @@
 title: Compile System
 tags: [compile, merkle, hash, staleness, review, llm]
 category: architecture
-updated: 2026-07-22
+updated: 2026-08-12
 ---
 
 # Compile 系统
 
 ## 概述
 
-`compile_arguments` 工具对一个 Claim 及其完整论证子图做 LLM 驱动的质量审查，返回 `passed` 或 `failed` 并将结果写入 `compile_status`。
+`compile_arguments` 工具对一个 Claim 及其完整论证子图做确定性结构检查 + LLM 驱动的逻辑审查，返回 `passed` 或 `failed` 并将结果写入 `compile_state` 表。未配置审查模型时，跑完结构检查后默认通过并附警告。
 
 ## 核心文件
 
@@ -20,89 +20,111 @@ updated: 2026-07-22
 | `src/compile-prompts.ts` | LLM prompt 模板 |
 | `src/merkle-hash.ts` | 论证图 Merkle 哈希，用于 staleness 检测 |
 
-## compile_status 枚举（ClaimData 字段）
+## compile_state 裁决
 
-| 值 | 含义 |
-|----|------|
-| `null` | 从未 compile 过 |
+compile 裁决只存在 `compile_state` 表，`data.compile_status` 已删除。verdict 有三种值：
+
+| verdict | 含义 |
+|---------|------|
 | `"passed"` | 最近一次 compile 通过，且论证结构未变化 |
-| `"stale"` | compile 通过后，论证结构发生了变化 |
+| `"failed"` | 最近一次 compile 未通过（结构检查或 LLM 审查发现缺陷） |
+| `"stale"` | 上次 passed 后，论证结构发生了变化 |
+
+`compile_state` 行不再删除：`stale` 保留记录信息（"曾经 compile 过"），`failed` 保持 `failed`（不因无模型审查而覆盖）。
+
+## 两条独立的失效路径
+
+### 1. 结构失效（`invalidateCompiledClaims`）
+
+content 或关系（`ground_ids`、`backing_ids`、`rebuttal_ids`）变更时触发：
+
+- `compile_state.verdict` → `"stale"`，清空 `argumentHash`
+- Claim 的 `status` 若为 `supported` / `disputed` / `refuted`，退回 `"proposed"`
+- 只做一跳 direct 反查：子证据不在上层审查输入里，不继续 BFS 传播
+
+### 2. 充分性失效（`revertUnsupportedClaimStatuses`）
+
+verification 或 status 变更时触发。论证的形式没变（content 和关系都没动），所以 compile 仍为 `passed`：
+
+- 按 Claim 当前 status 复检对应的门：`supported` 检查 A1（某条 Warrant 的 Ground 全部已核实），`disputed`/`refuted` 检查 A3/A4（存在已核实的 Rebuttal）
+- 门不成立才退回 `proposed`；仍成立的不动
+- 向上传播：退回的 Claim 作为上层 Ground/Rebuttal 也不再算已核实，但上层 compile 保持 `passed`
+- 警告文案明确说 `do NOT re-run compile_arguments for Claim #N`
+
+## 判定规则
+
+### A0：status 需要 compile 通过
+
+```typescript
+// service.ts
+const cs = repo.getCompileState(db, claimId);
+if (cs?.verdict !== "passed") {
+  throw StatusTransitionError("the argument changed after it last passed compile...");
+}
+```
+
+`supported`、`disputed`、`refuted` 三种目标状态都需要 compile 通过。compile 也反向检查：跑完后若 Claim 没有 `passed` 记录，status 退回 proposed。
+
+### 规则 C′：Claim 算不算已核实
+
+| 节点类型 | 已核实条件 |
+|----------|-----------|
+| Statement | `verification === "verified"` |
+| Claim | `status ∈ {supported, disputed}` |
+
+`disputed` 作为已核实状态是因为：一个记录在案的证据冲突是已定论的状态，上层引用它获取的是 scope 而非 truth value。
 
 ## Staleness 检测机制
 
 使用 Merkle Hash 对论证子图做内容摘要：
+
 - `compile_arguments` 通过时，将当前 `argumentHash` 写入 `compile_state`
-- 任何结构性变更（添加/删除 Ground、Warrant 等）会**清空** `compile_state` 并将 `compile_status` 设为 `"stale"`
-- `null` 表示从未编译；`stale` 表示编译过但结构已变更——两者都会阻止状态转换
+- 任何结构性变更（content 或关系变化）会清空 `argumentHash` 并将 verdict 设为 `"stale"`
+- 哈希只覆盖 content 和关系结构，不覆盖 status/verification
+- 三种角色（Ground/Backing/Rebuttal）都只算节点自己的 content 哈希，不递归子树
+- 编译调度时 hash 比对若未变，跳过 LLM 审查，只跑结构检查
 
-## Reviewer 类型
+## 审查类型
 
-`ElementReviewResult.reviewer` 字段标识来源。均在 `compile_arguments` 显式调用时并行触发（`Promise.all`）：
+均在 `compile_arguments` 显式调用时触发：
 
-| reviewer | 检查内容 |
-|----------|---------|
-| `structure` | 论证结构完整性（确定性规则，无 LLM） |
-| `claim` | Claim content 是否符合 Toulmin 定义（LLM，`compile-service.reviewNodeDefinition`） |
-| `warrant` | 每个 Warrant content 是否符合 Toulmin 定义（LLM，`compile-service.reviewNodeDefinition`） |
-| `chain` | 整体论证链路逻辑连贯性（LLM，`compile-reviewers.runChainReview`） |
+| 审查 | 检查内容 | 模型 |
+|------|---------|------|
+| `structure` | 论证结构完整性 + 7 条确定性质量规则 | 无 LLM |
+| `claim` | Claim content 是否符合 Toulmin 定义 | LLM |
+| `warrant` | 每个 Warrant content 是否符合 Toulmin 定义 | LLM |
+| `chain` | 整体论证链路逻辑连贯性 | LLM |
 
-`claim`/`warrant` 与 `chain` 并行执行；当两者对同一 compile 均有 error 时，`chain` 的结果会被标记 `advisory: true`（仍计入 verdict，仅渲染上作区分）。Ground/Backing/Rebuttal 的证据审查（`review-sync.ts`，`verification: pending/verified`）是独立系统，不产出 `ElementReviewResult`，也不在 compile 时触发。
+`claim`/`warrant` 与 `chain` 并行执行（`Promise.all`）。当两者均有 error 时，`chain` 结果标记 `advisory: true`。
 
-### chain reviewer — Claim-type ground 内容展开
+chain reviewer 收到的 Ground/Backing/Rebuttal 只有 `{id, content, type}`，不包含子树的完整论证。
 
-当 Ground 是一个 Claim 节点（直接链式推理，`warrant_grounds` 中有 claim-type 条目）时，chain reviewer 收到的是**该 Claim 的 content**，而非占位文本。这确保 LLM 能对实际前置主张内容作逻辑判断。
+Statement 证据审查（`verification: pending/verified`）是独立系统，在 `update_node` 时同步触发，不在 compile 时触发。
 
-## 状态流转约束（A0 规则）
+## 无审查模型时的行为
 
-所有非 proposed 转换统一被阻止，当 `compile_status !== "passed"`：
-
-```typescript
-// service.ts A0
-if (status === "supported" || status === "disputed" || status === "refuted") {
-  if (data.compile_status !== "passed") throw StatusTransitionError(...)
-}
-```
-
-`supported`、`disputed`、`refuted` 三种目标状态都需要 compile 通过。不是只有 `supported` 需要 compile。
-
-## Invalidation — Status 回退
-
-当论证链中任意节点被修改（添加/删除/更新 Ground、Warrant 等），`invalidateCompiledClaims` 触发：
-
-1. `compile_status` → `"stale"`
-2. 若 Claim 的 `status` 为 `supported` / `disputed` / `refuted`，**回退到 `"proposed"`**
-
-工具响应中会出现两条 warning：
-
-```
-Warning: Claim #N's compiled status has been cleared because node #M in its argument chain was modified.
-Warning: Claim #N status reverted from "supported" to "proposed" because node #M in its argument chain was modified. Re-run compile_arguments and re-assess status when ready.
-Hint: Call compile_arguments to verify the argument chain.
-```
-
-`status: "proposed"` 的 Claim 不触发回退（无 statusReverted warning）。这保证了 Claim 状态始终和论证链一致——不存在"supported 但 stale"的矛盾状态。
+未配 `review.json` 时，`compile_arguments` 不再失败。结构检查照跑，全过就记为 `passed`，附加警告说逻辑没人审过。`failed` 记录保持不覆盖。
 
 ## 相关类型
 
 ```typescript
 export interface CompileState {
   claimId: number;
-  verdict: "passed" | "failed";
+  verdict: "passed" | "failed" | "stale";
   summary: string;
   argumentHash?: string;  // Merkle Root 哈希，passed 时写入
   createdAt: string;
 }
 
-export interface CompileResult {
-  claimId: number;
-  verdict: "passed" | "failed";
-  summary: string;
-  elementReviews: ElementReviewResult[];
-  compiledAt: string;
+export interface ElementReviewResult {
+  reviewer: "structure" | "claim" | "warrant" | "chain";
+  errors: string[];
+  warnings: string[];
+  infos?: string[];
+  advisory?: boolean;
 }
 ```
 
 ## 关联
 
 - [[architecture]] — 工具全貌与三层架构
-- [[node-semantics]] — Claim.compile_status 字段详情

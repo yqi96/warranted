@@ -95,7 +95,7 @@ update_node(<protocol>, content="<... | Executed: N candidates, M included, K ex
 
 Say in that sentence that the screening was delegated and how many rows you audited. The reviewer verifying this Statement checks it against the CSV, and a sentence that reads as a first-person judgment of four hundred exclusions is a sentence the CSV cannot support.
 
-**Do not pass `attachments` in that call.** The parameter replaces the whole array rather than appending, and attachments are not part of the structural change that invalidates a compile — so dropping the CSV here produces no error, no warning, and no compile finding. The file is the only record of four hundred exclusions.
+**Do not pass `attachments` in that call.** The parameter replaces the whole array rather than appending, and attachments are not part of the structural change that invalidates a compile, so dropping the CSV here produces no compile finding. A warning now fires naming the dropped path, but don't rely on catching it — the file is the only record of four hundred exclusions.
 
 That file is the answer to "why didn't you consider X" — the question a survey's coverage claim has to survive. Do not create Statements for excluded papers and do not tag them: a rejection is a row, not a proposition, and tagging every candidate would triple the vocabulary you have to read past for the rest of the survey.
 
@@ -145,7 +145,7 @@ Run this loop every 3–5 batches, in this order:
 4. Classify. New category → `create_tag("theme:x", "<what belongs here, what does not>")`. The description is the category's definition; write it so a later session can classify against it.
 5. `tag_nodes(node_ids=[...], add=["theme:x"])` — one call per theme, not one per Statement.
 
-Deduplicate while classifying, not while extracting. Parallel subagents cannot see each other, so two papers reporting the same finding produce two near-identical Statements. When `search_nodes` shows a duplicate: keep one, `update_node(<keeper>, attachments=[<union of both>])`, then `delete_node` the other. `attachments` **replaces** the array — pass the union or you silently drop a paper.
+Deduplicate while classifying, not while extracting. Parallel subagents cannot see each other, so two papers reporting the same finding produce two near-identical Statements. When `search_nodes` shows a duplicate: keep one, `update_node(<keeper>, attachments=[<union of both>])`, then `delete_node` the other. `attachments` **replaces** the array — pass the union, or you drop a paper (a warning fires naming the dropped path, but don't rely on catching it).
 
 **When deleting the last remaining Statement of a paper, write the paper's tag back to `MERGED` in the same breath:**
 

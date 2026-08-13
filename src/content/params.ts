@@ -81,7 +81,9 @@ export const PARAMS = {
   // ── update_node 专用字段 ────────────────────────────────────────────────────
 
   new_content: "New content",
-  new_attachments: "New attachment file paths",
+  new_attachments:
+    ELEMENTS.statement.attachments +
+    " Replaces the entire array — not additive. Include every path you want to keep, not just the ones you're adding.",
   /** Warrant 的 ground_ids 增量更新；{ add?: number[], remove?: number[] } */
   ground_ids_incremental:
     "Incrementally update the node IDs used as grounds for this warrant. If the thing you rely on is a record (observed or read), it is a Statement; if it is itself a conclusion you argued, it is a Claim. Both are accepted.",

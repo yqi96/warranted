@@ -978,6 +978,12 @@ export function updateNode(
     if (row.type === "claim" || row.type === "warrant") {
       throw new ValidationError(`${row.type} nodes do not have attachments`);
     }
+    const dropped = ((data.attachments ?? []) as string[]).filter(
+      (p) => !params.attachments!.includes(p)
+    );
+    if (dropped.length > 0) {
+      warnings.push(WARNINGS.attachmentsReplaced(nodeId, dropped));
+    }
     data.attachments = params.attachments;
   }
 

@@ -123,6 +123,17 @@ export const WARNINGS = {
     `It is not portable, and whether a review session can read it depends on the runtime environment.`,
 
   /**
+   * attachments 整体替换（非 add/remove）丢掉了调用前已存在的路径。整体替换本身是既有
+   * 设计，不是这条警告要拦的；它只负责让"丢了什么"这件事不再无声——尤其是同一次调用还
+   * 改了 content 时，原本唯一的信号是 verificationRevertedOnContentChange，那条只字不提
+   * attachments。
+   */
+  attachmentsReplaced: (nodeId: number, dropped: string[]) =>
+    `Warning: Statement #${nodeId}'s attachments update replaced the array and dropped ` +
+    `${dropped.length} previously-attached path(s): ${dropped.join(", ")}. ` +
+    `attachments is not additive — pass the full list of paths you want to keep.`,
+
+  /**
    * compile_arguments 在没有配审查模型时的一次性提醒。
    *
    * 一次调用只发一条，不是每条 Claim 发一条：说的是环境缺配置这一件事，重复 N 遍

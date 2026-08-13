@@ -250,6 +250,13 @@ describe("updateNode", () => {
     expect(warnings.some(w => w.includes("reverted to pending"))).toBe(true);
   });
 
+  test("verified Ground 同时改 content 和清空 attachments → 附件被丢的警告不能被 verification 回退警告盖过", () => {
+    const ground = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
+    const { node, warnings } = service.updateNode(db, ground.id, { content: "updated content", attachments: [] });
+    expect((node as any).attachments).toEqual([]);
+    expect(warnings.some(w => w.includes("dropped") && w.includes("/data.csv"))).toBe(true);
+  });
+
   test("更新不存在节点抛出 NotFoundError", () => {
     expect(() => service.updateNode(db, 999, { content: "x" })).toThrow(NotFoundError);
   });

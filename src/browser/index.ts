@@ -13,11 +13,19 @@
  * that child's stdio transport, which chrome-devtools-mcp treats as a
  * shutdown signal and cleans up its browser + temp profile itself.
  *
+ * chrome-devtools-mcp is a pinned `dependencies` entry (see package.json),
+ * installed by `bun install` like everything else — we exec its build output
+ * directly with `node` instead of `npx`, so there's no runtime network
+ * dependency and the version is locked by the lockfile, not just a comment.
+ *
  * Usage:
  *   bun src/browser/index.ts
  */
 
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -31,9 +39,17 @@ import {
 // Config
 // =============================================================================
 
-// Pin the upstream version so behavior doesn't drift on its own. Bump this
-// constant (and re-verify) when intentionally upgrading.
-const UPSTREAM_PACKAGE = "chrome-devtools-mcp@1.7.0";
+// Resolve the installed chrome-devtools-mcp's own bin entry rather than
+// hardcoding a node_modules path — bun install lays out node_modules however
+// it wants, but "chrome-devtools-mcp/package.json" always resolves to the
+// package we depend on.
+const UPSTREAM_PKG_PATH = fileURLToPath(import.meta.resolve("chrome-devtools-mcp/package.json"));
+const UPSTREAM_PKG = JSON.parse(readFileSync(UPSTREAM_PKG_PATH, "utf-8")) as {
+  version: string;
+  bin: Record<string, string>;
+};
+const UPSTREAM_BIN = join(dirname(UPSTREAM_PKG_PATH), UPSTREAM_PKG.bin["chrome-devtools-mcp"]!);
+const UPSTREAM_VERSION = UPSTREAM_PKG.version;
 
 const SESSION_FLAGS = ["--isolated", "--experimentalStructuredContent"];
 const PROBE_FLAGS = ["--isolated", "--headless=true", "--experimentalStructuredContent"];
@@ -50,8 +66,8 @@ const sessions = new Map<string, SessionState>();
 
 function spawnUpstreamTransport(extraArgs: string[]): StdioClientTransport {
   return new StdioClientTransport({
-    command: "npx",
-    args: ["-y", UPSTREAM_PACKAGE, ...extraArgs],
+    command: "node",
+    args: [UPSTREAM_BIN, ...extraArgs],
     stderr: "pipe",
   });
 }
@@ -193,7 +209,7 @@ async function probeUpstreamSchemas(): Promise<unknown[]> {
 
 async function main(): Promise<void> {
   const upstreamSchemas = await probeUpstreamSchemas();
-  console.error(`[warranted-browser] Probed ${upstreamSchemas.length} upstream tools from ${UPSTREAM_PACKAGE}`);
+  console.error(`[warranted-browser] Probed ${upstreamSchemas.length} upstream tools from chrome-devtools-mcp@${UPSTREAM_VERSION}`);
 
   const server = new Server(
     { name: "warranted-browser", version: "1.0.0" },

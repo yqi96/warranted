@@ -19,48 +19,35 @@ document.addEventListener('click', e => {
   if (cw.classList.contains('expanded') && !cw.contains(e.target)) collapseCommandWindow();
 });
 
-// ── Type toggle buttons (resting bar) ──
-document.querySelectorAll('.type-toggle').forEach(btn => {
+// ── Band toggle buttons (resting bar) ──
+document.querySelectorAll('.band-toggle').forEach(btn => {
   btn.addEventListener('click', e => {
     e.stopPropagation();
-    const type = btn.dataset.type;
+    const q = btn.dataset.qualifier;
     const isActive = btn.classList.contains('active');
     btn.classList.toggle('active',   !isActive);
     btn.classList.toggle('inactive',  isActive);
     // Sync expanded pills
-    const pill = document.querySelector(`.cw-pill[data-type="${type}"]`);
+    const pill = document.querySelector(`.cw-pill[data-qualifier="${q}"]`);
     if (pill) pill.classList.toggle('active', !isActive);
     // Sync hidden checkbox and trigger graph reload
-    const cb = document.querySelector(`#filter-panel input[data-type="${type}"]`);
+    const cb = document.querySelector(`#filter-panel input[data-qualifier="${q}"]`);
     if (cb) { cb.checked = !isActive; cb.dispatchEvent(new Event('change')); }
   });
 });
 
-// ── Filter pills (expanded panel) — mirror type toggles ──
+// ── Filter pills (expanded panel) — mirror band toggles ──
 document.querySelectorAll('.cw-pill').forEach(pill => {
   pill.addEventListener('click', e => {
     e.stopPropagation();
-    const type = pill.dataset.type;
+    const q = pill.dataset.qualifier;
     const isActive = pill.classList.contains('active');
     pill.classList.toggle('active', !isActive);
     // Sync resting toggle button
-    const btn = document.querySelector(`.type-toggle[data-type="${type}"]`);
+    const btn = document.querySelector(`.band-toggle[data-qualifier="${q}"]`);
     if (btn) { btn.classList.toggle('active', !isActive); btn.classList.toggle('inactive', isActive); }
-    const cb = document.querySelector(`#filter-panel input[data-type="${type}"]`);
+    const cb = document.querySelector(`#filter-panel input[data-qualifier="${q}"]`);
     if (cb) { cb.checked = !isActive; cb.dispatchEvent(new Event('change')); }
-  });
-});
-
-// ── Layout buttons ──
-document.querySelectorAll('.cw-layout-btn').forEach(btn => {
-  btn.addEventListener('click', e => {
-    e.stopPropagation();
-    document.querySelectorAll('.cw-layout-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    const layout = btn.dataset.layout;
-    const radio = document.querySelector(`#filter-panel input[name="layout"][value="${layout}"]`);
-    if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change')); }
-    document.getElementById('sb-layout').textContent = btn.textContent;
   });
 });
 
@@ -78,7 +65,7 @@ document.getElementById('cw-search-input').addEventListener('input', e => {
 });
 
 // ── Keyboard shortcuts ──
-document.querySelectorAll('#filter-panel input[data-type]').forEach(cb =>
+document.querySelectorAll('#filter-panel input[data-qualifier]').forEach(cb =>
   cb.addEventListener('change', () => loadGraph())
 );
 document.querySelectorAll('input[name="layout"]').forEach(r =>

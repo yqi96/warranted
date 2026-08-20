@@ -2,9 +2,10 @@
  * Agent 行为评测的用例类型定义。
  *
  * Tier 1(判断层):假设性提问,只让 agent 陈述计划,judge 按 rubric 打分。
- * Tier 2(行为层):真实执行,跑完后对 .toulmin/argument.db 做断言。
+ * Tier 2(行为层):真实执行,跑完后对 .toulmin/graph.db 做断言。
  */
 import type { Database } from "bun:sqlite";
+import type { CheckContext } from "../../src/structural-check.ts";
 
 export interface AssertCtx {
   /** 运行后打开的图数据库;agent 未创建 .toulmin 时为 null */
@@ -41,8 +42,13 @@ export interface Tier1Case extends CaseBase {
 
 export interface Tier2Case extends CaseBase {
   tier: 2;
-  /** 在空 schema 上预置图状态(如"已 supported 的 Claim") */
-  seed?: (db: Database) => void;
+  /**
+   * 在空库上预置图状态(如"已判到 probably 的命题")。
+   *
+   * 走 service 层而不是手写 SQL:手写 INSERT 建不出基线(baseline_head/refs),
+   * 于是"改了内容要重查"这套机制在种子数据上永远不触发 —— 用例就测不到它。
+   */
+  seed?: (db: Database, ctx: CheckContext) => void;
   assertions: Assertion[];
 }
 

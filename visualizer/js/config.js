@@ -1,82 +1,106 @@
-// ── Node color system ──
-// Claims are the golden protagonist. All other types use desaturated, near-neutral
-// tones so the claim hierarchy pops visually. Shape distinguishes type, not hue.
+// ── Node colour system ──
+// 本体只有一种节点，所以颜色不再编码"类型"，而是编码 qualifier 落在哪一档。
+// 五档是一条有序标尺(design.md §1.2)，配色也照这条序走：金色一端是挣到的，
+// 灰是没挣到，玫瑰是被推翻——中间三档在色温上单调过渡，好让"这条比那条强"
+// 不用读文字就看得出来。
 
-const TYPE_COLORS = {
-  claim:    '#C8A448',   // gold          — the thesis, protagonist
-  ground:   '#A0B8C8',   // silver-blue   — desaturated, subordinate
-  warrant:  '#A8A0C4',   // silver-violet — desaturated, subordinate
-  backing:  '#90A8A0',   // silver-teal   — desaturated, background
-  rebuttal: '#C89080',   // dusty rose    — muted opposition signal
+const QUALIFIER_ORDER = ['refuted', 'unestablished', 'possibly', 'probably', 'certainly'];
+
+const QUALIFIER_COLORS = {
+  certainly:     '#C8A448',   // gold          — 挣满了
+  probably:      '#C4B078',   // pale gold
+  possibly:      '#A0B8C8',   // silver-blue
+  unestablished: '#8E8E93',   // neutral grey  — 还没挣到
+  refuted:       '#C87858',   // dusty rose    — 被推翻
 };
 
-// Node fill colors (nearly transparent — shape carries meaning)
-const NODE_FILLS = {
-  claim:    'rgba(200,164,72,0.14)',
-  ground:   'rgba(255,255,255,0.04)',
-  warrant:  'rgba(255,255,255,0.04)',
-  backing:  'rgba(255,255,255,0.03)',
-  rebuttal: 'rgba(200,120,100,0.08)',
+const QUALIFIER_FILLS = {
+  certainly:     'rgba(200,164,72,0.16)',
+  probably:      'rgba(196,176,120,0.11)',
+  possibly:      'rgba(160,184,200,0.07)',
+  unestablished: 'rgba(255,255,255,0.035)',
+  refuted:       'rgba(200,120,88,0.09)',
 };
 
-// Node border colors
-const NODE_STROKES = {
-  claim:    'rgba(200,164,72,0.65)',
-  ground:   'rgba(180,200,215,0.35)',
-  warrant:  'rgba(180,180,210,0.30)',
-  backing:  'rgba(170,195,190,0.25)',
-  rebuttal: 'rgba(200,130,110,0.48)',
+const QUALIFIER_STROKES = {
+  certainly:     'rgba(200,164,72,0.70)',
+  probably:      'rgba(196,176,120,0.52)',
+  possibly:      'rgba(160,184,200,0.40)',
+  unestablished: 'rgba(255,255,255,0.20)',
+  refuted:       'rgba(200,120,88,0.55)',
 };
 
-// ── Node sizes ──
-const TYPE_SIZES = {
-  claim: 24, ground: 15, warrant: 18,
-  backing: 13, rebuttal: 16
+// 尺寸随档位递增：一眼扫过去，承重的东西更大。
+const QUALIFIER_SIZES = {
+  certainly: 24, probably: 21, possibly: 18,
+  unestablished: 15, refuted: 17,
 };
 
-// ── Edge colours — muted palette, gold for claim connections ──
+// 未成立与被推翻两档画虚线：它们都是"不要直接拿去用"的信号，只是方向相反。
+const QUALIFIER_DASH = {
+  certainly:     'none',
+  probably:      'none',
+  possibly:      '6,2.5',
+  unestablished: '3,2.5',
+  refuted:       '5,2',
+};
+
+const QUALIFIER_LABELS = {
+  certainly: 'CERT', probably: 'PROB', possibly: 'POSS',
+  unestablished: 'UNEST', refuted: 'REF',
+};
+
+// ── Edge colours — 三种槽位关系 ──
+// 方向统一是"被引用者 → 槽位主人"，所以箭头指向的永远是用了它的那条命题。
 const EDGE_COLORS = {
-  supports:    'rgba(200,164,72,0.40)',    // gold  — claim bond
-  based_on:    'rgba(180,200,215,0.22)',   // silver-blue
-  reinforces:  'rgba(180,180,210,0.18)',   // silver-violet
-  challenges:  'rgba(200,130,110,0.45)',   // dusty rose
-  derives_from:'rgba(200,164,72,0.18)',    // faded gold
+  evidence: 'rgba(200,164,72,0.38)',    // gold        — 支撑
+  rebuts:   'rgba(200,130,110,0.48)',   // dusty rose  — 攻击
+  warrants: 'rgba(168,160,196,0.34)',   // silver-violet — 晋升后的理由
 };
 
-// ── Shape icons for type labels ──
-const TYPE_SHAPES = {
-  claim:    'C',
-  ground:   'G',
-  warrant:  'W',
-  backing:  'B',
-  rebuttal: 'R',
+const EDGE_LABELS = {
+  evidence: 'EVIDENCE',
+  rebuts:   'REBUTS',
+  warrants: 'WARRANT',
 };
 
-// ── Node attribute resolvers (claim/warrant use type key; statement uses primary_role) ──
-function nodeColor(n) {
-  if (n.type === 'statement') return TYPE_COLORS[n.data?.primary_role || 'ground'] || TYPE_COLORS.ground;
-  return TYPE_COLORS[n.type] || '#8E8E93';
+// ── 结构形状 ──
+// 形状编码的是本体里真正剩下的那条结构区分：这条命题靠什么站着。
+//   inference — 证据槽里有别的命题(它是推出来的)
+//   sourced   — 只有附件(它靠文件站着)
+//   bare      — 证据槽是空的(它目前什么都没靠)
+function nodeStructure(n) {
+  if (n.evidence?.length) return 'inference';
+  if (n.attachments?.length) return 'sourced';
+  return 'bare';
 }
-function nodeFill(n) {
-  if (n.type === 'statement') return NODE_FILLS[n.data?.primary_role || 'ground'] || NODE_FILLS.ground;
-  return NODE_FILLS[n.type] || 'rgba(255,255,255,0.04)';
+
+function qualifierOf(n) {
+  return QUALIFIER_ORDER.includes(n?.qualifier) ? n.qualifier : 'unestablished';
 }
-function nodeStroke(n) {
-  if (n.type === 'statement') return NODE_STROKES[n.data?.primary_role || 'ground'] || NODE_STROKES.ground;
-  return NODE_STROKES[n.type] || 'rgba(255,255,255,0.18)';
+
+// ── Node attribute resolvers ──
+function nodeColor(n)      { return QUALIFIER_COLORS[qualifierOf(n)]; }
+function nodeFill(n)       { return QUALIFIER_FILLS[qualifierOf(n)]; }
+function nodeStroke(n)     { return QUALIFIER_STROKES[qualifierOf(n)]; }
+function nodeSize(n)       { return QUALIFIER_SIZES[qualifierOf(n)]; }
+function nodeDash(n)       { return QUALIFIER_DASH[qualifierOf(n)]; }
+function nodeBandLabel(n)  { return QUALIFIER_LABELS[qualifierOf(n)]; }
+
+/** 正向三档：反驳要有攻击力必须落在这里，判定过的命题也是从这里起算。 */
+function isPositive(n) {
+  const q = qualifierOf(n);
+  return q === 'possibly' || q === 'probably' || q === 'certainly';
 }
-function nodeSize(n) {
-  if (n.type === 'statement') return TYPE_SIZES[n.data?.primary_role || 'ground'] || TYPE_SIZES.ground;
-  return TYPE_SIZES[n.type] || 18;
-}
-function nodeShapeLabel(n) {
-  if (n.type === 'statement') return TYPE_SHAPES[n.data?.primary_role || 'ground'] || 'G';
-  return TYPE_SHAPES[n.type] || '?';
+
+/** 有没有需要人看一眼的东西。标红是提示不是拒绝(design.md §2.5)。 */
+function hasAttention(n) {
+  return (n.warnings?.pending || 0) > 0 || (n.findings?.pending || 0) > 0;
 }
 
 // ── Global state ──
 let svg, g, zoomBehavior, simulation;
-let graphData = { nodes: [], edges: [], stats: {} };
+let graphData = { nodes: [], edges: [], stats: {}, total: 0 };
 let selectedNodeId = null;
 let selectedNodeIds = new Set();
 let nodeMap = new Map();

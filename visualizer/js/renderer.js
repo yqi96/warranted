@@ -22,9 +22,8 @@ function renderTreeLayout() {
     const treeLayout = d3.tree()
       .nodeSize([nodeSepH, levelH])
       .separation((a, b) => {
-        if (a.data.type === 'claim' && b.data.type === 'claim') return 1.4;
-        if (a.data.type === 'ground' && b.data.type === 'ground' &&
-            a.data.data?.ref_claim_id && b.data.data?.ref_claim_id) return 1.6;
+        // 展开的节点比收起的引用占地方，两个都展开时多留一档。
+        if (!a.data.isRef && !b.data.isRef) return a.parent === b.parent ? 1.3 : 1.5;
         return a.parent === b.parent ? 1.0 : 1.3;
       });
     treeLayout(root);
@@ -39,30 +38,18 @@ function renderTreeLayout() {
   nodeMap = new Map(allNodes.map(n => [n.data.id, n.data]));
   nodePositionMap = new Map(allNodes.map(n => [n.data.id, { x: n.x, y: n.y }]));
 
-  function linkStroke(d) {
-    const sType = d.source.data.type, tType = d.target.data.type;
-    if (sType === 'claim'   && tType === 'warrant') return EDGE_COLORS.supports;
-    if (sType === 'warrant' && tType === 'ground')  return EDGE_COLORS.based_on;
-    if (sType === 'ground'  && tType === 'claim')   return EDGE_COLORS.reinforces;
-    const t = tType;
-    return EDGE_COLORS[t === 'backing' ? 'reinforces' : t === 'rebuttal' ? 'challenges' : 'supports']
-      || 'rgba(200,180,140,0.30)';
-  }
-  function linkWidth(d) {
-    const sType = d.source.data.type, tType = d.target.data.type;
-    if (sType === 'claim') return 3.5;
-    if (sType === 'ground' && tType === 'claim') return 2.8;
-    return 2.2;
-  }
-  function linkDash(d) {
-    return (d.source.data.type === 'ground' && d.target.data.type === 'claim') ? '9,4' : 'none';
-  }
-  function linkMarker(d) {
-    if (d.source.data.type === 'ground' && d.target.data.type === 'claim') return 'url(#arrow-chain)';
-    const t = d.target.data.type;
-    const et = t === 'backing' ? 'reinforces' : t === 'rebuttal' ? 'challenges' : t === 'ground' ? 'based_on' : 'supports';
-    return `url(#arrow-${et})`;
-  }
+  // 树里 d.source 是父(槽位主人)、d.target 是子(被引用的命题)，边的种类记在子身上
+  // ——由 buildForest 从槽位边搬过来的。
+  const edgeTypeOf = d => d.target.data.edgeType || 'evidence';
+
+  function linkStroke(d) { return EDGE_COLORS[edgeTypeOf(d)] || 'rgba(200,180,140,0.30)'; }
+  function linkWidth(d)  { return edgeTypeOf(d) === 'rebuts' ? 3 : edgeTypeOf(d) === 'warrants' ? 2 : 2.6; }
+  function linkDash(d)   { return edgeTypeOf(d) === 'warrants' ? '6,3' : 'none'; }
+  function linkMarker(d) { return `url(#arrow-${edgeTypeOf(d)})`; }
+
+  // 画线方向是子 → 父，与边的语义一致：箭头指向用了它的那条命题。
+  const treeLink = d3.linkVertical().x(d => d.x).y(d => d.y);
+  const linkPath = d => treeLink({ source: d.target, target: d.source });
 
   // ── Links: fade-in ──
   const linkSel = g.select('.links-layer').selectAll('.link')
@@ -77,12 +64,12 @@ function renderTreeLayout() {
   linkEnter.transition().duration(500).delay(d => d.source.depth * 60).ease(d3.easeQuadOut).style('opacity', 1);
   linkEnter
     .on('mouseenter', function(event, d) {
-      showEdgeTooltip(event, inferTreeEdgeType(d.source.data.type, d.target.data.type));
+      showEdgeTooltip(event, edgeTypeOf(d));
     })
     .on('mouseleave', hideTooltip);
   const linkMergeTree = linkEnter.merge(linkSel);
   linkMergeTree.transition().duration(300).style('opacity', 1);
-  linkMergeTree.attr('d', d3.linkVertical().x(d => d.x).y(d => d.y));
+  linkMergeTree.attr('d', linkPath);
 
   // ── Nodes: depth-staggered spring entrance ──
   const nodeSel = g.select('.nodes-layer').selectAll('.node-group')
@@ -111,9 +98,10 @@ function renderTreeLayout() {
     const el = d3.select(this);
     drawNodeShape(el, d);
     const s = nodeSize(d.data);
-    const labelY = d.data.type === 'claim' ? s * 0.68 + 14 : s * 1.05 + 13;
+    // 让开 drawNodeShape 画在 halfH+9 的档位缩写。
+    const halfH = nodeStructure(d.data) === 'inference' ? s * 0.66 : s;
     el.append('text').attr('class', 'node-label')
-      .attr('text-anchor', 'middle').attr('dy', labelY)
+      .attr('text-anchor', 'middle').attr('dy', halfH + 22)
       .text(truncate(d.data.content, 42));
   });
 
@@ -164,14 +152,14 @@ function renderForceLayout() {
 
   const linkEnter = linkSel.enter().append('path').attr('class', 'link')
     .attr('stroke', d => EDGE_COLORS[d.type] || 'rgba(200,180,140,0.30)')
-    .attr('stroke-width', d => d.type === 'supports' || d.type === 'challenges' ? 3 : 2.2)
-    .attr('stroke-dasharray', d => d.type === 'reinforces' || d.type === 'challenges' ? '6,3' : d.type === 'derives_from' ? '2,3' : 'none')
+    .attr('stroke-width', d => d.type === 'rebuts' ? 3 : d.type === 'warrants' ? 2 : 2.6)
+    .attr('stroke-dasharray', d => d.type === 'warrants' ? '6,3' : 'none')
     .attr('marker-end', d => `url(#arrow-${d.type})`)
     .style('opacity', 0);
 
   linkEnter.transition().duration(420).ease(d3.easeQuadOut).style('opacity', 1);
   linkEnter
-    .on('mouseenter', function(event, d) { showEdgeTooltip(event, d.type || 'connects'); })
+    .on('mouseenter', function(event, d) { showEdgeTooltip(event, d.type || 'evidence'); })
     .on('mouseleave', hideTooltip);
   const linkMerge = linkEnter.merge(linkSel);
   linkMerge.transition().duration(300).style('opacity', 1);
@@ -200,8 +188,9 @@ function renderForceLayout() {
     const el = d3.select(this);
     drawNodeShape(el, d);
     const s = nodeSize(d);
+    const halfH = nodeStructure(d) === 'inference' ? s * 0.66 : s;
     el.append('text').attr('class', 'node-label').attr('text-anchor', 'middle')
-      .attr('dy', s + 15).text(truncate(d.content, 30));
+      .attr('dy', halfH + 22).text(truncate(d.content, 30));
   });
 
   const nodeMerge = nodeEnter.merge(nodeSel);

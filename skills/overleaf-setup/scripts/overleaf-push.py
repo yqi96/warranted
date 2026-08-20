@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Push a LaTeX directory to Overleaf with \cite{statement_N} replaced by real bib keys.
+r"""Push a LaTeX directory to Overleaf with \cite{prop_N} replaced by real bib keys.
 
-Reads Statement attachment filenames from the Warranted DB, mirrors the source directory
+Reads proposition attachment filenames from the Warranted DB, mirrors the source directory
 into a temporary staging directory (replacing citations in .tex files), calls
 `leaf push`, then deletes the staging directory. Source files are never modified.
+
+Only `.pdf` attachments are treated as bib keys. The old ontology filtered on
+`source = 'literature'` to keep observation statements out of the citation map; that field
+no longer exists, and without a replacement filter every explanatory `.md` attached to a
+proposition would be emitted as a citation key. The paper-is-a-PDF convention is the
+replacement — it is the same convention the literature-writing citation contract states
+("each attached paper's filename stem matches a BibTeX key in the project .bib").
 
 Prerequisites (one-time setup):
     uv tool install overleaf-for-agents
@@ -14,8 +21,8 @@ Usage:
     # Push to Overleaf (hook or manual):
     uv run overleaf-push.py --dir LATEX_DIR
 
-    # Push only if every citation key is a statement_N key:
-    uv run overleaf-push.py --dir LATEX_DIR --require-statement-cites
+    # Push only if every citation key is a prop_N key:
+    uv run overleaf-push.py --dir LATEX_DIR --require-prop-cites
 
     # Stage only, do not push (for inspection):
     uv run overleaf-push.py --dir LATEX_DIR --stage /tmp/inspect --no-push
@@ -28,7 +35,6 @@ Usage:
 """
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -41,44 +47,44 @@ from pathlib import Path
 CITE_RE = re.compile(
     r'(\\cite\w*\*?(?:\[[^\]]*\]){0,2}\{)([^}]+)(\})'
 )
-STATEMENT_KEY_RE = re.compile(r'statement_(\d+)')
+PROP_KEY_RE = re.compile(r'prop_(\d+)')
+LEGACY_KEY_RE = re.compile(r'statement_(\d+)')
 
 
-def build_statement_map(db_path: str, include_all: bool = False) -> dict[str, list[str]]:
+def build_proposition_map(db_path: str, include_all: bool = False) -> dict[str, list[str]]:
     if not os.path.exists(db_path):
-        return {}  # no DB → no statement map; citations left as-is
+        return {}  # no DB → no map; citations left as-is
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-
-    query = (
-        "SELECT id, data FROM nodes WHERE type = 'statement'"
-        if include_all else
-        "SELECT id, data FROM nodes WHERE type = 'statement'"
-        " AND json_extract(data, '$.source') = 'literature'"
-    )
-    rows = conn.execute(query).fetchall()
+    rows = conn.execute(
+        "SELECT node_id, path FROM evidence_attachments ORDER BY node_id, path"
+    ).fetchall()
     conn.close()
 
-    statement_map: dict[str, list[str]] = {}
-    skipped = []
+    prop_map: dict[str, list[str]] = {}
+    non_pdf_only: set[str] = set()
 
     for row in rows:
-        sid = str(row["id"])
-        data = json.loads(row["data"])
-        attachments = data.get("attachments") or []
-        if not attachments:
-            skipped.append(sid)
-            continue
-        statement_map[sid] = [Path(f).stem for f in attachments]
+        pid = str(row["node_id"])
+        path = Path(row["path"])
+        if include_all or path.suffix.lower() == ".pdf":
+            prop_map.setdefault(pid, []).append(path.stem)
+        else:
+            non_pdf_only.add(pid)
 
-    if skipped:
-        print(f"Warning: {len(skipped)} Statement(s) with no attachments (IDs: {skipped})", file=sys.stderr)
+    non_pdf_only -= prop_map.keys()
+    if non_pdf_only:
+        print(
+            f"Warning: {len(non_pdf_only)} proposition(s) have attachments but no PDF "
+            f"(IDs: {sorted(non_pdf_only, key=int)})",
+            file=sys.stderr,
+        )
 
-    return statement_map
+    return prop_map
 
 
-def replace_cites(tex: str, statement_map: dict[str, list[str]]) -> tuple[str, int]:
+def replace_cites(tex: str, prop_map: dict[str, list[str]]) -> tuple[str, int]:
     count = 0
     missing: list[str] = []
 
@@ -88,15 +94,14 @@ def replace_cites(tex: str, statement_map: dict[str, list[str]]) -> tuple[str, i
         keys = [k.strip() for k in keys_str.split(',')]
         new_keys: list[str] = []
         for key in keys:
-            stmt = STATEMENT_KEY_RE.fullmatch(key)
-            if stmt:
-                sid = stmt.group(1)
-                if sid in statement_map:
-                    bib_keys = statement_map[sid]
-                    new_keys.extend(bib_keys)
+            prop = PROP_KEY_RE.fullmatch(key)
+            if prop:
+                pid = prop.group(1)
+                if pid in prop_map:
+                    new_keys.extend(prop_map[pid])
                     count += 1
                 else:
-                    missing.append(sid)
+                    missing.append(pid)
                     new_keys.append(key)
             else:
                 new_keys.append(key)
@@ -105,50 +110,63 @@ def replace_cites(tex: str, statement_map: dict[str, list[str]]) -> tuple[str, i
     updated = CITE_RE.sub(replace_match, tex)
 
     if missing:
-        print(f"Warning: Statement ID(s) not in map (no attachment?): {sorted(set(missing))}", file=sys.stderr)
+        print(
+            "Warning: proposition ID(s) not in map (no PDF attached?): "
+            f"{sorted(set(missing), key=int)}",
+            file=sys.stderr,
+        )
 
     return updated, count
 
 
-def find_non_statement_cites(tex: str, source_name: str) -> list[str]:
+def find_bad_cites(tex: str, source_name: str) -> list[str]:
+    """Every citation key must be prop_N. Legacy statement_N keys get their own message:
+    they are not renamed prop_N keys — the numbering belongs to an archived graph."""
     errors: list[str] = []
 
     for match in CITE_RE.finditer(tex):
         line = tex.count("\n", 0, match.start()) + 1
         keys = [k.strip() for k in match.group(2).split(',')]
         for key in keys:
-            if not STATEMENT_KEY_RE.fullmatch(key):
-                errors.append(f"{source_name}:{line}: citation key is not statement_N: {key}")
+            if PROP_KEY_RE.fullmatch(key):
+                continue
+            if LEGACY_KEY_RE.fullmatch(key):
+                errors.append(
+                    f"{source_name}:{line}: legacy citation key {key} — re-identify what it "
+                    "cited and repoint it; the number does not carry over"
+                )
+            else:
+                errors.append(f"{source_name}:{line}: citation key is not prop_N: {key}")
 
     return errors
 
 
-def find_non_statement_cites_in_dir(source: Path) -> list[str]:
+def find_bad_cites_in_dir(source: Path) -> list[str]:
     errors: list[str] = []
 
     for src_path in source.rglob("*.tex"):
         if src_path.is_file():
             rel = src_path.relative_to(source)
             tex = src_path.read_text(encoding="utf-8")
-            errors.extend(find_non_statement_cites(tex, str(rel)))
+            errors.extend(find_bad_cites(tex, str(rel)))
 
     return errors
 
 
 def fail_for_citation_errors(citation_errors: list[str]) -> None:
     if citation_errors:
-        print("Error: non-statement citation key(s) found:", file=sys.stderr)
+        print("Error: citation key(s) that do not point into the graph:", file=sys.stderr)
         for error in citation_errors:
             print(f"  {error}", file=sys.stderr)
-        print("Replace every listed citation key with a statement_N key before stopping.", file=sys.stderr)
+        print("Replace every listed citation key with a prop_N key before stopping.", file=sys.stderr)
         raise SystemExit(2)
 
 
 def mirror_to_stage(
     source: Path,
     stage: Path,
-    statement_map: dict[str, list[str]],
-    require_statement_cites: bool = False,
+    prop_map: dict[str, list[str]],
+    require_prop_cites: bool = False,
 ) -> int:
     """Copy source → stage. .tex files get citation replacement; everything else copied as-is."""
     stage.mkdir(parents=True, exist_ok=True)
@@ -164,9 +182,9 @@ def mirror_to_stage(
 
         if src_path.suffix == ".tex":
             tex = src_path.read_text(encoding="utf-8")
-            if require_statement_cites:
-                citation_errors.extend(find_non_statement_cites(tex, str(rel)))
-            updated, count = replace_cites(tex, statement_map)
+            if require_prop_cites:
+                citation_errors.extend(find_bad_cites(tex, str(rel)))
+            updated, count = replace_cites(tex, prop_map)
             dst_path.write_text(updated, encoding="utf-8")
             if count:
                 print(f"  {rel}: {count} citation(s) replaced", file=sys.stderr)
@@ -189,12 +207,13 @@ def main():
                     help="Persistent staging path for --dir; if omitted a temp dir is used and deleted after push")
     ap.add_argument("--no-push", action="store_true",
                     help="Stage only, do not call leaf push (useful with --stage for inspection)")
-    ap.add_argument("--all", action="store_true", help="Include non-literature Statements")
-    ap.add_argument("--require-statement-cites", action="store_true",
-                    help="Fail if any citation key is not exactly statement_N")
+    ap.add_argument("--all", action="store_true",
+                    help="Treat every attachment as a bib key, not only .pdf files")
+    ap.add_argument("--require-prop-cites", action="store_true",
+                    help="Fail if any citation key is not exactly prop_N")
     args = ap.parse_args()
 
-    statement_map = build_statement_map(args.db, include_all=args.all)
+    prop_map = build_proposition_map(args.db, include_all=args.all)
 
     # ── Single-file mode ──────────────────────────────────────────────────────
     if args.tex:
@@ -202,11 +221,11 @@ def main():
             print(f"Error: {args.tex} not found", file=sys.stderr)
             sys.exit(1)
         tex = args.tex.read_text(encoding="utf-8")
-        if args.require_statement_cites:
-            fail_for_citation_errors(find_non_statement_cites(tex, str(args.tex)))
-        updated, count = replace_cites(tex, statement_map)
+        if args.require_prop_cites:
+            fail_for_citation_errors(find_bad_cites(tex, str(args.tex)))
+        updated, count = replace_cites(tex, prop_map)
         if count == 0:
-            print("No Statement citations found.", file=sys.stderr)
+            print("No proposition citations found.", file=sys.stderr)
         else:
             print(f"{count} citation(s) replaced.", file=sys.stderr)
         print(updated)
@@ -216,8 +235,8 @@ def main():
     if not args.dir.is_dir():
         sys.exit(0)  # LATEX_DIR doesn't exist in this project — skip silently
 
-    if args.require_statement_cites:
-        fail_for_citation_errors(find_non_statement_cites_in_dir(args.dir))
+    if args.require_prop_cites:
+        fail_for_citation_errors(find_bad_cites_in_dir(args.dir))
 
     leaf_toml = args.dir / "leaf.toml"
     if not leaf_toml.exists() and not args.no_push:
@@ -242,7 +261,7 @@ def main():
 
     try:
         print(f"Staging {args.dir} → {stage}", file=sys.stderr)
-        total = mirror_to_stage(args.dir, stage, statement_map, require_statement_cites=args.require_statement_cites)
+        total = mirror_to_stage(args.dir, stage, prop_map, require_prop_cites=args.require_prop_cites)
         print(f"Staged. {total} citation(s) replaced.", file=sys.stderr)
 
         if not args.no_push:

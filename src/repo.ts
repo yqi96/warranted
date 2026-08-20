@@ -1,558 +1,470 @@
 /**
- * Warranted — Repository 层
+ * Warranted — 数据访问层(repo)
  *
- * 纯 SQL 操作，不含业务逻辑。所有函数接收 Database 作为首参数。
+ * 只做**原始读写**:一次 SQL 一件事,不做校验、不算判据、不写事件。
+ * 业务规则(V1–V3 硬拒、结构检查、基线单写入者、事件留痕)全在 service 层。
+ *
+ * 这条分层不是洁癖:结构检查要在"改完之后"跑,事件要在"同一事务内"写,
+ * 两件事都得看见完整的一次操作。repo 只看得见单条 SQL,放在这里必然写歪。
  */
 
 import type { Database } from "bun:sqlite";
-import type { NodeRow, NodeType, NodeData, CompileState, CompileStateVerdict, TagRow, NamespaceCardinality } from "./types.ts";
+import type {
+  PropositionRow,
+  Qualifier,
+  EventRow,
+  EventOp,
+  EventActor,
+  BaselineHead,
+  BaselineRef,
+  RefRole,
+  Finding,
+} from "./types.ts";
+import { isFtsAvailable } from "./db.ts";
 
 // =============================================================================
-// 基础 CRUD
+// 命题
 // =============================================================================
 
-/** 插入节点，返回插入后的完整行 */
-export function insertNode(
+export function insertProposition(
   db: Database,
-  type: NodeType,
   content: string,
-  data: NodeData = {} as NodeData
-): NodeRow {
-  const now = new Date().toISOString().slice(0, 19);
-  const dataJson = JSON.stringify(data);
-  const stmt = db.prepare(
-    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
-  );
-  const result = stmt.run(type, content, dataJson, now, now);
-  const id = result.lastInsertRowid as number;
-  return {
-    id,
-    type,
-    content,
-    data: dataJson,
-    created_at: now,
-    updated_at: now,
-  };
-}
-
-/** 按 ID 获取节点 */
-export function getNodeById(db: Database, id: number): NodeRow | null {
-  const stmt = db.prepare("SELECT * FROM nodes WHERE id = ?");
-  const row = stmt.get(id) as NodeRow | null;
+  warrantText: string | null
+): PropositionRow {
+  const row = db
+    .prepare(
+      `INSERT INTO propositions (content, warrant_text) VALUES (?, ?) RETURNING *`
+    )
+    .get(content, warrantText) as PropositionRow;
   return row;
 }
 
-/** 更新节点字段 */
-export function updateNodeFields(
+export function getProposition(db: Database, id: number): PropositionRow | null {
+  return (db.prepare("SELECT * FROM propositions WHERE id = ?").get(id) as
+    | PropositionRow
+    | undefined) ?? null;
+}
+
+export function getPropositions(db: Database, ids: number[]): PropositionRow[] {
+  if (ids.length === 0) return [];
+  const ph = ids.map(() => "?").join(",");
+  return db
+    .prepare(`SELECT * FROM propositions WHERE id IN (${ph}) ORDER BY id`)
+    .all(...ids) as PropositionRow[];
+}
+
+export function propositionExists(db: Database, id: number): boolean {
+  return db.prepare("SELECT 1 FROM propositions WHERE id = ?").get(id) !== null;
+}
+
+/**
+ * 改 content / 理由槽。`updated_at` 在这里显式刷新,不用触发器——
+ * 触发器会在 qualifier 变更时也刷,而"判断"与"改事实"必须在时间线上分得开。
+ */
+export function updatePropositionFields(
   db: Database,
   id: number,
-  updates: { content?: string; data?: NodeData }
-): NodeRow | null {
-  const existing = getNodeById(db, id);
-  if (!existing) return null;
-
-  const now = new Date().toISOString().slice(0, 19);
-  const newContent = updates.content !== undefined ? updates.content : existing.content;
-  const newData = updates.data !== undefined ? JSON.stringify(updates.data) : existing.data;
-
-  const stmt = db.prepare(
-    "UPDATE nodes SET content = ?, data = ?, updated_at = ? WHERE id = ?"
-  );
-  stmt.run(newContent, newData, now, id);
-
-  return { ...existing, content: newContent, data: newData, updated_at: now };
-}
-
-/** 删除节点 */
-export function deleteNodeById(db: Database, id: number): boolean {
-  const stmt = db.prepare("DELETE FROM nodes WHERE id = ?");
-  const result = stmt.run(id);
-  return result.changes > 0;
-}
-
-// =============================================================================
-// 查询辅助
-// =============================================================================
-
-/** 按类型列出所有节点 */
-export function listNodesByType(db: Database, type: NodeType): NodeRow[] {
-  const stmt = db.prepare("SELECT * FROM nodes WHERE type = ? ORDER BY id");
-  return stmt.all(type) as NodeRow[];
-}
-
-/** 查找绑定到指定 Claim 的所有 Warrant */
-export function findWarrantsByClaim(db: Database, claimId: number): NodeRow[] {
-  const stmt = db.prepare(
-    "SELECT * FROM nodes WHERE type = 'warrant' AND CAST(json_extract(data, '$.claim_id') AS INTEGER) = ? ORDER BY id"
-  );
-  return stmt.all(claimId) as NodeRow[];
-}
-
-/** 查找绑定到指定 Warrant 的所有 Backing（via warrant_backings 关系表） */
-export function findBackingsByWarrant(db: Database, warrantId: number): NodeRow[] {
-  const stmt = db.prepare(
-    "SELECT n.* FROM nodes n JOIN warrant_backings wb ON n.id = wb.statement_id WHERE wb.warrant_id = ? ORDER BY n.id"
-  );
-  return stmt.all(warrantId) as NodeRow[];
-}
-
-/** 查找指向指定 target 的所有 Rebuttal（via rebuttal_targets 关系表） */
-export function findRebuttalsByTarget(
-  db: Database,
-  targetId: number,
-  targetType?: string
-): NodeRow[] {
-  let sql = "SELECT n.* FROM nodes n JOIN rebuttal_targets rt ON n.id = rt.statement_id WHERE rt.target_id = ?";
-  const params: (string | number)[] = [targetId];
-  if (targetType) {
-    sql += " AND rt.target_type = ?";
-    params.push(targetType);
-  }
-  sql += " ORDER BY n.id";
-  const stmt = db.prepare(sql);
-  return stmt.all(...params) as NodeRow[];
-}
-
-/**
- * Build tag filter SQL clause and params for EXISTS/NOT EXISTS subquery.
- * Shared between searchNodes (LIKE) and searchNodesFts (FTS) to avoid duplication.
- */
-export function tagFilterClause(tag: string | undefined, negate: boolean, alias: string): { clause: string; params: string[] } {
-  if (!tag) return { clause: "", params: [] };
-  const op = negate ? "NOT EXISTS" : "EXISTS";
-  if (tag.includes("*")) {
-    return {
-      clause: ` AND ${op} (SELECT 1 FROM node_tags nt WHERE nt.node_id = ${alias}.id AND nt.tag LIKE ?)`,
-      params: [tag.replace(/\*/g, "%")],
-    };
-  }
-  return {
-    clause: ` AND ${op} (SELECT 1 FROM node_tags nt WHERE nt.node_id = ${alias}.id AND nt.tag = ?)`,
-    params: [tag],
-  };
-}
-
-/** 搜索节点（LIKE 模糊匹配，支持分页和标签过滤） */
-export function searchNodes(
-  db: Database,
-  keyword: string,
-  typeFilter?: NodeType,
-  opts?: { tag?: string; without_tag?: string; limit?: number; offset?: number }
-): { rows: NodeRow[]; total: number } {
-  const { tag, without_tag, limit = 20, offset = 0 } = opts ?? {};
-  const like = `%${keyword}%`;
-
-  // Count query
-  let countSql = "SELECT COUNT(*) AS cnt FROM nodes n WHERE n.content LIKE ?";
-  const countParams: (string | number)[] = [like];
-
-  // Data query
-  let sql = "SELECT n.* FROM nodes n WHERE n.content LIKE ?";
-  const params: (string | number)[] = [like];
-
-  if (typeFilter) {
-    countSql += " AND n.type = ?";
-    sql += " AND n.type = ?";
-    countParams.push(typeFilter);
-    params.push(typeFilter);
-  }
-
-  const t1 = tagFilterClause(tag, false, "n");
-  countSql += t1.clause; countParams.push(...t1.params);
-  sql += t1.clause; params.push(...t1.params);
-
-  const t2 = tagFilterClause(without_tag, true, "n");
-  countSql += t2.clause; countParams.push(...t2.params);
-  sql += t2.clause; params.push(...t2.params);
-
-  const total = (db.prepare(countSql).get(...countParams) as { cnt: number }).cnt;
-
-  sql += " ORDER BY n.id LIMIT ? OFFSET ?";
-  params.push(limit, offset);
-  const rows = db.prepare(sql).all(...params) as NodeRow[];
-
-  return { rows, total };
-}
-
-/** 搜索节点（FTS5 全文检索，支持分页和标签过滤） */
-export function searchNodesFts(
-  db: Database,
-  query: string,
-  opts: { type?: string; tag?: string; without_tag?: string; limit: number; offset: number }
-): { rows: NodeRow[]; total: number } {
-  const { type, tag, without_tag, limit, offset } = opts;
-  const escaped = `"${query.replaceAll('"', '""')}"`;
-
-  // Count query
-  let countSql = "SELECT COUNT(*) AS cnt FROM nodes_fts f JOIN nodes n ON n.id = f.rowid WHERE nodes_fts MATCH ?";
-  const countParams: (string | number)[] = [escaped];
-
-  // Data query
-  let sql = "SELECT n.* FROM nodes_fts f JOIN nodes n ON n.id = f.rowid WHERE nodes_fts MATCH ?";
-  const params: (string | number)[] = [escaped];
-
-  if (type) {
-    countSql += " AND n.type = ?";
-    sql += " AND n.type = ?";
-    countParams.push(type);
-    params.push(type);
-  }
-
-  const t1 = tagFilterClause(tag, false, "n");
-  countSql += t1.clause; countParams.push(...t1.params);
-  sql += t1.clause; params.push(...t1.params);
-
-  const t2 = tagFilterClause(without_tag, true, "n");
-  countSql += t2.clause; countParams.push(...t2.params);
-  sql += t2.clause; params.push(...t2.params);
-
-  const total = (db.prepare(countSql).get(...countParams) as { cnt: number }).cnt;
-
-  sql += " ORDER BY f.rank LIMIT ? OFFSET ?";
-  params.push(limit, offset);
-  const rows = db.prepare(sql).all(...params) as NodeRow[];
-
-  return { rows, total };
-}
-
-/** 统计各类型节点数量 */
-export function countNodesByType(db: Database): Record<string, number> {
-  const stmt = db.prepare("SELECT type, COUNT(*) as count FROM nodes GROUP BY type");
-  const rows = stmt.all() as Array<{ type: string; count: number }>;
-  const result: Record<string, number> = {
-    claim: 0,
-    statement: 0,
-    warrant: 0,
-  };
-  for (const row of rows) {
-    result[row.type] = row.count;
-  }
-  return result;
-}
-
-// =============================================================================
-// 关系表操作
-// =============================================================================
-
-/** 查找 Warrant 的所有 Ground（via warrant_grounds 关系表） */
-export function findGroundsByWarrant(db: Database, warrantId: number): NodeRow[] {
-  const stmt = db.prepare(
-    "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.ground_id WHERE wg.warrant_id = ? ORDER BY n.id"
-  );
-  return stmt.all(warrantId) as NodeRow[];
-}
-
-/**
- * 查找 Warrant 的 Ground ID 列表 —— warrant_grounds 是这个集合的唯一记录。
- *
- * 只要 id 就走这里，不要读节点 blob 里的 ground_ids：那个字段已经删掉了。
- * 之前它和本表并存，两边各有消费者，重复的 id 只进得了 blob 一边，于是
- * 逻辑审查看到 3 条 ground 而结构审查看到 2 条。
- *
- * 返回按 id 升序，与 findGroundsByWarrant 同序。
- */
-export function findGroundIdsByWarrant(db: Database, warrantId: number): number[] {
-  const rows = db.prepare(
-    "SELECT ground_id FROM warrant_grounds WHERE warrant_id = ? ORDER BY ground_id"
-  ).all(warrantId) as Array<{ ground_id: number }>;
-  return rows.map(r => r.ground_id);
-}
-
-/** 从 warrant_grounds 删除某个 Ground 的全部关系 */
-export function removeGroundFromAllWarrants(db: Database, groundId: number): void {
-  db.prepare("DELETE FROM warrant_grounds WHERE ground_id = ?").run(groundId);
-}
-
-/** 插入 warrant_grounds 关系 */
-export function insertWarrantGround(db: Database, warrantId: number, groundId: number): void {
-  db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(warrantId, groundId);
-}
-
-/** 插入 warrant_backings 关系 */
-export function insertWarrantBacking(db: Database, warrantId: number, statementId: number): void {
-  db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(warrantId, statementId);
-}
-
-/** 插入 rebuttal_targets 关系 */
-export function insertRebuttalTarget(db: Database, statementId: number, targetId: number, targetType: string): void {
-  db.prepare("INSERT OR IGNORE INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, ?)").run(statementId, targetId, targetType);
-}
-
-/** 删除 rebuttal_targets 关系 */
-export function deleteRebuttalTarget(db: Database, statementId: number, targetId?: number): void {
-  if (targetId !== undefined) {
-    db.prepare("DELETE FROM rebuttal_targets WHERE statement_id = ? AND target_id = ?").run(statementId, targetId);
-  } else {
-    db.prepare("DELETE FROM rebuttal_targets WHERE statement_id = ?").run(statementId);
-  }
-}
-
-/** 批量向 warrant_backings 添加关系 */
-export function addWarrantBackings(db: Database, warrantId: number, ids: number[]): void {
-  for (const id of ids) {
-    db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(warrantId, id);
-  }
-}
-
-/** 批量从 warrant_backings 移除关系 */
-export function removeWarrantBackings(db: Database, warrantId: number, ids: number[]): void {
-  for (const id of ids) {
-    db.prepare("DELETE FROM warrant_backings WHERE warrant_id = ? AND statement_id = ?").run(warrantId, id);
-  }
-}
-
-/** 批量向 rebuttal_targets 添加关系 */
-export function addRebuttalTargets(db: Database, nodeId: number, ids: number[], targetType: string): void {
-  for (const id of ids) {
-    db.prepare("INSERT OR IGNORE INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, ?)").run(nodeId, id, targetType);
-  }
-}
-
-/** 批量从 rebuttal_targets 移除关系 */
-export function removeRebuttalTargets(db: Database, nodeId: number, ids: number[]): void {
-  for (const id of ids) {
-    db.prepare("DELETE FROM rebuttal_targets WHERE statement_id = ? AND target_id = ?").run(nodeId, id);
-  }
-}
-
-// =============================================================================
-// Tag operations
-// =============================================================================
-
-/** Insert a tag */
-export function insertTag(db: Database, name: string, description: string, claimId?: number): TagRow {
-  const stmt = db.prepare(
-    "INSERT INTO tags (name, description, claim_id) VALUES (?, ?, ?)"
-  );
-  stmt.run(name, description, claimId ?? null);
-  return {
-    name,
-    description,
-    claim_id: claimId ?? null,
-    created_at: new Date().toISOString().slice(0, 19),
-  };
-}
-
-/** Get a tag by name */
-export function getTag(db: Database, name: string): TagRow | null {
-  const row = db.prepare("SELECT * FROM tags WHERE name = ?").get(name) as TagRow | null;
-  return row ?? null;
-}
-
-/**
- * List all tags with their node counts, with optional filtering and pagination.
- * `limit` omitted means unbounded — internal callers that aggregate over the whole
- * vocabulary must not silently see only the first page.
- */
-export function listTagsWithCount(
-  db: Database,
-  opts?: { prefix?: string; min_count?: number; limit?: number; offset?: number }
-): (TagRow & { count: number })[] {
-  const { sql: filtered, params } = tagCountQuery(opts);
-  let sql = `${filtered} ORDER BY t.name`;
-
-  if (opts?.limit !== undefined) {
-    sql += " LIMIT ? OFFSET ?";
-    params.push(opts.limit, opts.offset ?? 0);
-  }
-
-  return db.prepare(sql).all(...params) as (TagRow & { count: number })[];
-}
-
-/** Total tags matching the same filters as listTagsWithCount, ignoring pagination. */
-export function countTags(db: Database, opts?: { prefix?: string; min_count?: number }): number {
-  const { sql, params } = tagCountQuery(opts);
-  return (db.prepare(`SELECT COUNT(*) AS cnt FROM (${sql}) AS sub`).get(...params) as { cnt: number }).cnt;
-}
-
-function tagCountQuery(opts?: { prefix?: string; min_count?: number }): { sql: string; params: (string | number)[] } {
-  let sql = "SELECT t.*, COUNT(nt.node_id) AS count FROM tags t LEFT JOIN node_tags nt ON nt.tag = t.name";
-  const params: (string | number)[] = [];
-
-  if (opts?.prefix) {
-    sql += " WHERE t.name LIKE ?";
-    params.push(`${opts.prefix}%`);
-  }
-
-  sql += " GROUP BY t.name";
-
-  // min_count=0 means "registered with no node attached" (the work-queue signal),
-  // not "no minimum" — an unset min_count already means that.
-  if (opts?.min_count !== undefined) {
-    sql += opts.min_count === 0 ? " HAVING count = 0" : " HAVING count >= ?";
-    if (opts.min_count !== 0) params.push(opts.min_count);
-  }
-
-  return { sql, params };
-}
-
-/** Rename a tag (node_tags follows via ON UPDATE CASCADE) */
-export function renameTag(db: Database, from: string, to: string): void {
-  db.prepare("UPDATE tags SET name = ? WHERE name = ?").run(to, from);
-}
-
-/** Merge one tag into another: move all node_tags, delete the source tag */
-export function mergeTags(db: Database, from: string, to: string): number {
-  return db.transaction((): number => {
-    // Count how many node_tags entries will be moved
-    const beforeCount = (db.prepare("SELECT COUNT(*) AS cnt FROM node_tags WHERE tag = ?").get(from) as { cnt: number }).cnt;
-    // Move node_tags entries (INSERT OR IGNORE for overlap)
-    db.prepare(
-      "INSERT OR IGNORE INTO node_tags (node_id, tag) SELECT node_id, ? FROM node_tags WHERE tag = ?"
-    ).run(to, from);
-    // Remove old node_tags entries
-    db.prepare("DELETE FROM node_tags WHERE tag = ?").run(from);
-    // Delete the source tag
-    db.prepare("DELETE FROM tags WHERE name = ?").run(from);
-    return beforeCount;
-  })();
-}
-
-/** Add tags to a node (INSERT OR IGNORE) */
-export function addNodeTags(db: Database, nodeId: number, tags: string[]): void {
-  const stmt = db.prepare("INSERT OR IGNORE INTO node_tags (node_id, tag) VALUES (?, ?)");
-  for (const tag of tags) {
-    stmt.run(nodeId, tag);
-  }
-}
-
-/** Remove tags from a node */
-export function removeNodeTags(db: Database, nodeId: number, tags: string[]): void {
-  const stmt = db.prepare("DELETE FROM node_tags WHERE node_id = ? AND tag = ?");
-  for (const tag of tags) {
-    stmt.run(nodeId, tag);
-  }
-}
-
-/** Get all tags for a node */
-export function getNodeTags(db: Database, nodeId: number): string[] {
-  return (db.prepare("SELECT tag FROM node_tags WHERE node_id = ? ORDER BY tag").all(nodeId) as { tag: string }[]).map(r => r.tag);
-}
-
-/** Find nodes by tag, optionally filtered by type */
-export function findNodesByTag(db: Database, tag: string, typeFilter?: string): NodeRow[] {
-  let sql = "SELECT n.* FROM nodes n JOIN node_tags nt ON n.id = nt.node_id WHERE nt.tag = ?";
-  const params: (string | number)[] = [tag];
-  if (typeFilter) {
-    sql += " AND n.type = ?";
-    params.push(typeFilter);
-  }
-  sql += " ORDER BY n.id";
-  return db.prepare(sql).all(...params) as NodeRow[];
-}
-
-/** Get all registered tag names */
-export function getAllTagNames(db: Database): string[] {
-  return (db.prepare("SELECT name FROM tags ORDER BY name").all() as { name: string }[]).map(r => r.name);
-}
-
-/** Update a tag's description and/or claim_id */
-export function updateTag(db: Database, name: string, description?: string, claim_id?: number): void {
-  const stmt = db.prepare("UPDATE tags SET description = COALESCE(?, description), claim_id = COALESCE(?, claim_id) WHERE name = ?");
-  stmt.run(description ?? null, claim_id ?? null, name);
-}
-
-/** Get namespace cardinality declaration */
-export function getNamespaceCardinality(db: Database, namespace: string): NamespaceCardinality | null {
-  const row = db.prepare("SELECT cardinality FROM tag_namespaces WHERE namespace = ?").get(namespace) as { cardinality: NamespaceCardinality } | null;
-  return row?.cardinality ?? null;
-}
-
-/** Set namespace cardinality (INSERT OR REPLACE) */
-export function setNamespaceCardinality(db: Database, namespace: string, cardinality: NamespaceCardinality): void {
-  db.prepare("INSERT OR REPLACE INTO tag_namespaces (namespace, cardinality) VALUES (?, ?)").run(namespace, cardinality);
-}
-
-// =============================================================================
-// Compile 状态操作
-//
-// compile_state 是 Claim 编译状态的唯一存储。四种互斥状态：
-//   没有行            = 从未编译过
-//   verdict='passed'  = 编译通过，argument_hash 是通过时的结构指纹
-//   verdict='failed'  = 编译未通过（argument_hash 为 NULL）
-//   verdict='stale'   = 曾经通过，但通过的那个结构已被改动（argument_hash 已清空）
-// =============================================================================
-
-/** 记录一次编译结果（INSERT OR REPLACE）。argumentHash 只应在 verdict === "passed" 时传入。 */
-export function saveCompileState(
-  db: Database,
-  claimId: number,
-  verdict: CompileStateVerdict,
-  summary: string,
-  argumentHash?: string
+  fields: { content?: string; warrantText?: string | null; warrantNodeId?: number | null }
 ): void {
-  const now = new Date().toISOString().slice(0, 19);
-  const stmt = db.prepare(
-    "INSERT OR REPLACE INTO compile_state (claim_id, verdict, summary, node_hashes, argument_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-  );
-  stmt.run(claimId, verdict, summary, "{}", argumentHash ?? null, now);
+  const sets: string[] = [];
+  const params: (string | number | null)[] = [];
+
+  if (fields.content !== undefined) {
+    sets.push("content = ?");
+    params.push(fields.content);
+  }
+  if (fields.warrantText !== undefined) {
+    sets.push("warrant_text = ?");
+    params.push(fields.warrantText);
+  }
+  if (fields.warrantNodeId !== undefined) {
+    sets.push("warrant_node_id = ?");
+    params.push(fields.warrantNodeId);
+  }
+  if (sets.length === 0) return;
+
+  sets.push("updated_at = datetime('now')");
+  params.push(id);
+  db.prepare(`UPDATE propositions SET ${sets.join(", ")} WHERE id = ?`).run(...params);
 }
 
-/** 获取 compile 状态；null 表示从未编译过 */
-export function getCompileState(db: Database, claimId: number): CompileState | null {
-  const stmt = db.prepare("SELECT * FROM compile_state WHERE claim_id = ?");
-  const row = stmt.get(claimId) as { claim_id: number; verdict: string; summary: string; node_hashes: string; argument_hash: string | null; created_at: string } | null;
+/** 只有 set_qualifier 走这里(基线单写入者的第一道落地)。 */
+export function writeQualifier(db: Database, id: number, qualifier: Qualifier): void {
+  db.prepare(
+    "UPDATE propositions SET qualifier = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(qualifier, id);
+}
+
+/** 成员清单变了也算这条命题变了(重查触发条件①),所以增删槽位成员后要刷一次。 */
+export function touchProposition(db: Database, id: number): void {
+  db.prepare("UPDATE propositions SET updated_at = datetime('now') WHERE id = ?").run(id);
+}
+
+export function deleteProposition(db: Database, id: number): boolean {
+  const res = db.prepare("DELETE FROM propositions WHERE id = ?").run(id);
+  return res.changes > 0;
+}
+
+export function countByQualifier(db: Database): Record<string, number> {
+  const rows = db
+    .prepare("SELECT qualifier, COUNT(*) AS cnt FROM propositions GROUP BY qualifier")
+    .all() as Array<{ qualifier: string; cnt: number }>;
+  const out: Record<string, number> = {};
+  for (const r of rows) out[r.qualifier] = r.cnt;
+  return out;
+}
+
+export function countPropositions(db: Database): number {
+  return (db.prepare("SELECT COUNT(*) AS cnt FROM propositions").get() as { cnt: number }).cnt;
+}
+
+export function allPropositionIds(db: Database): number[] {
+  return (db.prepare("SELECT id FROM propositions ORDER BY id").all() as Array<{ id: number }>)
+    .map((r) => r.id);
+}
+
+// =============================================================================
+// 证据槽
+// =============================================================================
+
+export function getAttachments(db: Database, nodeId: number): string[] {
+  return (
+    db
+      .prepare("SELECT path FROM evidence_attachments WHERE node_id = ? ORDER BY path")
+      .all(nodeId) as Array<{ path: string }>
+  ).map((r) => r.path);
+}
+
+export function addAttachments(db: Database, nodeId: number, paths: string[]): void {
+  const stmt = db.prepare(
+    "INSERT OR IGNORE INTO evidence_attachments (node_id, path) VALUES (?, ?)"
+  );
+  for (const p of paths) stmt.run(nodeId, p);
+}
+
+export function removeAttachments(db: Database, nodeId: number, paths: string[]): void {
+  const stmt = db.prepare(
+    "DELETE FROM evidence_attachments WHERE node_id = ? AND path = ?"
+  );
+  for (const p of paths) stmt.run(nodeId, p);
+}
+
+export function getEvidenceNodes(db: Database, nodeId: number): number[] {
+  return (
+    db
+      .prepare("SELECT evidence_id FROM evidence_nodes WHERE node_id = ? ORDER BY evidence_id")
+      .all(nodeId) as Array<{ evidence_id: number }>
+  ).map((r) => r.evidence_id);
+}
+
+export function addEvidenceNodes(db: Database, nodeId: number, ids: number[]): void {
+  const stmt = db.prepare(
+    "INSERT OR IGNORE INTO evidence_nodes (node_id, evidence_id) VALUES (?, ?)"
+  );
+  for (const id of ids) stmt.run(nodeId, id);
+}
+
+export function removeEvidenceNodes(db: Database, nodeId: number, ids: number[]): void {
+  const stmt = db.prepare(
+    "DELETE FROM evidence_nodes WHERE node_id = ? AND evidence_id = ?"
+  );
+  for (const id of ids) stmt.run(nodeId, id);
+}
+
+/** 谁把这条命题挂在自己的证据槽里。删除时要按它列受影响清单。 */
+export function findEvidenceReferrers(db: Database, evidenceId: number): number[] {
+  return (
+    db
+      .prepare("SELECT node_id FROM evidence_nodes WHERE evidence_id = ? ORDER BY node_id")
+      .all(evidenceId) as Array<{ node_id: number }>
+  ).map((r) => r.node_id);
+}
+
+// =============================================================================
+// 反驳槽
+// =============================================================================
+
+export function getRebuttals(db: Database, nodeId: number): number[] {
+  return (
+    db
+      .prepare("SELECT rebuttal_id FROM rebuttals WHERE node_id = ? ORDER BY rebuttal_id")
+      .all(nodeId) as Array<{ rebuttal_id: number }>
+  ).map((r) => r.rebuttal_id);
+}
+
+export function addRebuttals(db: Database, nodeId: number, ids: number[]): void {
+  const stmt = db.prepare(
+    "INSERT OR IGNORE INTO rebuttals (node_id, rebuttal_id) VALUES (?, ?)"
+  );
+  for (const id of ids) stmt.run(nodeId, id);
+}
+
+export function removeRebuttals(db: Database, nodeId: number, ids: number[]): void {
+  const stmt = db.prepare("DELETE FROM rebuttals WHERE node_id = ? AND rebuttal_id = ?");
+  for (const id of ids) stmt.run(nodeId, id);
+}
+
+/** 这条命题在攻击谁。删除它时这些目标的反驳槽会少一条,属于成员清单变化。 */
+export function findRebuttalTargets(db: Database, rebuttalId: number): number[] {
+  return (
+    db
+      .prepare("SELECT node_id FROM rebuttals WHERE rebuttal_id = ? ORDER BY node_id")
+      .all(rebuttalId) as Array<{ node_id: number }>
+  ).map((r) => r.node_id);
+}
+
+/** 谁把这条命题当作(晋升后的)理由。 */
+export function findWarrantReferrers(db: Database, warrantNodeId: number): number[] {
+  return (
+    db
+      .prepare("SELECT id FROM propositions WHERE warrant_node_id = ? ORDER BY id")
+      .all(warrantNodeId) as Array<{ id: number }>
+  ).map((r) => r.id);
+}
+
+// =============================================================================
+// 事件流(I8):只 INSERT 与 SELECT,没有 UPDATE / DELETE
+// =============================================================================
+
+export function appendEvent(
+  db: Database,
+  ev: {
+    nodeId: number | null;
+    op: EventOp;
+    actor: EventActor;
+    payload?: unknown;
+    note?: string | null;
+    targetKey?: string | null;
+  }
+): number {
+  const row = db
+    .prepare(
+      `INSERT INTO events (node_id, op, actor, payload, note, target_key)
+       VALUES (?, ?, ?, ?, ?, ?) RETURNING id`
+    )
+    .get(
+      ev.nodeId,
+      ev.op,
+      ev.actor,
+      JSON.stringify(ev.payload ?? {}),
+      ev.note ?? null,
+      ev.targetKey ?? null
+    ) as { id: number };
+  return row.id;
+}
+
+export function listEvents(
+  db: Database,
+  opts: { nodeId?: number; limit?: number; offset?: number }
+): { rows: EventRow[]; total: number } {
+  const { nodeId, limit = 50, offset = 0 } = opts;
+  const where = nodeId === undefined ? "" : " WHERE node_id = ?";
+  const params = nodeId === undefined ? [] : [nodeId];
+
+  const total = (
+    db.prepare(`SELECT COUNT(*) AS cnt FROM events${where}`).get(...params) as { cnt: number }
+  ).cnt;
+
+  const rows = db
+    .prepare(`SELECT * FROM events${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset) as EventRow[];
+
+  return { rows, total };
+}
+
+export function getEvent(db: Database, id: number): EventRow | null {
+  return (db.prepare("SELECT * FROM events WHERE id = ?").get(id) as EventRow | undefined) ?? null;
+}
+
+/**
+ * 查一批 id 的驳回记录。
+ *
+ * "已阅"是**算出来**的:事件流里有没有同 target_key 的 dismiss 事件。
+ * 同一个 id 被驳回多次时取最后一条(理由以最新的为准)。
+ */
+export function findDismissals(
+  db: Database,
+  targetKeys: string[]
+): Map<string, { reason: string; at: string }> {
+  const out = new Map<string, { reason: string; at: string }>();
+  if (targetKeys.length === 0) return out;
+
+  const ph = targetKeys.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT target_key, payload, at FROM events
+       WHERE op = 'dismiss' AND target_key IN (${ph}) ORDER BY id ASC`
+    )
+    .all(...targetKeys) as Array<{ target_key: string; payload: string; at: string }>;
+
+  for (const r of rows) {
+    let reason = "";
+    try {
+      reason = (JSON.parse(r.payload) as { reason?: string }).reason ?? "";
+    } catch {
+      reason = "";
+    }
+    out.set(r.target_key, { reason, at: r.at });
+  }
+  return out;
+}
+
+// =============================================================================
+// findings(review 事件载荷的派生索引)
+// =============================================================================
+
+export interface FindingRow {
+  id: string;
+  review_event_id: number;
+  node_id: number;
+  question: "Q1" | "Q2";
+  confidence: "high" | "low";
+  content: string;
+  citation: string;
+  at: string;
+}
+
+export function insertFindings(
+  db: Database,
+  reviewEventId: number,
+  findings: Finding[]
+): void {
+  const stmt = db.prepare(
+    `INSERT INTO findings (id, review_event_id, node_id, question, confidence, content, citation)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  for (const f of findings) {
+    stmt.run(
+      f.id,
+      reviewEventId,
+      f.nodeId,
+      f.question,
+      f.confidence,
+      f.content,
+      JSON.stringify(f.citation)
+    );
+  }
+}
+
+export function listFindingsByNode(db: Database, nodeId: number): FindingRow[] {
+  return db
+    .prepare("SELECT * FROM findings WHERE node_id = ? ORDER BY id")
+    .all(nodeId) as FindingRow[];
+}
+
+export function listAllFindings(db: Database): FindingRow[] {
+  return db.prepare("SELECT * FROM findings ORDER BY node_id, id").all() as FindingRow[];
+}
+
+// =============================================================================
+// 基线
+// =============================================================================
+
+export function getBaselineHead(db: Database, nodeId: number): BaselineHead | null {
+  const row = db.prepare("SELECT * FROM baseline_head WHERE node_id = ?").get(nodeId) as
+    | { node_id: number; qualifier: Qualifier; self_fingerprint: string; at: string }
+    | undefined;
   if (!row) return null;
   return {
-    claimId: row.claim_id,
-    verdict: row.verdict as CompileStateVerdict,
-    summary: row.summary,
-    argumentHash: row.argument_hash ?? undefined,
-    createdAt: row.created_at,
+    nodeId: row.node_id,
+    qualifier: row.qualifier,
+    selfFingerprint: row.self_fingerprint,
+    at: row.at,
   };
 }
 
-/** 批量获取 compile 状态，键为 claimId。用于避免 get_stats / list_claims 里的逐个查询。 */
-export function getAllCompileVerdicts(db: Database): Map<number, CompileStateVerdict> {
-  const rows = db.prepare("SELECT claim_id, verdict FROM compile_state").all() as Array<{ claim_id: number; verdict: string }>;
-  return new Map(rows.map(r => [r.claim_id, r.verdict as CompileStateVerdict]));
-}
-
-/** 删除 compile 状态（回到"从未编译过"） */
-export function deleteCompileState(db: Database, claimId: number): void {
-  const stmt = db.prepare("DELETE FROM compile_state WHERE claim_id = ?");
-  stmt.run(claimId);
+export function getBaselineRefs(db: Database, nodeId: number): BaselineRef[] {
+  const rows = db
+    .prepare("SELECT * FROM baseline_refs WHERE node_id = ? ORDER BY ref_role, ref_id")
+    .all(nodeId) as Array<{
+    node_id: number;
+    ref_id: number;
+    ref_role: RefRole;
+    content_hash: string;
+    qualifier: Qualifier;
+  }>;
+  return rows.map((r) => ({
+    nodeId: r.node_id,
+    refId: r.ref_id,
+    refRole: r.ref_role,
+    contentHash: r.content_hash,
+    qualifier: r.qualifier,
+  }));
 }
 
 /**
- * 把"通过"降级为"过期"，并清空结构指纹。
- *
- * 只有 passed 会被改动 —— 只有通过过的东西才谈得上过期。failed 保持 failed（信息量更大，
- * 且同样挡住状态转换）；没有行则保持没有行（从未编译过不该变成过期）。
- *
- * 清空 argument_hash 而非删掉整行：compileClaims 用 `prevState.argumentHash` 判断能否
- * 走"哈希未变就跳过"的捷径（compile-service.ts），置 NULL 即可让它正确地落到重新审查
- * 的分支；同时保留了"这个主张编译过"这一事实，不会被 get_stats 误算成从未编译过。
- *
- * 返回是否真的改动了一行。调用点报告"降级了"必须用这个返回值，不能从"走到了哪个分支"
- * 推断：同一个分支在 failed / 没有记录 的 Claim 上什么都不改（见 D26）。
+ * 覆盖式写入一条命题的基线。**唯一的写入者是 set_qualifier**——
+ * 这个函数只应被它调用,多一个调用点基线就退化成会漂移的缓存。
  */
-export function markCompileStale(db: Database, claimId: number): boolean {
-  const result = db.prepare(
-    "UPDATE compile_state SET verdict = 'stale', argument_hash = NULL WHERE claim_id = ? AND verdict = 'passed'"
-  ).run(claimId);
-  return result.changes > 0;
-}
+export function writeBaseline(
+  db: Database,
+  head: { nodeId: number; qualifier: Qualifier; selfFingerprint: string },
+  refs: Array<{ refId: number; refRole: RefRole; contentHash: string; qualifier: Qualifier }>
+): void {
+  db.prepare(
+    `INSERT INTO baseline_head (node_id, qualifier, self_fingerprint, at)
+     VALUES (?, ?, ?, datetime('now'))
+     ON CONFLICT(node_id) DO UPDATE SET
+       qualifier = excluded.qualifier,
+       self_fingerprint = excluded.self_fingerprint,
+       at = excluded.at`
+  ).run(head.nodeId, head.qualifier, head.selfFingerprint);
 
-/** 设置 ClaimData 的 status 字段 */
-export function setClaimStatus(db: Database, claimId: number, status: string): void {
-  const row = db.prepare("SELECT data FROM nodes WHERE id = ?").get(claimId) as { data: string } | null;
-  if (!row) return;
-  const data = JSON.parse(row.data);
-  data.status = status;
-  db.prepare("UPDATE nodes SET data = ?, updated_at = ? WHERE id = ?")
-    .run(JSON.stringify(data), new Date().toISOString().slice(0, 19), claimId);
-}
-
-// =============================================================================
-// 辅助函数
-// =============================================================================
-
-/** 解析 NodeRow 的 data JSON */
-export function parseNodeData(row: NodeRow): Record<string, unknown> {
-  try {
-    return JSON.parse(row.data);
-  } catch {
-    return {};
+  db.prepare("DELETE FROM baseline_refs WHERE node_id = ?").run(head.nodeId);
+  const stmt = db.prepare(
+    `INSERT INTO baseline_refs (node_id, ref_id, ref_role, content_hash, qualifier)
+     VALUES (?, ?, ?, ?, ?)`
+  );
+  for (const r of refs) {
+    stmt.run(head.nodeId, r.refId, r.refRole, r.contentHash, r.qualifier);
   }
+}
+
+// =============================================================================
+// 检索
+// =============================================================================
+
+/**
+ * 按关键词 + 档位筛命题。
+ *
+ * FTS5 可用时走 trigram 索引,否则退到 LIKE。两条路径的结果集不完全相同
+ * (trigram 要求 ≥3 字符),这是已知取舍:检索是找 id 的入口,不是判据的一部分。
+ */
+export function findPropositions(
+  db: Database,
+  opts: { query?: string; qualifier?: Qualifier[]; limit?: number; offset?: number }
+): { rows: PropositionRow[]; total: number } {
+  const { query, qualifier, limit = 20, offset = 0 } = opts;
+
+  const conds: string[] = [];
+  const params: (string | number)[] = [];
+  let from = "propositions p";
+  let order = "p.id";
+
+  const useFts = Boolean(query) && isFtsAvailable() && query!.length >= 3;
+  if (useFts) {
+    from = "propositions_fts f JOIN propositions p ON p.id = f.rowid";
+    conds.push("propositions_fts MATCH ?");
+    params.push(`"${query!.replaceAll('"', '""')}"`);
+    order = "f.rank";
+  } else if (query) {
+    conds.push("p.content LIKE ?");
+    params.push(`%${query}%`);
+  }
+
+  if (qualifier && qualifier.length > 0) {
+    conds.push(`p.qualifier IN (${qualifier.map(() => "?").join(",")})`);
+    params.push(...qualifier);
+  }
+
+  const where = conds.length > 0 ? ` WHERE ${conds.join(" AND ")}` : "";
+  const total = (
+    db.prepare(`SELECT COUNT(*) AS cnt FROM ${from}${where}`).get(...params) as { cnt: number }
+  ).cnt;
+
+  const rows = db
+    .prepare(`SELECT p.* FROM ${from}${where} ORDER BY ${order} LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset) as PropositionRow[];
+
+  return { rows, total };
 }

@@ -10,13 +10,14 @@
  *   bun tests/agent-eval/run.ts --live --judge     # 附带 LLM judge 评分
  *   bun tests/agent-eval/run.ts --live --model claude-sonnet-5
  */
-import { Database } from "bun:sqlite";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { openDatabase } from "../../src/db.ts";
+import { checkContext } from "../../src/structural-check.ts";
 import { cases } from "./cases";
-import { openGraph, totalNodes } from "./helpers";
+import { openGraph, totalPropositions } from "./helpers";
 import type { AssertCtx, EvalCase, Tier2Case } from "./types";
 
 const ROOT = resolve(import.meta.dir, "../..");
@@ -151,10 +152,21 @@ async function runJudge(
 function dumpGraph(dbPath: string): string {
   const db = openGraph(dbPath);
   if (!db) return "(未创建图数据库)";
-  const nodes = db.query("SELECT id, type, content, data FROM nodes ORDER BY id").all();
-  const wg = db.query("SELECT * FROM warrant_grounds").all();
-  const rb = db.query("SELECT * FROM rebuttal_targets").all();
-  return JSON.stringify({ nodes, warrant_grounds: wg, rebuttal_targets: rb }, null, 2);
+  const q = (sql: string) => db.query(sql).all();
+  return JSON.stringify(
+    {
+      propositions: q(
+        "SELECT id, content, warrant_text, warrant_node_id, qualifier FROM propositions ORDER BY id",
+      ),
+      evidence_nodes: q("SELECT * FROM evidence_nodes"),
+      evidence_attachments: q("SELECT * FROM evidence_attachments"),
+      rebuttals: q("SELECT * FROM rebuttals"),
+      findings: q("SELECT id, node_id, question, confidence, content FROM findings"),
+      events: q("SELECT id, node_id, op, actor, note, target_key FROM events ORDER BY id"),
+    },
+    null,
+    2,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -177,12 +189,14 @@ function prepareScratch(c: EvalCase): string {
     writeFileSync(p, content);
   }
   if (c.tier === 2 && (c as Tier2Case).seed) {
+    // 用产品自己的建表路径,而不是另抄一份 schema:抄一份就会漂,漂了就变成
+    // "评测跑的库和 agent 跑的库不是同一个 schema",挂了还查不出原因。
     const dbDir = join(scratch, ".toulmin");
     mkdirSync(dbDir, { recursive: true });
-    const db = new Database(join(dbDir, "argument.db"), { create: true });
-    db.exec("PRAGMA foreign_keys = ON;");
-    db.exec(readFileSync(join(ROOT, "sql/schema.sql"), "utf-8"));
-    (c as Tier2Case).seed!(db);
+    const seedPath = join(dbDir, "graph.db");
+    const db = openDatabase(seedPath);
+    // ctx 用与运行时同一个基准算,否则种子里挂的附件路径解析到别处。
+    (c as Tier2Case).seed!(db, checkContext(seedPath));
     db.close();
   }
   return scratch;
@@ -192,7 +206,7 @@ async function runCase(c: EvalCase, runDir: string): Promise<CaseResult> {
   const outDir = join(runDir, c.id);
   mkdirSync(outDir, { recursive: true });
   const scratch = prepareScratch(c);
-  const dbPath = join(scratch, ".toulmin/argument.db");
+  const dbPath = join(scratch, ".toulmin/graph.db");
 
   const prompt = c.tier === 1 ? TIER1_WRAPPER(c.instruction) : c.instruction;
   const maxTurns = c.maxTurns ?? (c.tier === 1 ? 6 : 15);
@@ -209,7 +223,7 @@ async function runCase(c: EvalCase, runDir: string): Promise<CaseResult> {
 
   if (c.tier === 1) {
     // Tier 1 统一硬断言:声明"只说计划"时不得实际动图
-    const n = totalNodes(db);
+    const n = totalPropositions(db);
     checks.push({
       name: "假设性提问下未实际操作图",
       pass: n === 0,

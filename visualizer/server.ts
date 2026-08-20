@@ -1,7 +1,15 @@
 /**
- * Toulmin 可视化引擎 — HTTP 服务器
+ * Warranted 可视化引擎 — HTTP 服务器
  *
  * 提供 JSON API 读取 argument.db，供前端 D3.js v7 渲染。
+ *
+ * 本体是"一个命题 + 五槽位"(docs/design.md §1.2)：图里只有一种节点，边全部由
+ * 槽位成员关系派生。旧的 3 节点模型(claim / warrant / statement + compile_state)
+ * 已断代，这里不做兼容读取 —— 旧库连 `openDatabase` 都过不去(§5.2)。
+ *
+ * 视觉编码随之整体位移：**颜色不再表示"是什么类型"，而是表示 qualifier 落在哪一档**。
+ * 这不是配色偏好。旧图里节点类型是它的身份，一个 ground 永远是 ground；新本体里
+ * 命题的身份只有一条 content，唯一会变、且唯一值得一眼看出来的是它挣到了什么档位。
  *
  * Usage:
  *   bun visualizer/server.ts [--db-path ./toulmin.db]
@@ -11,8 +19,22 @@ import { openDatabase } from "../src/db.ts";
 import { mkdirSync, existsSync, watch as fsWatch } from "fs";
 import { dirname, join, resolve } from "path";
 import type { Database } from "bun:sqlite";
-import type { NodeRow, NodeType } from "../src/types.ts";
+import type {
+  PropositionRow,
+  Qualifier,
+  WarrantSlot,
+  CheckCode,
+} from "../src/types.ts";
+import { QUALIFIERS } from "../src/schema.ts";
 import * as repo from "../src/repo.ts";
+import * as service from "../src/service.ts";
+import {
+  checkContext,
+  computeWarningsFor,
+  loadNodeState,
+  warrantSlotOf,
+  type CheckContext,
+} from "../src/structural-check.ts";
 
 // =============================================================================
 // CLI 参数解析
@@ -20,55 +42,34 @@ import * as repo from "../src/repo.ts";
 
 const DEFAULT_DB_PATH = ".toulmin/argument.db";
 
-function parseArgs(): { dbPath: string } {
+const DEFAULT_PORT = 3456;
+
+function parseArgs(): { dbPath: string; port: number } {
   const args = process.argv.slice(2);
   let dbPath = DEFAULT_DB_PATH;
+  let port = DEFAULT_PORT;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--db-path" && args[i + 1]) {
       dbPath = args[i + 1];
       i++;
+    } else if (args[i] === "--port" && args[i + 1]) {
+      const parsed = Number(args[i + 1]);
+      if (Number.isInteger(parsed) && parsed > 0 && parsed < 65536) port = parsed;
+      i++;
     }
   }
 
-  return { dbPath: resolve(dbPath) };
+  return { dbPath: resolve(dbPath), port };
 }
 
-// =============================================================================
-// 角色语义
-// =============================================================================
-
-type Role = "ground" | "backing" | "rebuttal";
-
-const ROLE_PRECEDENCE: Role[] = ["rebuttal", "backing", "ground"];
-
-function pickPrimaryRole(roles: Set<Role>): Role {
-  for (const role of ROLE_PRECEDENCE) {
-    if (roles.has(role)) return role;
-  }
-  return "ground";
-}
-
-function computeRoleStats(db: Database): { ground: number; backing: number; rebuttal: number } {
-  const statementIds = new Set(
-    (db.prepare("SELECT id FROM nodes WHERE type = 'statement'").all() as Array<{ id: number }>).map(r => r.id)
-  );
-
-  const groundSet   = new Set<number>();
-  const backingSet  = new Set<number>();
-  const rebuttalSet = new Set<number>();
-
-  for (const { ground_id } of db.prepare("SELECT ground_id FROM warrant_grounds").all() as Array<{ ground_id: number }>) {
-    if (statementIds.has(ground_id)) groundSet.add(ground_id);
-  }
-  for (const { statement_id } of db.prepare("SELECT statement_id FROM warrant_backings").all() as Array<{ statement_id: number }>) {
-    backingSet.add(statement_id);
-  }
-  for (const { statement_id } of db.prepare("SELECT DISTINCT statement_id FROM rebuttal_targets").all() as Array<{ statement_id: number }>) {
-    rebuttalSet.add(statement_id);
-  }
-
-  return { ground: groundSet.size, backing: backingSet.size, rebuttal: rebuttalSet.size };
+function parseQualifiers(raw: string | null): Qualifier[] | undefined {
+  if (!raw) return undefined;
+  const wanted = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s): s is Qualifier => (QUALIFIERS as readonly string[]).includes(s));
+  return wanted.length > 0 ? wanted : undefined;
 }
 
 // =============================================================================
@@ -77,139 +78,99 @@ function computeRoleStats(db: Database): { ground: number; backing: number; rebu
 
 interface GraphNode {
   id: number;
-  type: string;
   content: string;
-  data: Record<string, unknown>;
+  qualifier: Qualifier;
+  warrant: WarrantSlot;
+  attachments: string[];
+  evidence: number[];
+  rebuttals: number[];
+  /** 未处理/已阅的计数与判据编号。图上只画"有没有"，明细在 /viz/nodes/:id。 */
+  warnings: { pending: number; acknowledged: number; codes: CheckCode[] };
+  findings: { pending: number; acknowledged: number };
   created_at: string;
   updated_at: string;
 }
+
+/**
+ * 边的方向统一为**被引用者 → 拥有槽位者**：source 是被挂进去的那条命题，
+ * target 是槽位的主人。三种边对应三个可以指向别的命题的槽。
+ */
+type EdgeType = "evidence" | "rebuts" | "warrants";
 
 interface GraphEdge {
   id: string;
   source: number;
   target: number;
-  type: string;
+  type: EdgeType;
 }
 
-interface CompileStateRow {
-  claim_id: number;
-  verdict: string;
-  summary: string;
-  created_at: string;
-}
+function buildGraph(
+  db: Database,
+  ctx: CheckContext
+): { nodes: GraphNode[]; edges: GraphEdge[]; stats: Record<Qualifier, number>; total: number } {
+  const rows = db
+    .prepare("SELECT * FROM propositions ORDER BY id")
+    .all() as PropositionRow[];
+  const allIds = new Set(rows.map((r) => r.id));
 
-function buildGraph(db: Database): {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-  stats: Record<string, number>;
-  roleStats: { ground: number; backing: number; rebuttal: number };
-} {
-  const allRows = db.prepare("SELECT * FROM nodes ORDER BY id").all() as NodeRow[];
-  const stats = repo.countNodesByType(db);
-
-  // Build role sets for statement nodes
-  const statementIds = new Set(allRows.filter(r => r.type === "statement").map(r => r.id));
-  const roleMap = new Map<number, Set<Role>>();
-
-  for (const { ground_id } of db.prepare("SELECT ground_id FROM warrant_grounds").all() as Array<{ ground_id: number }>) {
-    if (statementIds.has(ground_id)) {
-      if (!roleMap.has(ground_id)) roleMap.set(ground_id, new Set());
-      roleMap.get(ground_id)!.add("ground");
-    }
-  }
-  for (const { statement_id } of db.prepare("SELECT statement_id FROM warrant_backings").all() as Array<{ statement_id: number }>) {
-    if (!roleMap.has(statement_id)) roleMap.set(statement_id, new Set());
-    roleMap.get(statement_id)!.add("backing");
-  }
-  for (const { statement_id } of db.prepare("SELECT DISTINCT statement_id FROM rebuttal_targets").all() as Array<{ statement_id: number }>) {
-    if (!roleMap.has(statement_id)) roleMap.set(statement_id, new Set());
-    roleMap.get(statement_id)!.add("rebuttal");
-  }
-
-  // Role stats: each role counted independently (multi-role statement counts in each)
-  const roleStats = { ground: 0, backing: 0, rebuttal: 0 };
-  for (const [, roles] of roleMap) {
-    if (roles.has("ground"))   roleStats.ground++;
-    if (roles.has("backing"))  roleStats.backing++;
-    if (roles.has("rebuttal")) roleStats.rebuttal++;
-  }
-
-  // Compile state
-  const compileStateRows = db.prepare("SELECT claim_id, verdict, summary, created_at FROM compile_state").all() as CompileStateRow[];
-  const compileStateMap = new Map(compileStateRows.map(s => [s.claim_id, s]));
-
-  const allIds = new Set(allRows.map(r => r.id));
-
-  // Build nodes
-  const nodes: GraphNode[] = allRows.map(r => {
-    const data = repo.parseNodeData(r) as Record<string, unknown>;
-    if (r.type === "claim") {
-      const cs = compileStateMap.get(r.id);
-      data.compile_verdict   = cs?.verdict   ?? null;
-      data.compile_summary   = cs?.summary   ?? null;
-      data.compile_created_at = cs?.created_at ?? null;
-    }
-    if (r.type === "statement") {
-      const roles = roleMap.get(r.id);
-      data.roles        = roles ? [...roles] : [];
-      data.primary_role = roles ? pickPrimaryRole(roles) : "ground";
-    }
-    return {
-      id: r.id,
-      type: r.type,
-      content: r.content,
-      data,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
-    };
-  });
-
-  // Build edges
+  const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
 
-  for (const row of allRows) {
-    const data = repo.parseNodeData(row);
+  for (const row of rows) {
+    const state = loadNodeState(db, row.id)!;
+    const warnings = computeWarningsFor(db, ctx, state);
+    const findings = service.findingViews(db, row.id);
 
-    switch (row.type) {
-      case "warrant": {
-        const claimId = data.claim_id as number;
-        if (claimId && allIds.has(claimId)) {
-          edges.push({ id: `e_${claimId}_${row.id}_supports`, source: claimId, target: row.id, type: "supports" });
-        }
-        const groundLinks = db.prepare("SELECT ground_id FROM warrant_grounds WHERE warrant_id = ?").all(row.id) as Array<{ ground_id: number }>;
-        for (const { ground_id: gid } of groundLinks) {
-          if (allIds.has(gid)) {
-            edges.push({ id: `e_${gid}_${row.id}_based_on`, source: gid, target: row.id, type: "based_on" });
-          }
-        }
-        break;
+    nodes.push({
+      id: row.id,
+      content: row.content,
+      qualifier: row.qualifier,
+      warrant: warrantSlotOf(row),
+      attachments: state.attachments,
+      evidence: state.evidenceNodes,
+      rebuttals: state.rebuttals,
+      warnings: {
+        pending: warnings.filter((w) => w.state === "pending").length,
+        acknowledged: warnings.filter((w) => w.state === "acknowledged").length,
+        codes: [...new Set(warnings.filter((w) => w.state === "pending").map((w) => w.code))],
+      },
+      findings: {
+        pending: findings.filter((f) => f.state === "pending").length,
+        acknowledged: findings.filter((f) => f.state === "acknowledged").length,
+      },
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    });
+
+    for (const eid of state.evidenceNodes) {
+      if (allIds.has(eid)) {
+        edges.push({ id: `e_${eid}_${row.id}_evidence`, source: eid, target: row.id, type: "evidence" });
       }
-      case "statement": {
-        const backingLinks = db.prepare("SELECT warrant_id FROM warrant_backings WHERE statement_id = ?").all(row.id) as Array<{ warrant_id: number }>;
-        for (const { warrant_id: wid } of backingLinks) {
-          if (allIds.has(wid)) {
-            edges.push({ id: `e_${wid}_${row.id}_reinforces`, source: wid, target: row.id, type: "reinforces" });
-          }
-        }
-        const rebuttalLinks = db.prepare("SELECT target_id FROM rebuttal_targets WHERE statement_id = ?").all(row.id) as Array<{ target_id: number }>;
-        for (const { target_id: tid } of rebuttalLinks) {
-          if (allIds.has(tid)) {
-            edges.push({ id: `e_${tid}_${row.id}_challenges`, source: tid, target: row.id, type: "challenges" });
-          }
-        }
-        break;
+    }
+    for (const rid of state.rebuttals) {
+      if (allIds.has(rid)) {
+        edges.push({ id: `e_${rid}_${row.id}_rebuts`, source: rid, target: row.id, type: "rebuts" });
       }
+    }
+    if (state.warrant.kind === "promoted" && allIds.has(state.warrant.node_id)) {
+      const wid = state.warrant.node_id;
+      edges.push({ id: `e_${wid}_${row.id}_warrants`, source: wid, target: row.id, type: "warrants" });
     }
   }
 
-  return { nodes, edges, stats, roleStats };
+  const stats = Object.fromEntries(QUALIFIERS.map((q) => [q, 0])) as Record<Qualifier, number>;
+  for (const [q, n] of Object.entries(repo.countByQualifier(db))) {
+    stats[q as Qualifier] = n;
+  }
+
+  return { nodes, edges, stats, total: rows.length };
 }
 
 // =============================================================================
 // HTTP 服务器
 // =============================================================================
 
-const { dbPath: initialDbPath } = parseArgs();
+const { dbPath: initialDbPath, port: listenPort } = parseArgs();
 
 // 确保数据库目录存在
 if (initialDbPath !== ":memory:") {
@@ -218,11 +179,12 @@ if (initialDbPath !== ":memory:") {
 }
 
 let db = openDatabase(initialDbPath);
+let ctx = checkContext(initialDbPath);
 let currentDbPath = initialDbPath;
-console.error(`[Toulmin Viz] Database opened: ${initialDbPath}`);
+console.error(`[Warranted Viz] Database opened: ${initialDbPath}`);
 
 // ── In-memory selection state (written by browser, read by hook) ──
-interface SelectionNode { id: number; type: string; content: string; roles?: string[]; }
+interface SelectionNode { id: number; content: string; qualifier: string; }
 let currentSelection: { ids: number[]; nodes: SelectionNode[] } = { ids: [], nodes: [] };
 
 // 获取 index.html 路径
@@ -245,7 +207,7 @@ function broadcastSSE(event: string, data: Record<string, unknown> = {}) {
     }
   }
   if (sseClients.size > 0) {
-    console.error(`[Toulmin Viz] Broadcast '${event}' → ${sseClients.size} client(s)`);
+    console.error(`[Warranted Viz] Broadcast '${event}' → ${sseClients.size} client(s)`);
   }
 }
 
@@ -263,9 +225,9 @@ function startWatcher(watchDir: string) {
       if (watchDebounce) clearTimeout(watchDebounce);
       watchDebounce = setTimeout(() => broadcastSSE("data_updated"), 300);
     });
-    console.error(`[Toulmin Viz] Watching: ${watchDir}`);
+    console.error(`[Warranted Viz] Watching: ${watchDir}`);
   } catch (e) {
-    console.error(`[Toulmin Viz] Watch failed (real-time sync unavailable):`, e);
+    console.error(`[Warranted Viz] Watch failed (real-time sync unavailable):`, e);
   }
 }
 
@@ -275,16 +237,19 @@ function switchDatabase(newPath: string) {
   if (watchDebounce) { clearTimeout(watchDebounce); watchDebounce = null; }
 
   db = openDatabase(newPath);
+  // ctx 必须跟着换：附件路径是相对项目根解析的，换库不换根等于拿旧根去查新库的
+  // 附件，S2(附件不存在)会整片误报。
+  ctx = checkContext(newPath);
   currentDbPath = newPath;
   startWatcher(dirname(newPath));
-  console.error(`[Toulmin Viz] Switched to: ${newPath}`);
+  console.error(`[Warranted Viz] Switched to: ${newPath}`);
   broadcastSSE("data_updated", { path: newPath });
 }
 
 startWatcher(dirname(initialDbPath));
 
 const server = Bun.serve({
-  port: 3456,
+  port: listenPort,
   idleTimeout: 255,
 
   async fetch(req) {
@@ -336,53 +301,41 @@ const server = Bun.serve({
         });
       }
 
-      // API: 获取完整图数据（含角色注释）
+      // API: 完整图数据（命题 + 三种槽位边 + 按档计数）
       if (path === "/viz/graph") {
-        const graph = buildGraph(db);
-        return Response.json(graph, { headers: corsHeaders });
+        return Response.json(buildGraph(db, ctx), { headers: corsHeaders });
       }
 
-      // API: 获取单个节点
+      // API: 单条命题的完整视图（含警告与 finding 明细）
       if (path.startsWith("/viz/nodes/")) {
         const id = parseInt(path.split("/").pop()!);
-        const node = repo.getNodeById(db, id);
-        if (!node) {
-          return Response.json({ error: "Node not found" }, { status: 404, headers: corsHeaders });
+        if (!Number.isInteger(id) || !repo.getProposition(db, id)) {
+          return Response.json({ error: "Proposition not found" }, { status: 404, headers: corsHeaders });
         }
-        return Response.json({
-          ...node,
-          data: repo.parseNodeData(node),
-        }, { headers: corsHeaders });
+        return Response.json(service.propositionView(db, ctx, id), { headers: corsHeaders });
       }
 
-      // API: 获取节点列表
+      // API: 命题列表，可按 qualifier 过滤（?qualifier=possibly,probably）
       if (path === "/viz/nodes") {
-        const typeParam = url.searchParams.get("type") as NodeType | null;
-        let nodes: NodeRow[];
-        if (typeParam) {
-          nodes = repo.listNodesByType(db, typeParam);
-        } else {
-          nodes = db.prepare("SELECT * FROM nodes ORDER BY id").all() as NodeRow[];
-        }
-        return Response.json(nodes.map(n => ({ ...n, data: repo.parseNodeData(n) })), { headers: corsHeaders });
+        const qualifier = parseQualifiers(url.searchParams.get("qualifier"));
+        const { rows, total } = repo.findPropositions(db, { qualifier, limit: 500 });
+        return Response.json({ rows, total }, { headers: corsHeaders });
       }
 
-      // API: 统计（含角色统计）
+      // API: 结算清单（红名单：未处理 finding、结构违规、缺失附件）
       if (path === "/viz/stats") {
-        const stats = repo.countNodesByType(db);
-        const roleStats = computeRoleStats(db);
-        return Response.json({ ...stats, roleStats }, { headers: corsHeaders });
+        return Response.json(service.getStats(db, ctx), { headers: corsHeaders });
       }
 
       // API: 搜索
       if (path === "/viz/search") {
         const q = url.searchParams.get("q") || "";
-        const typeParam = url.searchParams.get("type") as NodeType | null;
         if (!q) {
-          return Response.json([], { headers: corsHeaders });
+          return Response.json({ rows: [], total: 0 }, { headers: corsHeaders });
         }
-        const nodes = repo.searchNodes(db, q, typeParam || undefined);
-        return Response.json(nodes.rows.map(n => ({ ...n, data: repo.parseNodeData(n) })), { headers: corsHeaders });
+        const qualifier = parseQualifiers(url.searchParams.get("qualifier"));
+        const { rows, total } = repo.findPropositions(db, { query: q, qualifier, limit: 200 });
+        return Response.json({ rows, total }, { headers: corsHeaders });
       }
 
       // API: 查询当前监控路径
@@ -426,7 +379,7 @@ const server = Bun.serve({
         try {
           switchDatabase(newDbPath);
         } catch (switchErr) {
-          console.error("[Toulmin Viz] switchDatabase failed:", switchErr);
+          console.error("[Warranted Viz] switchDatabase failed:", switchErr);
           return Response.json({ error: `Switch failed: ${String(switchErr)}` }, { status: 500, headers: corsHeaders });
         }
         return Response.json({ success: true, path: newDbPath }, { headers: corsHeaders });
@@ -450,11 +403,11 @@ const server = Bun.serve({
 
       return new Response("Not Found", { status: 404 });
     } catch (err) {
-      console.error("[Toulmin Viz] Error:", err);
+      console.error("[Warranted Viz] Error:", err);
       return Response.json({ error: String(err) }, { status: 500, headers: corsHeaders });
     }
   },
 });
 
-console.error(`[Toulmin Viz] Server started on http://localhost:${server.port}`);
-console.error(`[Toulmin Viz] Press Ctrl+C to stop`);
+console.error(`[Warranted Viz] Server started on http://localhost:${server.port}`);
+console.error(`[Warranted Viz] Press Ctrl+C to stop`);

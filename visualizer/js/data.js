@@ -3,23 +3,18 @@ async function loadGraph() {
     const res = await fetch('viz/graph');
     if (!res.ok) return;
     graphData = await res.json();
-    _applyRoleFilter();
+    _applyQualifierFilter();
     renderGraph();
     updateCounts();
   } catch { /* server not ready or network error, skip */ }
 }
 
-function _applyRoleFilter() {
-  const selected = new Set(getSelectedRoles());
-  const visibleNodes = graphData.nodes.filter(n => {
-    if (n.type === 'claim')    return selected.has('claim');
-    if (n.type === 'warrant')  return selected.has('warrant');
-    if (n.type === 'statement') {
-      const roles = n.data?.roles?.length ? n.data.roles : [n.data?.primary_role || 'ground'];
-      return roles.some(r => selected.has(r));
-    }
-    return true;
-  });
+// 过滤按档位走。滤掉一条命题时，连着它的槽位边一起滤——留下的悬空边会画成
+// 指向不存在节点的线。
+function _applyQualifierFilter() {
+  const selected = new Set(getSelectedQualifiers());
+  if (!selected.size) return;   // 一个都没勾 = 不过滤，别把图清空
+  const visibleNodes = graphData.nodes.filter(n => selected.has(qualifierOf(n)));
   const visibleIds = new Set(visibleNodes.map(n => String(n.id)));
   graphData.nodes = visibleNodes;
   graphData.edges = graphData.edges.filter(e =>
@@ -27,52 +22,48 @@ function _applyRoleFilter() {
   );
 }
 
-function getSelectedRoles() {
-  const roles = [];
-  document.querySelectorAll('#filter-panel input[data-type]').forEach(cb => {
-    if (cb.checked) roles.push(cb.dataset.type);
+function getSelectedQualifiers() {
+  const qs = [];
+  document.querySelectorAll('#filter-panel input[data-qualifier]').forEach(cb => {
+    if (cb.checked) qs.push(cb.dataset.qualifier);
   });
-  return roles;
+  return qs;
 }
 
 function updateCounts() {
-  const s  = graphData.stats || {};
-  const rs = graphData.roleStats || {};
+  // stats 是**全库**按档计数(未经前端过滤)，graphData.nodes 是当前可见的那批。
+  // 计数用前者，比例条也用前者——否则勾掉一档会让"已判定率"凭空上涨。
+  const s = graphData.stats || {};
 
-  const elClaim    = document.getElementById('count-claim');
-  const elGround   = document.getElementById('count-ground');
-  const elWarrant  = document.getElementById('count-warrant');
-  const elBacking  = document.getElementById('count-backing');
-  const elRebuttal = document.getElementById('count-rebuttal');
-  if (elClaim)    elClaim.textContent    = s.claim   || 0;
-  if (elWarrant)  elWarrant.textContent  = s.warrant || 0;
-  if (elGround)   elGround.textContent   = rs.ground   || 0;
-  if (elBacking)  elBacking.textContent  = rs.backing  || 0;
-  if (elRebuttal) elRebuttal.textContent = rs.rebuttal || 0;
+  QUALIFIER_ORDER.forEach(q => {
+    const el = document.getElementById('count-' + q);
+    if (el) el.textContent = s[q] || 0;
+  });
 
+  const total = graphData.total || QUALIFIER_ORDER.reduce((a, q) => a + (s[q] || 0), 0);
   const statTotalEl = document.getElementById('stat-total');
-  if (statTotalEl) statTotalEl.textContent = (s.claim || 0) + (s.statement || 0) + (s.warrant || 0);
+  if (statTotalEl) statTotalEl.textContent = total;
 
-  const stmtTotal  = s.statement || 0;
-  const stmtNodes  = graphData.nodes.filter(n => n.type === 'statement');
-  const verified   = stmtNodes.filter(n => n.data?.verification === 'verified').length;
-  const gPct = stmtTotal ? Math.round(verified / stmtTotal * 100) : 0;
+  // 已判定：落在正向三档的比例。unestablished 是"还没挣到"，refuted 是挣到了
+  // 反面的结论——所以它不算在这条里，它有自己的位置。
+  const settled = (s.possibly || 0) + (s.probably || 0) + (s.certainly || 0);
+  const sPct = total ? Math.round(settled / total * 100) : 0;
 
-  const claimNodes     = graphData.nodes.filter(n => n.type === 'claim');
-  const supportedCount = claimNodes.filter(n => n.data?.status === 'supported').length;
-  const cTotal = s.claim || 0;
-  const cPct = cTotal ? Math.round(supportedCount / cTotal * 100) : 0;
+  // 待看：有未处理警告或 finding 的命题数。标红是提示不是拒绝(design.md §2.5)，
+  // 这条不是"错误率"，是"还没人看过一眼的量"。
+  const flagged = graphData.nodes.filter(hasAttention).length;
+  const fPct = total ? Math.round(flagged / total * 100) : 0;
 
-  const gLabel = document.getElementById('ground-progress-label');
-  const gBar   = document.getElementById('ground-progress-bar');
-  const cLabel = document.getElementById('claim-progress-label');
-  const cBar   = document.getElementById('claim-progress-bar');
-  if (gLabel) gLabel.textContent = `${verified}/${stmtTotal} (${gPct}%)`;
-  if (gBar)   gBar.style.width   = gPct + '%';
-  if (cLabel) cLabel.textContent = `${supportedCount}/${cTotal} (${cPct}%)`;
-  if (cBar)   cBar.style.width   = cPct + '%';
+  const sLabel = document.getElementById('settled-progress-label');
+  const sBar   = document.getElementById('settled-progress-bar');
+  const fLabel = document.getElementById('attention-progress-label');
+  const fBar   = document.getElementById('attention-progress-bar');
+  if (sLabel) sLabel.textContent = `${settled}/${total} (${sPct}%)`;
+  if (sBar)   sBar.style.width   = sPct + '%';
+  if (fLabel) fLabel.textContent = `${flagged}/${total} (${fPct}%)`;
+  if (fBar)   fBar.style.width   = fPct + '%';
 
-  if (typeof updatePhase1Stats === 'function') updatePhase1Stats(graphData.nodes, s);
+  if (typeof updatePhase1Stats === 'function') updatePhase1Stats(graphData.nodes, s, total);
 }
 
 let _searchAbort = null;
@@ -105,9 +96,9 @@ async function searchNodes(keyword) {
     const res = await fetch(`viz/search?q=${encodeURIComponent(keyword)}`, { signal: _searchAbort.signal });
     const hits = await res.json();
     _searchAbort = null;
-    const matchIds = new Set(hits.map(n => String(n.id)));
+    const matchIds = new Set((hits.rows || []).map(n => String(n.id)));
     g.selectAll('.node-group').transition().duration(300).style('opacity', d => {
-      const id = currentLayout === 'tree' ? d.data.id : d.id;
+      const id = String(currentLayout === 'tree' ? d.data.id : d.id);
       return matchIds.has(id) ? 1 : 0.1;
     });
     g.selectAll('.link').transition().duration(300).style('opacity', 0.08);

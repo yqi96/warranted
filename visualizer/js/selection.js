@@ -34,12 +34,9 @@ async function syncSelectionToServer() {
   try {
     const ids = [...selectedNodeIds].map(id => parseInt(id)).filter(n => !isNaN(n));
     const nodes = ids.map(id => {
-      const node = nodeMap.get(String(id)) || nodeMap.get(id);
+      const node = nodeMap.get(String(id));
       if (!node) return null;
-      const type = node.type || node.data?.type || '';
-      const content = node.content || node.data?.content || '';
-      const roles = node.data?.roles || [];
-      return { id, type, content, roles };
+      return { id, content: node.content || '', qualifier: node.qualifier || 'unestablished' };
     }).filter(Boolean);
     await fetch('http://localhost:3456/viz/selection', {
       method: 'POST',
@@ -92,13 +89,8 @@ function highlightTreeNeighbors(hierarchyNode) {
   (hierarchyNode.children || []).forEach(c => connected.add(c.data.id));
   if (hierarchyNode.parent) (hierarchyNode.parent.children || []).forEach(c => connected.add(c.data.id));
 
-  if (hierarchyNode.data.type === 'claim') {
-    g.selectAll('.node-group').each(function(d) {
-      if (d.data.type === 'ground' && String(d.data.data?.ref_claim_id) === id)
-        connected.add(d.data.id);
-    });
-  }
-
+  // 高亮按 id 走而不是按这一个 hierarchy 节点走：同一条命题可以坐在多个证据槽里，
+  // 在树里会出现好几次(其余的画成收起的引用)。它们是同一条，一起亮。
   g.selectAll('.node-group').transition().duration(300)
     .style('opacity', d => connected.has(d.data.id) ? 1 : 0.12);
   g.selectAll('.link').transition().duration(300)

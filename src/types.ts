@@ -1,383 +1,423 @@
 /**
- * Toulmin 论证模型 — 类型定义
+ * Warranted — 类型定义
  *
- * 节点类型见 NodeType。Ground / Backing / Rebuttal 不是节点类型，是角色：
- * 由关系表（warrant_grounds / warrant_backings / rebuttal_targets）记录谁在扮演，
- * 同一个节点可以同时扮演多个，也可以一个都不扮演。
- * 所有节点共享基础字段，类型特有字段存储在 data JSON 中。
+ * 本体是**一个命题 + 五个槽位**(docs/design.md §1.2):
+ * content / evidence / warrant / rebuttal / qualifier。
+ *
+ * 没有节点类型:claim 退成"有争议"这个状态,ground / backing 退成对证据的两种
+ * **视角**,warrant 与 rebuttal 退成**槽位**(§1.3)。所以这里既没有 NodeType,
+ * 也没有按角色分叉的返回形状——角色只取决于以谁为中心看,不取决于数据。
  */
 
-// =============================================================================
-// 枚举常量
-// =============================================================================
+import type { Qualifier, EventOp, EventActor, RefRole } from "./schema.ts";
 
-export type NamespaceCardinality = "dense" | "bounded";
-
-export interface TagRow {
-  name: string;
-  description: string;
-  claim_id: number | null;
-  created_at: string;
-}
-
-export interface TagNamespaceRow {
-  namespace: string;
-  cardinality: NamespaceCardinality;
-  declared_at: string;
-}
-
-export const NodeType = {
-  Claim: "claim",
-  Warrant: "warrant",
-  Statement: "statement",
-} as const;
-
-export type NodeType = (typeof NodeType)[keyof typeof NodeType];
-
-export const GroundSource = {
-  Literature: "literature",
-  Observed: "observed",
-} as const;
-
-export type GroundSource = (typeof GroundSource)[keyof typeof GroundSource];
-
-export const VerificationStatus = {
-  Verified: "verified",
-  Pending: "pending",
-} as const;
-
-export type VerificationStatus =
-  (typeof VerificationStatus)[keyof typeof VerificationStatus];
-
-export const ClaimStatus = {
-  Proposed: "proposed",
-  Supported: "supported",
-  Disputed: "disputed",
-  Refuted: "refuted",
-} as const;
-
-export type ClaimStatus = (typeof ClaimStatus)[keyof typeof ClaimStatus];
-
-export const TargetType = {
-  Claim: "claim",
-  Warrant: "warrant",
-} as const;
-
-export type TargetType = (typeof TargetType)[keyof typeof TargetType];
+export type { Qualifier, EventOp, EventActor, RefRole };
+export { QUALIFIERS, POSITIVE_QUALIFIERS, EVENT_OPS, EVENT_ACTORS, REF_ROLES } from "./schema.ts";
 
 // =============================================================================
-// 节点接口
+// 命题与槽位
 // =============================================================================
 
-/** 所有节点共享的基础接口 */
-export interface BaseNode {
-  id: number;
-  type: NodeType;
-  content: string;
-  createdAt: string;
-  updatedAt: string;
-  tags?: string[];
-}
-
-/** Claim 节点 */
-export interface ClaimNode extends BaseNode {
-  type: "claim";
-  status: ClaimStatus;
-}
-
-/** Warrant 节点 */
-export interface WarrantNode extends BaseNode {
-  type: "warrant";
-  claimId: number;
-  groundIds: number[];
-}
-
-/** Statement 节点（统一替代 Ground/Backing/Rebuttal） */
-export interface StatementNode extends BaseNode {
-  type: "statement";
-  source?: GroundSource;
-  verification?: VerificationStatus;
-  attachments: string[];
-}
-
-/** 所有节点类型的联合类型 */
-export type ToulminNode =
-  | ClaimNode
-  | WarrantNode
-  | StatementNode;
-
-// =============================================================================
-// data JSON 结构（与 SQLite data 列对应）
-// =============================================================================
-
-export interface ClaimData {
-  status: ClaimStatus;
-  qualifier?: string | null;
-}
-
-export interface WarrantData {
-  claim_id: number;
-  // ground 集合不在这里 —— 唯一记录是 warrant_grounds 表，用
-  // repo.findGroundIdsByWarrant 读。曾经这里存过一份 ground_ids 副本，
-  // 两边各有消费者，于是逻辑审查和结构审查会看到不同的 ground 集合。
-}
-
-export interface StatementData {
-  source?: GroundSource;
-  verification?: VerificationStatus;
-  attachments: string[];
-}
-
-export type NodeData =
-  | ClaimData
-  | WarrantData
-  | StatementData;
-
-// =============================================================================
-// update_node 参数类型
-// =============================================================================
-
-export interface GroundIdsUpdate {
-  add?: number[];
-  remove?: number[];
-}
-
-export interface UpdateNodeParams {
-  content?: string;
-  attachments?: string[];
-  status?: ClaimStatus;
-  source?: GroundSource;
-  verification?: VerificationStatus;
-  ground_ids?: GroundIdsUpdate;
-  backing_ids?: { add?: number[]; remove?: number[] };
-  rebuttal_ids?: { add?: number[]; remove?: number[] };
-  qualifier?: string | null;
-  tags?: { add?: string[]; remove?: string[] };
-}
-
-// =============================================================================
-// get_argument 返回类型
-// =============================================================================
-
-/**
- * Ground / Backing / Rebuttal 在库里是同一种 statement 节点，往外递的形状也一样。
- *
- * 写成一个共同的形状是因为它们曾经不一样：Ground 带 source/verification，
- * Backing 和 Rebuttal 不带，于是"这条反驳核实了没有"在输出里看不出来 ——
- * 而 A3/A4 门禁恰好只认已核实的反驳。角色由关系表决定，字段不该跟着角色变。
- *
- * source/verification 声明为可选：0.4 之前的 backing/rebuttal 节点没写过这两个键，
- * 迁移也不会替它们编一个（见 db.ts migrateToStatementSchema 步骤 b/c）。
- */
-export interface ArgumentStatement {
+/** propositions 表的原始行。 */
+export interface PropositionRow {
   id: number;
   content: string;
-  attachments: string[];
-  source?: GroundSource;
-  verification?: VerificationStatus;
-}
-
-export type ArgumentGround = ArgumentStatement;
-
-export type ArgumentBacking = ArgumentStatement;
-
-export interface ArgumentWarrant {
-  id: number;
-  content: string;
-  grounds: ArgumentGround[];
-  backings: ArgumentBacking[];
-}
-
-/**
- * target_id 和 target_type 一起给，缺一个都答不上"是哪一条被攻击了"：
- * 一个 Claim 挂三条 Warrant 时，只说 target_type="warrant" 等于没说。
- */
-export interface ArgumentRebuttal extends ArgumentStatement {
-  target_type: TargetType;
-  target_id: number;
-}
-
-export interface ClaimArgument {
-  claim: {
-    id: number;
-    content: string;
-    status: ClaimStatus;
-    qualifier: string | null;
-    /** 来自 compile_state 表；null 表示从未编译过 */
-    compile_status?: CompileStateVerdict | null;
-  };
-  warrants: ArgumentWarrant[];
-  rebuttals: ArgumentRebuttal[];
-}
-
-export interface WarrantArgument {
-  warrant: { id: number; content: string; claim_id: number };
-  grounds: ArgumentGround[];
-  backings: ArgumentBacking[];
-  rebuttals: ArgumentRebuttal[];
-}
-
-export interface NodeArgument {
-  node: {
-    id: number;
-    type: NodeType;
-    content: string;
-    attachments?: string[];
-    source?: GroundSource;
-    verification?: VerificationStatus;
-  };
-  // 没有 rebuttals：这个分支只在节点是 statement 时才走到（claim/warrant 各有自己的
-  // 返回类型），而反驳只能攻击 Claim 或 Warrant（service.createStatement 拦住了别的），
-  // 所以"攻击这个 statement 的反驳"永远是空集。曾经这里查过一次，查了也永远是空。
-  used_in_warrants?: Array<{
-    warrant_id: number;
-    claim_id: number;
-    claim_content: string;
-  }>;
-}
-
-export type ArgumentResult = ClaimArgument | WarrantArgument | NodeArgument;
-
-// =============================================================================
-// get_stats 返回类型
-// =============================================================================
-
-/**
- * get_stats 的返回。
- *
- * 角色计数（Ground / Backing / Rebuttal 各有多少、多少已核实）一律在 ScaleBlock.roles 里，
- * 因为角色是由关系表决定的，不是节点自带的属性。这里不再另留一份按节点类型数出来的副本：
- * 0.5.0 之前有过一份，`source` 改成必填之后它退化成了"全部 statement 的条数"，
- * 名字却还写着 Grounds。
- */
-export interface Stats {
-  claims: { total: number; by_status: Record<string, number> };
-  warrants: { total: number };
-  /** Rebuttal 打在 Claim 上还是打在 Warrant 上 —— 这个分布别处没有。 */
-  rebuttals: { by_target_type: Record<string, number> };
-  scale: ScaleBlock;
-}
-
-/** 一个角色（Ground / Backing / Rebuttal）的条数与核实情况。三个角色形状一致，判据也一致。 */
-export interface RoleCount {
-  total: number;
-  verified: number;
-  pending: number;
-}
-
-export interface ScaleBlock {
-  tags: { total: number; namespaces: Array<{ name: string; count: number; with_nodes: number; cardinality: string }> };
-  /** §4.2's `Statements:` line — counts statements, not tags. */
-  statements: { total: number; tagged: number; untagged: number };
-  namespace_gaps: Array<{ from: string; to: string; count: number }>;
-  gaps_omitted: number;
-  roles: { grounds: RoleCount; backings: RoleCount; rebuttals: RoleCount };
-  claims_detail: { never_compiled: number; stale: { count: number; ids: number[] }; passed_awaiting: number };
-  attachments: { total: number; files: Array<{ path: string; missing: boolean }> };
-}
-
-// =============================================================================
-// 数据库行类型（从 SQLite 读取的原始行）
-// =============================================================================
-
-export interface NodeRow {
-  id: number;
-  type: string;
-  content: string;
-  data: string; // JSON string
+  warrant_text: string | null;
+  warrant_node_id: number | null;
+  qualifier: Qualifier;
   created_at: string;
   updated_at: string;
 }
 
-// =============================================================================
-// compile 相关类型
-// =============================================================================
+/**
+ * 理由槽的三种形态(design.md §1.2)。
+ *
+ * 写成判别联合而不是"两个可空字段",是为了让"同时内联又晋升"在类型层面无法表达——
+ * 与 DB 里那条 CHECK 是同一条约束的两次落地。
+ */
+export type WarrantSlot =
+  | { kind: "empty" }
+  | { kind: "inline"; text: string }
+  | { kind: "promoted"; node_id: number };
 
-export const CompileVerdict = {
-  Passed: "passed",
-  Failed: "failed",
-} as const;
+/** 证据槽:附件与命题共用一个槽,只是存储分两张表。 */
+export interface EvidenceSlot {
+  attachments: string[];
+  /** 挂进来的是**引用不是副本**:读到的永远是那条命题当下的 content。 */
+  nodes: number[];
+}
 
-export type CompileVerdict = (typeof CompileVerdict)[keyof typeof CompileVerdict];
+/** 一条命题的完整槽位视图。 */
+export interface Proposition {
+  id: number;
+  content: string;
+  evidence: EvidenceSlot;
+  warrant: WarrantSlot;
+  /** 攻击本命题的命题 id。 */
+  rebuttals: number[];
+  qualifier: Qualifier;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// =============================================================================
+// 结构检查:判据编号与警告
+// =============================================================================
 
 /**
- * compile_state.verdict 的取值 —— 比 CompileVerdict 多一个 "stale"。
+ * 判据编号。两族,派生方式不同:
  *
- * CompileVerdict 是"一次检查得出的结论"，只有 passed/failed；stale 不是任何一次检查的
- * 结论，而是"曾经 passed，但通过的那个结构已经被改掉了"。两者不可混用：
- * CompileResult.verdict 出现 stale 是错的。
+ * - **S/A 族(当前状态)**:只看图现在长什么样,按命题自己的 qualifier 分档启用
+ *   (design.md §3.1 判据表)。S = 支撑侧,A = 攻击侧。
+ * - **R 族(基线比对)**:拿当前值与"设 qualifier 那一刻的快照"比,回答
+ *   "我判断时依据的东西还是不是这个"(§3.1c)。
  *
- * 没有行 = 从未编译过。这三个值加"没有行"共四种状态互斥且穷尽。
+ * R 族**不按档位放宽**(只跳过 `unestablished`——它没有基线)。§3.1 给 `possibly`
+ * 的放宽针对的是**可信度要求**("引用链得多可信"),而 R 族问的是**事实变没变**:
+ * 你判 `possibly` 时读的那段证据被改写了,这条 possibly 一样需要重看。两者是不同
+ * 的东西,放宽其一不蕴含放宽其二。
  */
-export type CompileStateVerdict = CompileVerdict | "stale";
+export const CheckCode = {
+  /** 证据槽为空(possibly 及以上)。 */
+  EvidenceEmpty: "S1",
+  /** 附件文件不存在(possibly 及以上)。写硬读软:写入时查过,之后被删在读时标红。 */
+  AttachmentMissing: "S2",
+  /** 理由为空(possibly 及以上)。曾经的 V4,已移回表内。 */
+  WarrantEmpty: "S3",
+  /**
+   * 附件解析到项目根之外(possibly 及以上)。
+   *
+   * 不在 §3.1 判据表里,是唯一从旧警告体系保留下来的一条(api.md §7.1):它查的是
+   * **可移植性**,与 V3(存在性)是两回事,两者都要。旧实现在写入返回体里发一句
+   * 字符串,而 api.md §0-③ 要求警告可被指名驳回,所以它必须搬到读时算、带 id ——
+   * 落到这里就是判据表之外的一条。档位跟 S2 走:同一个槽、同一个触发点,分开
+   * 分档会让"附件不见了"与"附件不可移植"在某些档位上一个响一个不响。
+   */
+  AttachmentOutOfRoot: "S5",
+  /** 引用的命题落 `unestablished`(probably / certainly)。`refuted` 不在此列。 */
+  EvidenceUnestablished: "S4",
+  /** 反驳槽为空(refuted)。 */
+  RebuttalEmpty: "A1",
+  /** 反驳自己没落在正向三档(refuted)。攻击力随它被推翻一起消解。 */
+  RebuttalNotPositive: "A2",
+  /** 本命题自判断以来已变(content / 理由 / 证据成员 / 反驳成员)。 */
+  SelfChanged: "R0",
+  /** 判断时依据的引用已被删除。 */
+  RefGone: "R1",
+  /** 判断时依据的引用 content 已变。 */
+  RefContentChanged: "R2",
+  /** 判断时依据的引用 qualifier 已变(证据从 certainly 掉到 refuted 在这里抓)。 */
+  RefQualifierChanged: "R3",
+} as const;
 
-export interface CompileState {
-  claimId: number;
-  verdict: CompileStateVerdict;
-  summary: string;
-  argumentHash?: string; // Merkle Root 哈希；仅 verdict === "passed" 时非空
+export type CheckCode = (typeof CheckCode)[keyof typeof CheckCode];
+
+/**
+ * 一条结构检查警告。
+ *
+ * `id` 从 `(node_id, code, trigger, recheck_fingerprint)` 派生(api.md §5),
+ * 不存可变状态。于是"复燃"是免费的:指纹一变 id 全变,旧的 dismiss 事件
+ * 自然匹配不上——不需要警告状态表,dismiss 保持为纯 append 事件。
+ */
+export interface StructuralWarning {
+  id: string;
+  nodeId: number;
+  code: CheckCode;
+  /** 触发点标识:哪个附件、哪条引用。整条命题级的判据(如 S1)为 null。 */
+  trigger: string | null;
+  /** 人读的一句话:断在哪。 */
+  message: string;
+  state: "pending" | "acknowledged";
+  /** state = acknowledged 时非空。 */
+  dismissal?: { reason: string; at: string };
+}
+
+// =============================================================================
+// 审查:finding
+// =============================================================================
+
+/**
+ * 一条 finding(design.md §2.2 / api.md §4.1)。
+ *
+ * `question` 是**判别式**:它唯一决定 citation 的形态。做成判别联合之后,
+ * "Q1 只针对附件型证据"从一句措辞变成类型层面无法违反的事。
+ *
+ * 不带 `severity`(要看到局部之外,审查器无权判)、不带修改建议(那是 L3 的活)、
+ * 不带 `status`(已阅由事件流算出来,加了就破 I8)、不带反模式分类。
+ */
+export type Finding = Q1Finding | Q2Finding;
+
+interface FindingBase {
+  /** `f_<review_event_id>_<序号>`。**不含重查指纹**——finding 不随图变化过期。 */
+  id: string;
+  nodeId: number;
+  /** 断点陈述:哪里断了。不是"这个论证不够好"。 */
+  content: string;
+  /** 我这条判断有多大把握。只有两档——三档的中间档是垃圾桶。 */
+  confidence: "high" | "low";
+}
+
+/** 忠实性:附件有没有真的说这条命题声称的事。只针对附件型证据。 */
+export interface Q1Finding extends FindingBase {
+  question: "Q1";
+  citation: {
+    /** 必须 ∈ 被审查命题的附件槽(F2)。 */
+    attachment: string;
+    /** 页码 / 行号 / 章节,让人能翻到。 */
+    locator: string;
+    /** 逐字片段。真伪要读原文才知道,留给人(F1 只查非空)。 */
+    quote: string;
+  };
+}
+
+/** 有效性:证据即便为真,这条理由能否推出 content。 */
+export interface Q2Finding extends FindingBase {
+  question: "Q2";
+  citation: {
+    /** 必须 ∈ {被审查命题} ∪ {其证据槽里的命题}(F3)。 */
+    nodeId: number;
+    slot: "content" | "warrant";
+    /** 必须是该槽位内容的**逐字子串**(F4)。验不过 = 审查器在编。 */
+    quote: string;
+  };
+}
+
+/**
+ * 审查器交出来的 finding:**没有 id**。
+ *
+ * id 是 `f_<review_event_id>_<序号>`,而 review 事件的 id 要等落库那一刻才存在。
+ * 让审查器自己编一个 id,就等于允许它编一个能跟已有 dismiss 事件对上的 id。
+ */
+export type FindingDraft = Omit<Q1Finding, "id"> | Omit<Q2Finding, "id">;
+
+/** 带处置状态的 finding(读取接口用)。状态是算出来的,不是存出来的。 */
+export interface FindingView extends FindingBase {
+  question: "Q1" | "Q2";
+  citation: Q1Finding["citation"] | Q2Finding["citation"];
+  state: "pending" | "acknowledged";
+  dismissal?: { reason: string; at: string };
+  at: string;
+}
+
+/**
+ * 一条被 F1–F4 拒收的 finding(api.md §4.1)。
+ *
+ * 拒收是**逐条**的:不合格的那条不落库,同一次 review 的其余部分照常。原样留 `raw`,
+ * 因为协议违规要能被人读出来是怎么违的——只记一个计数,下次改 prompt 时没有依据。
+ */
+export interface RejectedFinding {
+  /** `shape` 不在那张表里:形状不对的东西根本不是一条 finding,不是一条不合格的 finding。 */
+  failed: "shape" | "F1" | "F2" | "F3" | "F4";
+  detail: string;
+  raw: unknown;
+}
+
+/** review 事件的载荷。答"是"也留痕:没有这一层,"从没 review 过"与"review 过且没问题"分不开。 */
+export interface ReviewOutcome {
+  nodeId: number;
+  /** `n/a` 专给"该命题没有附件型证据、Q1 无所施力"。记成 pass 会造出假象。 */
+  Q1: "pass" | "fail" | "n/a";
+  Q2: "pass" | "fail";
+  findings: FindingDraft[];
+  model: string;
+  protocolHash: string;
+  /** 本次被拒收的条目。进事件载荷,不进 findings 表。 */
+  rejected?: RejectedFinding[];
+}
+
+// =============================================================================
+// 事件流(I8)
+// =============================================================================
+
+export interface EventRow {
+  id: number;
+  node_id: number | null;
+  op: EventOp;
+  actor: EventActor;
+  payload: string;
+  note: string | null;
+  target_key: string | null;
+  at: string;
+}
+
+/** 对外形状。列名 actor 在这里变回契约里的名字 `by`(design.md §3.1c)。 */
+export interface EventRecord {
+  id: number;
+  at: string;
+  by: EventActor;
+  op: EventOp;
+  nodeId: number | null;
+  /** update 是字段级 diff,delete 是整节点 before 快照,review 是 findings,dismiss 是理由。 */
+  payload: Record<string, unknown>;
+  note?: string;
+  targetKey?: string;
+}
+
+/** update 事件的载荷:字段级 diff。 */
+export type FieldDiff = Record<string, { old: unknown; new: unknown }>;
+
+// =============================================================================
+// 基线(设 qualifier 那一刻的快照)
+// =============================================================================
+
+export interface BaselineHead {
+  nodeId: number;
+  qualifier: Qualifier;
+  /** 判断当时本命题自身的指纹(content + 理由 + 证据成员 + 反驳成员)。 */
+  selfFingerprint: string;
+  at: string;
+}
+
+export interface BaselineRef {
+  nodeId: number;
+  refId: number;
+  refRole: RefRole;
+  contentHash: string;
+  qualifier: Qualifier;
+}
+
+// =============================================================================
+// 工具入参
+// =============================================================================
+
+export interface CreatePropositionItem {
+  content: string;
+  /** 内联理由。可空——`possibly` 及以上才由结构检查追讨(V4 已取消)。 */
+  warrant?: string;
+  evidence?: { attachments?: string[]; nodes?: number[] };
+  /** 把本命题登记为对目标的反驳。`slot: "warrant"` 会触发目标的内联理由自动晋升。 */
+  attacks?: { node: number; slot: "content" | "warrant" };
+  note?: string;
+}
+
+export interface UpdatePropositionParams {
+  id: number;
+  content?: string;
+  /** 理由已晋升时本字段被拒绝——那时理由是一条独立命题,改它要改那条命题。 */
+  warrant?: string;
+  evidence?: {
+    add_attachments?: string[];
+    remove_attachments?: string[];
+    add_nodes?: number[];
+    remove_nodes?: number[];
+  };
+  /** 一律 add/remove,不提供整体替换:整体替换会静默丢成员(见 9393354)。 */
+  rebuttals?: { add?: number[]; remove?: number[] };
+  note?: string;
+}
+
+export interface SetQualifierItem {
+  id: number;
+  qualifier: Qualifier;
+  note?: string;
+}
+
+export interface PromoteWarrantParams {
+  id: number;
+  /** 晋升出来那条命题**自己的**理由,可空。 */
+  warrant?: string;
+  evidence?: { attachments?: string[]; nodes?: number[] };
+  note?: string;
+}
+
+export interface FindPropositionsParams {
+  query?: string;
+  qualifier?: Qualifier[];
+  /** 只要有未处理 finding 或未处理警告的。 */
+  has_unresolved?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface DismissItem {
+  /** 警告 id 或 finding id。 */
+  id: string;
+  reason: string;
+}
+
+// =============================================================================
+// 返回形状
+// =============================================================================
+
+/** 一条命题的完整对外视图:五个槽位 + 结构检查警告 + 未处理意见。 */
+export interface PropositionView {
+  id: number;
+  content: string;
+  qualifier: Qualifier;
+  warrant: WarrantSlot;
+  evidence: EvidenceSlot;
+  rebuttals: number[];
+  /** 对每条命题都出现,不需要开关——可选的醒目就不是醒目(design.md §2.5)。 */
+  warnings: StructuralWarning[];
+  findings: FindingView[];
   createdAt: string;
+  updatedAt: string;
 }
 
-export interface ElementReviewResult {
-  reviewer: "claim" | "warrant" | "chain" | "structure";
-  nodeId?: number;
-  errors: string[];
-  warnings: string[];
-  infos?: string[];
-  /** true 表示本结果的 errors 与其他 reviewer 的 error 重叠，已被降级为咨询性提示（不代表 compile 失败原因的唯一来源） */
-  advisory?: boolean;
+export interface CreateResultItem {
+  id: number;
+  warnings: StructuralWarning[];
+  /** 系统替 agent 建了节点时必须显式报告,否则图里凭空多一个节点。 */
+  promoted?: { from_node: number; new_id: number };
+  /** 不可寻址的一句话提示(C4 建议留 note 之类)。不能被 dismiss——它不是断点。 */
+  notices?: string[];
 }
 
-export interface CompileResult {
-  claimId: number;
-  verdict: CompileVerdict;
-  summary: string;
-  elementReviews: ElementReviewResult[];
-  compiledAt: string;
+export interface UpdateResult {
+  id: number;
+  warnings: StructuralWarning[];
+  notices?: string[];
 }
 
-// =============================================================================
-// 自动验证类型
-// =============================================================================
+export interface SetQualifierResultItem {
+  id: number;
+  qualifier: Qualifier;
+  /** 上一档。事件流里也有,放在返回体里是为了让"我刚把它从哪儿改到哪儿"一眼可见。 */
+  previous: Qualifier;
+  warnings: StructuralWarning[];
+  notices?: string[];
+}
 
-export interface AutoVerifyResult {
-  claimId: number;
-  /**
-   * 这次对该 Claim 实际发生了什么。
-   *
-   * D25/D26：这里曾经只有一个 "marked-stale"，同时表示五种不同结局，渲染层只能猜，
-   * 于是把"结构齐全但某条检查没过"也印成 "incomplete structure"。按结局拆开之后
-   * 渲染层不必猜，每个词只对应一件事：
-   *
-   * - auto-reviewed        模型审查跑了，结论在 compileResult 里
-   * - no-change            结构指纹没变，不必重审
-   * - structure-incomplete 结构缺东西（少推理、少证据、Ground 指向不存在的节点）
-   * - check-failed         结构齐全，但确定性检查没通过（structuralQualityCheck）
-   * - passed-unreviewed    没有配审查模型，只跑了不需要模型的检查就记为通过
-   * - skipped              节点不存在或不是 Claim
-   */
-  action:
-    | "auto-reviewed"
-    | "no-change"
-    | "structure-incomplete"
-    | "check-failed"
-    | "passed-unreviewed"
-    | "skipped";
-  /**
-   * 这次是否真的把一条 passed 记录降级成了 stale。
-   *
-   * 与 action 无关，是独立的一件事：markCompileStale 只动 passed 的行，所以同一个
-   * 分支在 failed / 没有记录 的 Claim 上什么都不会改。取的是 SQL 实际改动的行数，
-   * 不是从分支位置推断的——D26 就是把"叫 marked-stale"当成"真的标了"。
-   */
-  staled?: boolean;
-  /**
-   * 这次 compile 之后因为「没有通过的 compile 记录」而被退回 proposed 的 Claim 的警告，
-   * 包含沿规则 C′ 向上连带退回的那些。与 action 无关：一次 auto-reviewed 和一次
-   * structure-incomplete 都可能带上它，也都可能不带（原本就是 proposed 时不带）。
-   */
-  statusWarnings?: string[];
-  compileResult?: CompileResult;
+export interface PromoteResult {
+  id: number;
+  /** 晋升出来的那条命题。 */
+  newId: number;
+  warnings: StructuralWarning[];
+}
+
+export interface DeleteResult {
+  id: number;
+  /** 从槽里被摘掉这条引用的命题。它们已被标为该重查。 */
+  affected: number[];
+  notices?: string[];
+}
+
+/** `get_argument` 的返回:自己 + 邻域。角色只取决于以谁为中心看,所以邻居不分组。 */
+export interface ArgumentResult {
+  root: PropositionView;
+  neighbors: PropositionView[];
+}
+
+export interface FindResult {
+  items: PropositionView[];
+  total: number;
+}
+
+export interface DismissResultItem {
+  id: string;
+  /** 命中了什么:一条结构检查警告,还是一条 finding。 */
+  target: "warning" | "finding" | "unknown";
+  ok: boolean;
   message?: string;
+}
+
+/** get_stats 的结算摘要(design.md §4)。红点清单在前,计数在后。 */
+export interface SettlementSummary {
+  total: number;
+  byQualifier: Record<Qualifier, number>;
+  /** 有未处理 finding 的命题。 */
+  unresolvedFindings: Array<{ nodeId: number; count: number }>;
+  /** 有未处理结构检查警告的命题,按判据分组计数。 */
+  unresolvedWarnings: Array<{ nodeId: number; codes: CheckCode[] }>;
+  attachments: { total: number; missing: string[] };
 }

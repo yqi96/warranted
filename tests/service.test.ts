@@ -1,1322 +1,709 @@
 /**
- * Toulmin MCP — Service 层单元测试
+ * Service 层(docs/api.md §2–§4)
+ *
+ * 组织方式对着工具面:一个工具一节。断言集中在三处不能漂的地方——
+ * 硬拒只有 V1–V3、基线只有一个写入者、每次操作都留痕。
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant, makeBacking, makeRebuttal, makeCompiledClaim, makeChainReasoning } from "./helpers.ts";
-import * as service from "../src/service.ts";
+import * as svc from "../src/service.ts";
 import * as repo from "../src/repo.ts";
-import { structuralPreCheck, invalidateCompiledClaims } from "../src/compile-service.ts";
-import { computeArgumentHash } from "../src/merkle-hash.ts";
-import {
-  NotFoundError,
-  ValidationError,
-  CascadeRequiredError,
-  TypeMismatchError,
-  StatusTransitionError,
-} from "../src/errors.ts";
+import { ValidationError, NotFoundError } from "../src/errors.ts";
+import { CheckCode } from "../src/types.ts";
+import { createTestDb, cleanupDb, makeTempRoot, type TempRoot } from "./helpers.ts";
 
 let db: Database;
+let root: TempRoot;
 
 beforeEach(() => {
   db = createTestDb();
+  root = makeTempRoot();
 });
 
 afterEach(() => {
   cleanupDb(db);
+  root.cleanup();
 });
 
-// =============================================================================
-// createClaim
-// =============================================================================
+/** 最省事的一条命题:内容 + 理由,不带证据。 */
+function create(content = "A proposition", extra: Record<string, unknown> = {}): number {
+  return svc.createPropositions(db, root, [
+    { content, warrant: "A domain-general principle", ...extra },
+  ])[0]!.id;
+}
 
-describe("createClaim", () => {
-  test("happy path: 返回 claim 节点", () => {
-    const claim = service.createClaim(db, "测试主张");
-    expect(claim.id).toBe(1);
-    expect(claim.type).toBe("claim");
-    expect(claim.content).toBe("测试主张");
-    expect(claim.status).toBe("proposed");
-  });
-
-  test("content 自动 trim", () => {
-    const claim = service.createClaim(db, "  测试主张  ");
-    expect(claim.content).toBe("测试主张");
-  });
-
-  test("空 content 抛出 ValidationError", () => {
-    expect(() => service.createClaim(db, "")).toThrow(ValidationError);
-    expect(() => service.createClaim(db, "   ")).toThrow(ValidationError);
-  });
-});
+function ops(nodeId?: number): string[] {
+  return svc.getHistory(db, { id: nodeId, limit: 100 }).events.map((e) => e.op);
+}
 
 // =============================================================================
-// createStatement (formerly createGround)
+// create_propositions
 // =============================================================================
 
-describe("createStatement", () => {
-  test("Mode A: 普通证据", () => {
-    const ground = service.createStatement(db, {
-      content: "实验数据",
-      source: "observed",
-      verification: "verified",
-      attachments: ["/data.csv"],
-    });
-    expect(ground.type).toBe("statement");
-    expect(ground.source).toBe("observed");
-    expect(ground.verification).toBe("verified");
-    expect(ground.attachments).toEqual(["/data.csv"]);
+describe("create_propositions", () => {
+  test("新建的命题一律落 unestablished,没有 qualifier 入参", () => {
+    const id = create();
+    expect(repo.getProposition(db, id)!.qualifier).toBe("unestablished");
   });
 
-  test("Mode A: 缺少 source", () => {
+  test("批量:一次调用建多条,各自返回 id 与警告", () => {
+    const out = svc.createPropositions(db, root, [{ content: "one" }, { content: "two" }]);
+    expect(out).toHaveLength(2);
+    expect(out[0]!.id).not.toBe(out[1]!.id);
+  });
+
+  test("V1 content 为空拒绝,只有空格也拒绝", () => {
+    expect(() => svc.createPropositions(db, root, [{ content: "" }])).toThrow(ValidationError);
+    expect(() => svc.createPropositions(db, root, [{ content: "   " }])).toThrow(ValidationError);
+  });
+
+  test("V2 引用不存在的命题拒绝", () => {
     expect(() =>
-      service.createStatement(db, { content: "x", source: undefined as any, verification: "verified" })
+      svc.createPropositions(db, root, [{ content: "x", evidence: { nodes: [999] } }])
     ).toThrow(ValidationError);
   });
 
-  test("Mode A: 缺少 verification", () => {
+  test("V3 附件不存在拒绝;URL 也拒绝", () => {
     expect(() =>
-      service.createStatement(db, { content: "x", source: "observed", verification: undefined as any })
+      svc.createPropositions(db, root, [{ content: "x", evidence: { attachments: ["nope.md"] } }])
+    ).toThrow(ValidationError);
+    expect(() =>
+      svc.createPropositions(db, root, [
+        { content: "x", evidence: { attachments: ["https://example.com/p.pdf"] } },
+      ])
     ).toThrow(ValidationError);
   });
 
-  test("Mode A: 无效 source", () => {
+  test("空 warrant 不是硬拒——姿态原则零例外", () => {
+    const out = svc.createPropositions(db, root, [{ content: "no warrant here" }]);
+    expect(out[0]!.id).toBeGreaterThan(0);
+    // 而且落 unestablished 时一条红都不标。
+    expect(out[0]!.warnings).toEqual([]);
+  });
+
+  test("留痕:一条 create 事件,载荷含内容与槽位", () => {
+    const path = root.file("e.md");
+    const id = create("recorded", { evidence: { attachments: [path] }, note: "why" });
+    const ev = svc.getHistory(db, { id }).events.find((e) => e.op === "create")!;
+    expect(ev.by).toBe("tool");
+    expect(ev.note).toBe("why");
+    expect((ev.payload as any).evidence.attachments).toEqual([path]);
+  });
+
+  test("attacks.slot=content:反驳挂到目标的反驳槽", () => {
+    const target = create("target");
+    const out = svc.createPropositions(db, root, [
+      { content: "counterexample", attacks: { node: target, slot: "content" } },
+    ]);
+    expect(repo.getRebuttals(db, target)).toEqual([out[0]!.id]);
+    expect(out[0]!.promoted).toBeUndefined();
+  });
+
+  test("attacks.slot=warrant:内联理由自动晋升,并在返回体里显式报告", () => {
+    const target = create("target");
+    const out = svc.createPropositions(db, root, [
+      { content: "the principle fails here", attacks: { node: target, slot: "warrant" } },
+    ]);
+
+    const promoted = out[0]!.promoted;
+    expect(promoted).toBeDefined();
+    expect(promoted!.from_node).toBe(target);
+
+    // 原槽位改为指向晋升出来的命题,内联文本清空(DB 的 XOR CHECK 也不允许并存)。
+    const row = repo.getProposition(db, target)!;
+    expect(row.warrant_node_id).toBe(promoted!.new_id);
+    expect(row.warrant_text).toBeNull();
+
+    // 反驳挂在晋升后的命题上,不在原命题上。
+    expect(repo.getRebuttals(db, promoted!.new_id)).toEqual([out[0]!.id]);
+    expect(repo.getRebuttals(db, target)).toEqual([]);
+  });
+
+  test("自动晋升出来的命题:空理由 + unestablished + by=system,完全合法", () => {
+    const target = create("target");
+    const out = svc.createPropositions(db, root, [
+      { content: "attack", attacks: { node: target, slot: "warrant" } },
+    ]);
+    const newId = out[0]!.promoted!.new_id;
+
+    const row = repo.getProposition(db, newId)!;
+    expect(row.warrant_text).toBeNull();
+    expect(row.qualifier).toBe("unestablished");
+
+    const ev = svc.getHistory(db, { id: newId }).events.find((e) => e.op === "promote")!;
+    expect(ev.by).toBe("system");
+  });
+
+  test("attacks.slot=warrant 且理由已晋升:直接攻击那条命题,不再晋升一次", () => {
+    const target = create("target");
+    const first = svc.createPropositions(db, root, [
+      { content: "attack one", attacks: { node: target, slot: "warrant" } },
+    ]);
+    const warrantNode = first[0]!.promoted!.new_id;
+
+    const second = svc.createPropositions(db, root, [
+      { content: "attack two", attacks: { node: target, slot: "warrant" } },
+    ]);
+    expect(second[0]!.promoted).toBeUndefined();
+    expect(repo.getRebuttals(db, warrantNode)).toEqual(
+      [first[0]!.id, second[0]!.id].sort((a, b) => a - b)
+    );
+  });
+
+  test("攻击一个空理由槽:拒绝,因为指名的对象不存在(V2 那一类)", () => {
+    const target = svc.createPropositions(db, root, [{ content: "no warrant" }])[0]!.id;
     expect(() =>
-      service.createStatement(db, { content: "x", source: "invalid" as any, verification: "verified" })
-    ).toThrow(ValidationError);
-  });
-
-  test("source='hypothesis' 被 validSources 运行时检查拒绝（TS 已阻止构造该字面量，故用 as any 类型转义）", () => {
-    expect(() =>
-      service.createStatement(db, { content: "x", source: "hypothesis" as any, verification: "pending" })
-    ).toThrow(ValidationError);
-  });
-
-  test("Mode A: 无效 verification", () => {
-    expect(() =>
-      service.createStatement(db, { content: "x", source: "observed", verification: "invalid" as any })
-    ).toThrow(ValidationError);
-  });
-
-  test("默认 attachments 为空数组", () => {
-    const ground = service.createStatement(db, {
-      content: "x",
-      source: "observed",
-      verification: "pending",
-    });
-    expect(ground.attachments).toEqual([]);
-  });
-
-  test("rebuttal_for 一步创建并挂载", () => {
-    const claim = makeClaim(db);
-    const stmt = service.createStatement(db, {
-      content: "反驳内容",
-      source: "observed",
-      verification: "pending",
-      rebuttal_for: { target_id: claim.id, target_type: "claim" },
-    });
-    const rt = (db as any).prepare("SELECT * FROM rebuttal_targets WHERE statement_id = ?").get(stmt.id) as { target_id: number; target_type: string } | null;
-    expect(rt).toBeTruthy();
-    expect(rt!.target_id).toBe(claim.id);
-  });
-});
-
-// =============================================================================
-// createWarrant
-// =============================================================================
-
-describe("createWarrant", () => {
-  test("happy path", () => {
-    const claim = makeClaim(db);
-    const ground = makeGround(db);
-    const warrant = service.createWarrant(db, {
-      content: "推理规则",
-      claimId: claim.id,
-      groundIds: [ground.id],
-    });
-    expect(warrant.type).toBe("warrant");
-    expect(warrant.claimId).toBe(claim.id);
-    expect(warrant.groundIds).toEqual([ground.id]);
-  });
-
-  test("groundIds 为空时创建成功（grounds 可为空）", () => {
-    const claim = makeClaim(db);
-    const warrant = service.createWarrant(db, { content: "规则", claimId: claim.id });
-    expect(warrant.type).toBe("warrant");
-    expect(warrant.groundIds).toEqual([]);
-  });
-
-  test("claimId 引用不存在的节点", () => {
-    expect(() =>
-      service.createWarrant(db, { content: "规则", claimId: 999 })
-    ).toThrow(NotFoundError);
-  });
-
-  test("claimId 引用非 Claim 节点", () => {
-    const ground = makeGround(db);
-    expect(() =>
-      service.createWarrant(db, { content: "规则", claimId: ground.id })
-    ).toThrow(TypeMismatchError);
-  });
-
-  test("groundIds 包含不存在的 ID", () => {
-    const claim = makeClaim(db);
-    expect(() =>
-      service.createWarrant(db, { content: "规则", claimId: claim.id, groundIds: [999] })
-    ).toThrow(NotFoundError);
-  });
-
-  test("groundIds 包含非 Ground/Claim 节点（Warrant）抛出 TypeMismatchError", () => {
-    const claim = makeClaim(db);
-    const ground = makeGround(db);
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    expect(() =>
-      service.createWarrant(db, { content: "规则", claimId: claim.id, groundIds: [warrant.id] })
-    ).toThrow(TypeMismatchError);
-  });
-
-  test("空 content 抛出错误", () => {
-    const claim = makeClaim(db);
-    expect(() =>
-      service.createWarrant(db, { content: "", claimId: claim.id })
+      svc.createPropositions(db, root, [
+        { content: "attack", attacks: { node: target, slot: "warrant" } },
+      ])
     ).toThrow(ValidationError);
   });
 });
 
 // =============================================================================
-// updateNode
+// update_proposition
 // =============================================================================
 
-describe("updateNode", () => {
-  test("更新 Claim content", () => {
-    const claim = makeClaim(db, "原始内容");
-    const { node } = service.updateNode(db, claim.id, { content: "更新内容" });
-    expect((node as any).content).toBe("更新内容");
+describe("update_proposition", () => {
+  test("改 content,事件载荷是字段级 diff", () => {
+    const id = create("before");
+    svc.updateProposition(db, root, { id, content: "after" });
+    const ev = svc.getHistory(db, { id }).events.find((e) => e.op === "update")!;
+    expect((ev.payload as any).content).toEqual({ old: "before", new: "after" });
   });
 
-  test("更新 Claim status", () => {
-    const claim = makeCompiledClaim(db);
-    // 构建 Warrant + verified Ground 以满足 A1
-    const g = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
-    makeWarrant(db, claim.id, [g.id]);
-    const { node } = service.updateNode(db, claim.id, { status: "supported" });
-    expect((node as any).status).toBe("supported");
+  test("证据与反驳一律 add/remove", () => {
+    const a = create("a");
+    const b = create("b");
+    const id = create("holder");
+    svc.updateProposition(db, root, { id, evidence: { add_nodes: [a, b] } });
+    expect(repo.getEvidenceNodes(db, id)).toEqual([a, b].sort((x, y) => x - y));
+
+    svc.updateProposition(db, root, { id, evidence: { remove_nodes: [a] } });
+    expect(repo.getEvidenceNodes(db, id)).toEqual([b]);
   });
 
-  test("更新 Ground attachments", () => {
-    const ground = makeGround(db);
-    const { node } = service.updateNode(db, ground.id, { attachments: ["/new.csv"] });
-    expect((node as any).attachments).toEqual(["/new.csv"]);
+  test("成员 diff 事后比,记的是实际变成了什么", () => {
+    const a = create("a");
+    const id = create("holder");
+    svc.updateProposition(db, root, { id, evidence: { add_nodes: [a] } });
+    const ev = svc.getHistory(db, { id }).events.find((e) => e.op === "update")!;
+    expect((ev.payload as any)["evidence.nodes"]).toEqual({ old: [], new: [a] });
   });
 
-  test("更新 Warrant ground_ids with add", () => {
-    const claim = makeClaim(db);
-    const g1 = makeGround(db, { content: "G1" });
-    const g2 = makeGround(db, { content: "G2" });
-    const warrant = makeWarrant(db, claim.id, [g1.id]);
-
-    const { node } = service.updateNode(db, warrant.id, { ground_ids: { add: [g2.id] } });
-    expect((node as any).groundIds).toContain(g1.id);
-    expect((node as any).groundIds).toContain(g2.id);
+  test("重复 add 同一个成员不产生第二条 update 事件(什么都没变)", () => {
+    const a = create("a");
+    const id = create("holder");
+    svc.updateProposition(db, root, { id, evidence: { add_nodes: [a] } });
+    svc.updateProposition(db, root, { id, evidence: { add_nodes: [a] } });
+    expect(ops(id).filter((o) => o === "update")).toHaveLength(1);
   });
 
-  test("更新 Warrant ground_ids with remove", () => {
-    const claim = makeClaim(db);
-    const g1 = makeGround(db, { content: "G1" });
-    const g2 = makeGround(db, { content: "G2" });
-    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
+  test("理由已晋升时拒绝改 warrant,并指出该改哪条命题", () => {
+    const target = create("target");
+    const out = svc.createPropositions(db, root, [
+      { content: "attack", attacks: { node: target, slot: "warrant" } },
+    ]);
+    const newId = out[0]!.promoted!.new_id;
 
-    const { node } = service.updateNode(db, warrant.id, { ground_ids: { remove: [g1.id] } });
-    expect((node as any).groundIds).toEqual([g2.id]);
+    expect(() => svc.updateProposition(db, root, { id: target, warrant: "new text" })).toThrow(
+      new RegExp(String(newId))
+    );
   });
 
-  test("更新 Ground source", () => {
-    const ground = makeGround(db, { source: "literature" });
-    const { node } = service.updateNode(db, ground.id, { source: "observed" });
-    expect((node as any).source).toBe("observed");
+  test("不接受 qualifier:改内容与重新判定在事件流里长得不一样", () => {
+    const id = create();
+    // 类型层面已经没有这个字段;这里断言的是它确实没被偷偷读进去。
+    svc.updateProposition(db, root, { id, content: "changed", ...({ qualifier: "certainly" } as any) });
+    expect(repo.getProposition(db, id)!.qualifier).toBe("unestablished");
+    expect(repo.getBaselineHead(db, id)).toBeNull();
   });
 
-  test("更新 Ground verification", () => {
-    const ground = makeGround(db, { verification: "pending" });
-    const { node } = service.updateNode(db, ground.id, { verification: "verified", attachments: ["/data.csv"] });
-    expect((node as any).verification).toBe("verified");
+  test("改动已定案的命题却没留 note:温和提示,不拦截", () => {
+    const id = create();
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly" }]);
+    const res = svc.updateProposition(db, root, { id, content: "reworded" });
+    expect(res.notices?.join(" ")).toContain("note");
   });
 
-  test("verified Ground 内容变更 → 自动退回 pending", () => {
-    const ground = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
-    const { node, warnings } = service.updateNode(db, ground.id, { content: "updated content" });
-    expect((node as any).verification).toBe("pending");
-    expect(warnings.some(w => w.includes("reverted to pending"))).toBe(true);
+  test("留了 note 就不提示", () => {
+    const id = create();
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly" }]);
+    const res = svc.updateProposition(db, root, { id, content: "reworded", note: "new data" });
+    expect(res.notices).toBeUndefined();
   });
 
-  test("verified Ground 同时改 content 和清空 attachments → 附件被丢的警告不能被 verification 回退警告盖过", () => {
-    const ground = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
-    const { node, warnings } = service.updateNode(db, ground.id, { content: "updated content", attachments: [] });
-    expect((node as any).attachments).toEqual([]);
-    expect(warnings.some(w => w.includes("dropped") && w.includes("/data.csv"))).toBe(true);
-  });
-
-  test("更新不存在节点抛出 NotFoundError", () => {
-    expect(() => service.updateNode(db, 999, { content: "x" })).toThrow(NotFoundError);
-  });
-
-  test("给 Claim 设置 attachments 抛出 ValidationError", () => {
-    const claim = makeClaim(db);
-    expect(() =>
-      service.updateNode(db, claim.id, { attachments: ["/file"] })
-    ).toThrow(ValidationError);
-  });
-
-  test("给 Ground 设置 status 抛出 ValidationError", () => {
-    const ground = makeGround(db);
-    expect(() =>
-      service.updateNode(db, ground.id, { status: "supported" })
-    ).toThrow(ValidationError);
-  });
-
-  test("无效 status 抛出 ValidationError", () => {
-    const claim = makeClaim(db);
-    expect(() =>
-      service.updateNode(db, claim.id, { status: "invalid" as any })
-    ).toThrow(ValidationError);
-  });
-
-  test("source='hypothesis' 被 validSources 运行时检查拒绝（TS 已阻止构造该字面量，故用 as any 类型转义）", () => {
-    const ground = makeGround(db, { source: "observed", verification: "pending" });
-    expect(() =>
-      service.updateNode(db, ground.id, { source: "hypothesis" as any })
-    ).toThrow(ValidationError);
-  });
-
-  test("add 不存在的 ground_id 抛出 NotFoundError", () => {
-    const claim = makeClaim(db);
-    const warrant = makeWarrant(db, claim.id);
-    expect(() =>
-      service.updateNode(db, warrant.id, { ground_ids: { add: [999] } })
-    ).toThrow(NotFoundError);
-  });
-
-  test("add claim 类型节点作为 ground 成功", () => {
-    const claim = makeClaim(db);
-    const claim2 = makeClaim(db, "C2");
-    const ground = makeGround(db);
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    expect(() =>
-      service.updateNode(db, warrant.id, { ground_ids: { add: [claim2.id] } })
-    ).not.toThrow();
-  });
-
-  test("add warrant 类型节点抛出 TypeMismatchError", () => {
-    const claim = makeClaim(db);
-    const ground = makeGround(db);
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    const warrant2 = makeWarrant(db, claim.id, [ground.id]);
-    expect(() =>
-      service.updateNode(db, warrant.id, { ground_ids: { add: [warrant2.id] } })
-    ).toThrow(TypeMismatchError);
+  test("不存在的命题抛 NotFoundError", () => {
+    expect(() => svc.updateProposition(db, root, { id: 999, content: "x" })).toThrow(NotFoundError);
   });
 });
 
 // =============================================================================
-// updateNode 的 ground_ids 增量操作
-//
-// 这批测试原本叫 "dual-storage"：ground 集合曾经同时存在节点 blob 和 warrant_grounds
-// 表两份，每个测试都要断言两边相等。现在只有关系表一份，"两边不一致"这件事不存在了，
-// 所以只剩一个读法。原 T9/T10 是"人为把 blob 改歪，再验证下一次写入会自愈"，
-// 一份存储之后无法构造那个初始状态，已随存储一起删除。
+// set_qualifier
 // =============================================================================
 
-describe("updateNode ground_ids 增量操作", () => {
-  const groundIdsOf = (wid: number): number[] =>
-    repo.findGroundIdsByWarrant(db, wid);
+describe("set_qualifier", () => {
+  test("落基线:引用的 (content hash, qualifier) 被快照下来", () => {
+    const ev = create("evidence");
+    svc.setQualifier(db, root, [{ id: ev, qualifier: "certainly" }]);
+    const id = create("conclusion", { evidence: { nodes: [ev] } });
+    svc.setQualifier(db, root, [{ id, qualifier: "probably" }]);
 
-  test("T1 mixed add+remove: [G9] + {add:[G27],remove:[G9]} → [G27]", () => {
-    const claim = makeClaim(db);
-    const g9 = makeGround(db, { content: "G9" });
-    const g27 = makeGround(db, { content: "G27" });
-    const warrant = makeWarrant(db, claim.id, [g9.id]);
+    const refs = repo.getBaselineRefs(db, id);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]!.refId).toBe(ev);
+    expect(refs[0]!.refRole).toBe("evidence");
+    expect(refs[0]!.qualifier).toBe("certainly");
+  });
 
-    const { node } = service.updateNode(db, warrant.id, {
-      ground_ids: { add: [g27.id], remove: [g9.id] },
+  test("它是基线唯一的写入者:create / update 都不写", () => {
+    const id = create();
+    expect(repo.getBaselineHead(db, id)).toBeNull();
+    svc.updateProposition(db, root, { id, content: "still nothing" });
+    expect(repo.getBaselineHead(db, id)).toBeNull();
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly" }]);
+    expect(repo.getBaselineHead(db, id)).not.toBeNull();
+  });
+
+  test("结构检查违反不拦截,只返回警告", () => {
+    const id = svc.createPropositions(db, root, [{ content: "bare" }])[0]!.id;
+    const res = svc.setQualifier(db, root, [{ id, qualifier: "certainly" }]);
+    expect(repo.getProposition(db, id)!.qualifier).toBe("certainly");
+    expect(res[0]!.warnings.map((w) => w.code)).toEqual(
+      expect.arrayContaining([CheckCode.EvidenceEmpty, CheckCode.WarrantEmpty])
+    );
+  });
+
+  test("返回上一档与新档位", () => {
+    const id = create();
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly" }]);
+    const res = svc.setQualifier(db, root, [{ id, qualifier: "probably" }]);
+    expect(res[0]!.previous).toBe("possibly");
+    expect(res[0]!.qualifier).toBe("probably");
+  });
+
+  test("非法档位拒绝", () => {
+    const id = create();
+    expect(() => svc.setQualifier(db, root, [{ id, qualifier: "verified" as any }])).toThrow(
+      ValidationError
+    );
+  });
+
+  test("留痕:qualifier 事件记 old → new", () => {
+    const id = create();
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly", note: "two independent runs" }]);
+    const ev = svc.getHistory(db, { id }).events.find((e) => e.op === "qualifier")!;
+    expect(ev.payload).toEqual({ old: "unestablished", new: "possibly" });
+    expect(ev.note).toBe("two independent runs");
+  });
+
+  test("重设 qualifier 会覆盖基线,而不是叠加", () => {
+    const ev1 = create("e1");
+    const ev2 = create("e2");
+    const id = create("c", { evidence: { nodes: [ev1] } });
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly" }]);
+
+    svc.updateProposition(db, root, {
+      id,
+      evidence: { remove_nodes: [ev1], add_nodes: [ev2] },
+    });
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly" }]);
+
+    const refs = repo.getBaselineRefs(db, id);
+    expect(refs.map((r) => r.refId)).toEqual([ev2]);
+  });
+});
+
+// =============================================================================
+// promote_warrant
+// =============================================================================
+
+describe("promote_warrant", () => {
+  test("内联文本原样成为新命题的 content,原槽位改为指向它", () => {
+    const id = create("conclusion", { warrant: "The principle" });
+    const res = svc.promoteWarrant(db, root, { id });
+    expect(repo.getProposition(db, res.newId)!.content).toBe("The principle");
+    expect(repo.getProposition(db, id)!.warrant_node_id).toBe(res.newId);
+  });
+
+  test("可以给晋升出来的命题带上自己的理由与依据(backing)", () => {
+    const path = root.file("backing.md");
+    const id = create("conclusion", { warrant: "The principle" });
+    const res = svc.promoteWarrant(db, root, {
+      id,
+      warrant: "Why this principle holds",
+      evidence: { attachments: [path] },
+    });
+    expect(repo.getProposition(db, res.newId)!.warrant_text).toBe("Why this principle holds");
+    expect(repo.getAttachments(db, res.newId)).toEqual([path]);
+  });
+
+  test("空理由槽拒绝晋升;已晋升的再晋升也拒绝", () => {
+    const bare = svc.createPropositions(db, root, [{ content: "bare" }])[0]!.id;
+    expect(() => svc.promoteWarrant(db, root, { id: bare })).toThrow(ValidationError);
+
+    const id = create("c", { warrant: "P" });
+    svc.promoteWarrant(db, root, { id });
+    expect(() => svc.promoteWarrant(db, root, { id })).toThrow(ValidationError);
+  });
+
+  test("晋升出的命题落 unestablished,由 set_qualifier 判定", () => {
+    const id = create("c", { warrant: "P" });
+    const res = svc.promoteWarrant(db, root, { id });
+    expect(repo.getProposition(db, res.newId)!.qualifier).toBe("unestablished");
+  });
+});
+
+// =============================================================================
+// delete_proposition
+// =============================================================================
+
+describe("delete_proposition", () => {
+  test("墓碑:整节点 before 快照进事件流,并活过节点本身", () => {
+    const id = create("doomed");
+    svc.deleteProposition(db, root, { id, note: "superseded" });
+
+    expect(repo.getProposition(db, id)).toBeNull();
+    const ev = svc.getHistory(db, { id }).events.find((e) => e.op === "delete")!;
+    expect((ev.payload as any).before.content).toBe("doomed");
+    expect(ev.note).toBe("superseded");
+  });
+
+  test("被引用时列出受影响的命题,并把引用从它们的槽里摘掉", () => {
+    const ev = create("evidence");
+    const user = create("uses it", { evidence: { nodes: [ev] } });
+
+    const res = svc.deleteProposition(db, root, { id: ev });
+    expect(res.affected).toEqual([user]);
+    expect(repo.getEvidenceNodes(db, user)).toEqual([]);
+    expect(res.notices?.join(" ")).toContain(`#${user}`);
+  });
+
+  test("受影响的命题被标为该重查:已阅警告全部复燃", () => {
+    const evPath = root.file("e.md");
+    const ev = create("evidence", { evidence: { attachments: [evPath] } });
+    svc.setQualifier(db, root, [{ id: ev, qualifier: "certainly" }]);
+
+    const user = create("uses it", { evidence: { nodes: [ev] } });
+    svc.setQualifier(db, root, [{ id: user, qualifier: "probably" }]);
+    expect(svc.propositionView(db, root, user).warnings).toEqual([]);
+
+    svc.deleteProposition(db, root, { id: ev });
+    const after = svc.propositionView(db, root, user).warnings;
+    expect(after.map((w) => w.code)).toEqual(
+      expect.arrayContaining([CheckCode.SelfChanged, CheckCode.RefGone])
+    );
+    expect(after.every((w) => w.state === "pending")).toBe(true);
+  });
+
+  test("没有 cascade:被删命题引用的东西一个都不动", () => {
+    const inner = create("inner");
+    const outer = create("outer", { evidence: { nodes: [inner] } });
+    svc.deleteProposition(db, root, { id: outer });
+    expect(repo.getProposition(db, inner)).not.toBeNull();
+  });
+
+  test("删掉一条被当作理由的命题:引用方的理由槽变空", () => {
+    const id = create("c", { warrant: "P" });
+    const res = svc.promoteWarrant(db, root, { id });
+    const del = svc.deleteProposition(db, root, { id: res.newId });
+
+    expect(del.affected).toEqual([id]);
+    expect(svc.propositionView(db, root, id).warrant).toEqual({ kind: "empty" });
+  });
+});
+
+// =============================================================================
+// get_argument / find_propositions / get_stats
+// =============================================================================
+
+describe("读取", () => {
+  test("depth=0 只读这一条", () => {
+    const ev = create("evidence");
+    const id = create("conclusion", { evidence: { nodes: [ev] } });
+    const res = svc.getArgument(db, root, { id, depth: 0 });
+    expect(res.neighbors).toEqual([]);
+  });
+
+  test("depth=1 拿到直接证据、反驳与晋升后的理由", () => {
+    const ev = create("evidence");
+    const id = create("conclusion", { evidence: { nodes: [ev] }, warrant: "P" });
+    const w = svc.promoteWarrant(db, root, { id }).newId;
+    const reb = svc.createPropositions(db, root, [
+      { content: "counter", attacks: { node: id, slot: "content" } },
+    ])[0]!.id;
+
+    const res = svc.getArgument(db, root, { id, depth: 1 });
+    expect(res.neighbors.map((n) => n.id).sort((a, b) => a - b)).toEqual(
+      [ev, w, reb].sort((a, b) => a - b)
+    );
+  });
+
+  test("邻域不重复:环状引用不会把同一条命题拉两遍", () => {
+    const a = create("a");
+    const b = create("b", { evidence: { nodes: [a] } });
+    svc.updateProposition(db, root, { id: a, evidence: { add_nodes: [b] } });
+    const res = svc.getArgument(db, root, { id: a, depth: 5 });
+    expect(res.neighbors.map((n) => n.id)).toEqual([b]);
+  });
+
+  test("每条命题都带 warnings 与 findings,不需要开关", () => {
+    const id = create();
+    const view = svc.propositionView(db, root, id);
+    expect(Array.isArray(view.warnings)).toBe(true);
+    expect(Array.isArray(view.findings)).toBe(true);
+  });
+
+  test("find_propositions 按档位筛", () => {
+    const a = create("alpha");
+    create("beta");
+    svc.setQualifier(db, root, [{ id: a, qualifier: "certainly" }]);
+    const res = svc.findPropositions(db, root, { qualifier: ["certainly"] });
+    expect(res.items.map((i) => i.id)).toEqual([a]);
+    expect(res.total).toBe(1);
+  });
+
+  test("find_propositions 按关键词筛(trigram 要求 ≥3 字符)", () => {
+    const a = create("photosynthesis rate increases");
+    create("unrelated");
+    const res = svc.findPropositions(db, root, { query: "photosynthesis" });
+    expect(res.items.map((i) => i.id)).toEqual([a]);
+  });
+
+  test("has_unresolved 只留有待处理警告或意见的,total 跟着过滤后的数量走", () => {
+    const clean = create("clean one");
+    const dirty = svc.createPropositions(db, root, [{ content: "bare" }])[0]!.id;
+    svc.setQualifier(db, root, [{ id: dirty, qualifier: "possibly" }]);
+
+    const res = svc.findPropositions(db, root, { has_unresolved: true });
+    expect(res.items.map((i) => i.id)).toEqual([dirty]);
+    expect(res.total).toBe(1);
+    expect(res.items.map((i) => i.id)).not.toContain(clean);
+  });
+
+  test("get_stats:红点清单 + 各档计数 + 失踪附件", () => {
+    const path = root.file("evidence.md");
+    const id = create("with evidence", { evidence: { attachments: [path] } });
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly" }]);
+    root.unlink(path);
+
+    const stats = svc.getStats(db, root);
+    expect(stats.total).toBe(1);
+    expect(stats.byQualifier.possibly).toBe(1);
+    expect(stats.attachments).toEqual({ total: 1, missing: [path] });
+    expect(stats.unresolvedWarnings[0]!.codes).toContain(CheckCode.AttachmentMissing);
+  });
+
+  test("get_history 不带 id 时给全图最近事件", () => {
+    create("one");
+    create("two");
+    expect(svc.getHistory(db, {}).total).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// =============================================================================
+// dismiss
+// =============================================================================
+
+describe("dismiss", () => {
+  test("驳回一条警告,必写理由", () => {
+    const id = svc.createPropositions(db, root, [{ content: "bare" }])[0]!.id;
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly" }]);
+    const w = svc.propositionView(db, root, id).warnings[0]!;
+
+    const res = svc.dismiss(db, root, [{ id: w.id, reason: "evidence is in the ticket system" }]);
+    expect(res[0]).toMatchObject({ target: "warning", ok: true });
+    expect(svc.propositionView(db, root, id).warnings.find((x) => x.id === w.id)!.state).toBe(
+      "acknowledged"
+    );
+  });
+
+  test("空理由拒绝——理由是这个动作全部的审计价值", () => {
+    const id = svc.createPropositions(db, root, [{ content: "bare" }])[0]!.id;
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly" }]);
+    const w = svc.propositionView(db, root, id).warnings[0]!;
+    expect(() => svc.dismiss(db, root, [{ id: w.id, reason: "  " }])).toThrow(ValidationError);
+  });
+
+  test("驳回是降级不是删除:警告还在,只是不再 pending", () => {
+    const id = svc.createPropositions(db, root, [{ content: "bare" }])[0]!.id;
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly" }]);
+    const before = svc.propositionView(db, root, id).warnings;
+    svc.dismiss(db, root, [{ id: before[0]!.id, reason: "fine" }]);
+    expect(svc.propositionView(db, root, id).warnings).toHaveLength(before.length);
+  });
+
+  test("过期的 id 不抛异常,据实说明它为什么对不上", () => {
+    const res = svc.dismiss(db, root, [{ id: "w_deadbeefdeadbeef", reason: "stale" }]);
+    expect(res[0]!.ok).toBe(false);
+    expect(res[0]!.target).toBe("unknown");
+    expect(res[0]!.message).toContain("re-arm");
+  });
+
+  test("dismiss 只 append 一条事件,不改原对象", () => {
+    const id = svc.createPropositions(db, root, [{ content: "bare" }])[0]!.id;
+    svc.setQualifier(db, root, [{ id, qualifier: "possibly" }]);
+    const w = svc.propositionView(db, root, id).warnings[0]!;
+    svc.dismiss(db, root, [{ id: w.id, reason: "fine" }]);
+
+    const ev = svc.getHistory(db, {}).events.find((e) => e.op === "dismiss")!;
+    expect(ev.targetKey).toBe(w.id);
+    expect((ev.payload as any).reason).toBe("fine");
+  });
+});
+
+// =============================================================================
+// review 落库
+// =============================================================================
+
+describe("recordReview", () => {
+  test("答'是'也留痕:findings 为空照样写事件", () => {
+    const id = create();
+    const res = svc.recordReview(db, {
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "pass",
+      findings: [],
+      model: "test-model",
+      protocolHash: "abc123",
+    });
+    expect(res.findings).toEqual([]);
+    const ev = svc.getHistory(db, { id }).events.find((e) => e.op === "review")!;
+    expect((ev.payload as any).Q1).toBe("n/a");
+  });
+
+  test("finding id 在落库那一刻生成,含 review 事件 id", () => {
+    const id = create();
+    const res = svc.recordReview(db, {
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "fail",
+      findings: [
+        {
+          nodeId: id,
+          question: "Q2",
+          confidence: "high",
+          content: "The warrant does not reach the content.",
+          citation: { nodeId: id, slot: "content", quote: "A proposition" },
+        },
+      ],
+      model: "test-model",
+      protocolHash: "abc123",
+    });
+    expect(res.findings[0]!.id).toBe(`f_${res.eventId}_1`);
+    expect(svc.propositionView(db, root, id).findings[0]!.state).toBe("pending");
+  });
+
+  test("新一次 review 取代上一批 findings", () => {
+    const id = create();
+    const draft = (content: string) => ({
+      nodeId: id,
+      question: "Q2" as const,
+      confidence: "low" as const,
+      content,
+      citation: { nodeId: id, slot: "content" as const, quote: "A proposition" },
     });
 
-    expect((node as any).groundIds).toEqual([g27.id]);
-    expect(groundIdsOf(warrant.id)).toEqual([g27.id]);
-  });
-
-  test("T2 add+remove same id resolves to defined net-effect state", () => {
-    const claim = makeClaim(db);
-    const g9 = makeGround(db, { content: "G9" });
-    const g27 = makeGround(db, { content: "G27" });
-    const warrant = makeWarrant(db, claim.id, [g9.id]);
-
-    // add G27 then remove G27 in the same call → net effect leaves [G9]
-    service.updateNode(db, warrant.id, {
-      ground_ids: { add: [g27.id], remove: [g27.id] },
+    svc.recordReview(db, {
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "fail",
+      findings: [draft("first round")],
+      model: "m",
+      protocolHash: "h",
+    });
+    svc.recordReview(db, {
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "fail",
+      findings: [draft("second round")],
+      model: "m",
+      protocolHash: "h",
     });
 
-    expect(groundIdsOf(warrant.id)).toEqual([g9.id]);
+    const current = svc.propositionView(db, root, id).findings;
+    expect(current).toHaveLength(1);
+    expect(current[0]!.content).toBe("second round");
+    // 被取代的那批不消失,事件流里读得到。
+    expect(ops(id).filter((o) => o === "review")).toHaveLength(2);
   });
 
-  test("T3 所有读法一致: 返回值 / get_argument / 关系表", () => {
-    const claim = makeClaim(db);
-    const g7 = makeGround(db, { content: "G7" });
-    const g9 = makeGround(db, { content: "G9" });
-    const g27 = makeGround(db, { content: "G27" });
-    const warrant = makeWarrant(db, claim.id, [g7.id, g9.id]);
-
-    const { node } = service.updateNode(db, warrant.id, {
-      ground_ids: { add: [g27.id], remove: [g7.id] },
+  test("finding 不随图变化过期:改 content 之后仍然待处理", () => {
+    const id = create();
+    svc.recordReview(db, {
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "fail",
+      findings: [
+        {
+          nodeId: id,
+          question: "Q2",
+          confidence: "high",
+          content: "does not follow",
+          citation: { nodeId: id, slot: "content", quote: "A proposition" },
+        },
+      ],
+      model: "m",
+      protocolHash: "h",
     });
 
-    const returnIds = [...(node as any).groundIds].sort((a, b) => a - b);
-    const argIds = (service.getArgument(db, warrant.id) as any).grounds
-      .map((g: any) => g.id)
-      .sort((a: number, b: number) => a - b);
-    const repoIds = groundIdsOf(warrant.id).sort((a, b) => a - b);
-
-    expect(returnIds).toEqual(argIds);
-    expect(argIds).toEqual(repoIds);
-    expect(returnIds).toEqual([g9.id, g27.id].sort((a, b) => a - b));
+    svc.updateProposition(db, root, { id, content: "reworded to dodge the objection" });
+    const findings = svc.propositionView(db, root, id).findings;
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.state).toBe("pending");
   });
 
-  test("T4 add+remove 同批操作使用最终集合（不对中间状态校验）", () => {
-    const claim = makeClaim(db);
-    const g9 = makeGround(db, { content: "G9" });
-    const g27 = makeGround(db, { content: "G27" });
-    const warrant = makeWarrant(db, claim.id, [g9.id]);
-
-    // Bug 3: remove-before-add ordering must NOT trip any guard on intermediate empty set
-    expect(() =>
-      service.updateNode(db, warrant.id, {
-        ground_ids: { add: [g27.id], remove: [g9.id] },
-      })
-    ).not.toThrow();
-    expect(groundIdsOf(warrant.id)).toEqual([g27.id]);
-
-    // removing the last remaining ground is now allowed
-    expect(() =>
-      service.updateNode(db, warrant.id, { ground_ids: { remove: [g27.id] } })
-    ).not.toThrow();
-    expect(groundIdsOf(warrant.id)).toEqual([]);
-  });
-
-  test("T5 atomicity: failed backing add rolls back ground writes", () => {
-    const claim = makeClaim(db);
-    const g9 = makeGround(db, { content: "G9" });
-    const g27 = makeGround(db, { content: "G27" });
-    const warrant = makeWarrant(db, claim.id, [g9.id]);
-
-    expect(() =>
-      service.updateNode(db, warrant.id, {
-        ground_ids: { add: [g27.id] },
-        backing_ids: { add: [99999] },
-      })
-    ).toThrow(NotFoundError);
-
-    // transaction rollback → unchanged at [G9]
-    expect(groundIdsOf(warrant.id)).toEqual([g9.id]);
-  });
-
-  test("T6 idempotence: add [G27] then remove [G27] returns to [G9]", () => {
-    const claim = makeClaim(db);
-    const g9 = makeGround(db, { content: "G9" });
-    const g27 = makeGround(db, { content: "G27" });
-    const warrant = makeWarrant(db, claim.id, [g9.id]);
-
-    service.updateNode(db, warrant.id, { ground_ids: { add: [g27.id] } });
-    service.updateNode(db, warrant.id, { ground_ids: { remove: [g27.id] } });
-
-    expect(groundIdsOf(warrant.id)).toEqual([g9.id]);
-  });
-
-  test("T7 add-only: {add:[G27]} on [G9] → [G9,G27]", () => {
-    const claim = makeClaim(db);
-    const g9 = makeGround(db, { content: "G9" });
-    const g27 = makeGround(db, { content: "G27" });
-    const warrant = makeWarrant(db, claim.id, [g9.id]);
-
-    service.updateNode(db, warrant.id, { ground_ids: { add: [g27.id] } });
-
-    expect([...groundIdsOf(warrant.id)].sort((a, b) => a - b)).toEqual([g9.id, g27.id]);
-  });
-
-  test("T8 remove-only: {remove:[G27]} on [G9,G27] → [G9]", () => {
-    const claim = makeClaim(db);
-    const g9 = makeGround(db, { content: "G9" });
-    const g27 = makeGround(db, { content: "G27" });
-    const warrant = makeWarrant(db, claim.id, [g9.id, g27.id]);
-
-    service.updateNode(db, warrant.id, { ground_ids: { remove: [g27.id] } });
-
-    expect(groundIdsOf(warrant.id)).toEqual([g9.id]);
-  });
-});
-
-// =============================================================================
-// ground 集合只有一份记录
-//
-// 这两条钉住的是当年两份存储各自漏出来的症状：
-// 1. create_warrant 传重复 id，blob 里留 3 个元素，关系表只有 2 行；
-// 2. update_node(ground_ids: {}) 什么也没改，却因为重写 blob 让论证哈希翻了个身
-//    （ea12fc1e81bd → 8fa20f54bb8d），下游据此判定论证已过期。
-// =============================================================================
-
-describe("ground 集合的唯一记录", () => {
-  test("create_warrant 传重复 id，每条读法都只看到一条", () => {
-    const claim = makeClaim(db);
-    const g1 = makeGround(db, { content: "G1" });
-    const g2 = makeGround(db, { content: "G2" });
-
-    const warrant = service.createWarrant(db, {
-      content: "W",
-      claimId: claim.id,
-      groundIds: [g1.id, g1.id, g2.id],
+  test("finding 可以被驳回,理由与时间留痕", () => {
+    const id = create();
+    const res = svc.recordReview(db, {
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "fail",
+      findings: [
+        {
+          nodeId: id,
+          question: "Q2",
+          confidence: "low",
+          content: "does not follow",
+          citation: { nodeId: id, slot: "content", quote: "A proposition" },
+        },
+      ],
+      model: "m",
+      protocolHash: "h",
     });
 
-    expect(warrant.groundIds).toEqual([g1.id, g2.id]);
-    expect(repo.findGroundIdsByWarrant(db, warrant.id)).toEqual([g1.id, g2.id]);
-    expect((service.getArgument(db, warrant.id) as any).grounds.map((g: any) => g.id))
-      .toEqual([g1.id, g2.id]);
-    expect(repo.findGroundsByWarrant(db, warrant.id).map(r => r.id)).toEqual([g1.id, g2.id]);
-  });
-
-  test("空的 ground_ids 更新不改动论证哈希", () => {
-    const claim = makeClaim(db);
-    const g9 = makeGround(db, { content: "G9" });
-    const warrant = makeWarrant(db, claim.id, [g9.id]);
-
-    const before = computeArgumentHash(db, claim.id);
-    service.updateNode(db, warrant.id, { ground_ids: {} });
-    expect(computeArgumentHash(db, claim.id)).toBe(before);
-  });
-});
-
-// =============================================================================
-// deleteNode
-// =============================================================================
-
-describe("deleteNode", () => {
-  test("删除 Backing", () => {
-    const claim = makeClaim(db);
-    const warrant = makeWarrant(db, claim.id);
-    const backing = makeBacking(db, warrant.id);
-
-    service.deleteNode(db, backing.id);
-    expect(() => service.getArgument(db, backing.id)).toThrow(NotFoundError);
-  });
-
-  test("删除 Rebuttal", () => {
-    const claim = makeClaim(db);
-    const rebuttal = makeRebuttal(db, claim.id);
-
-    service.deleteNode(db, rebuttal.id);
-    expect(() => service.getArgument(db, rebuttal.id)).toThrow(NotFoundError);
-  });
-
-  test("删除被 Warrant 引用的 Ground 返回警告 (D1)", () => {
-    const claim = makeClaim(db);
-    const g1 = makeGround(db, { content: "G1" });
-    const g2 = makeGround(db, { content: "G2" });
-    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
-
-    const warnings = service.deleteNode(db, g1.id);
-    expect(warnings.length).toBe(1);
-    expect(warnings[0]).toContain("Warrant");
-    // Ground 仍被从 Warrant 中移除
-    const updated = service.getArgument(db, warrant.id) as any;
-    expect(updated.grounds.length).toBe(1);
-    expect(updated.grounds[0].id).toBe(g2.id);
-  });
-
-  test("删除未被 Warrant 引用的 Ground 无警告", () => {
-    const g = makeGround(db, { content: "孤立证据" });
-    const warnings = service.deleteNode(db, g.id);
-    expect(warnings.length).toBe(0);
-  });
-
-  test("删除共享 Ground 从多个 Warrant 移除并返回警告", () => {
-    const c1 = makeClaim(db, "C1");
-    const c2 = makeClaim(db, "C2");
-    const sharedGround = makeGround(db, { content: "共享证据" });
-    const w1 = makeWarrant(db, c1.id, [sharedGround.id]);
-    const w2 = makeWarrant(db, c2.id, [sharedGround.id]);
-
-    const warnings = service.deleteNode(db, sharedGround.id);
-    expect(warnings.length).toBe(1);
-    expect(warnings[0]).toContain(`#${w1.id}`);
-    expect(warnings[0]).toContain(`#${w2.id}`);
-
-    const arg1 = service.getArgument(db, w1.id) as any;
-    const arg2 = service.getArgument(db, w2.id) as any;
-    expect(arg1.grounds.length).toBe(0);
-    expect(arg2.grounds.length).toBe(0);
-  });
-
-  test("删除 Warrant 级联删除 Backings", () => {
-    const claim = makeClaim(db);
-    const warrant = makeWarrant(db, claim.id);
-    const b1 = makeBacking(db, warrant.id, "B1");
-    const b2 = makeBacking(db, warrant.id, "B2");
-
-    service.deleteNode(db, warrant.id);
-
-    expect(() => service.getArgument(db, b1.id)).toThrow(NotFoundError);
-    expect(() => service.getArgument(db, b2.id)).toThrow(NotFoundError);
-  });
-
-  test("删除 Claim 无 cascade 抛出 CascadeRequiredError", () => {
-    const claim = makeClaim(db);
-    expect(() => service.deleteNode(db, claim.id)).toThrow(CascadeRequiredError);
-    expect(() => service.deleteNode(db, claim.id, false)).toThrow(CascadeRequiredError);
-  });
-
-  test("删除 Claim with cascade=true 删除 Warrants, Backings, Rebuttals", () => {
-    const claim = makeClaim(db);
-    const ground = makeGround(db);
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    const backing = makeBacking(db, warrant.id);
-    const rebuttal = makeRebuttal(db, claim.id);
-
-    service.deleteNode(db, claim.id, true);
-
-    expect(() => service.getArgument(db, claim.id)).toThrow(NotFoundError);
-    expect(() => service.getArgument(db, warrant.id)).toThrow(NotFoundError);
-    expect(() => service.getArgument(db, backing.id)).toThrow(NotFoundError);
-    expect(() => service.getArgument(db, rebuttal.id)).toThrow(NotFoundError);
-    // Ground 不删除
-    const g = service.getArgument(db, ground.id);
-    expect(g).toBeTruthy();
-  });
-
-  test("删除不存在节点抛出 NotFoundError", () => {
-    expect(() => service.deleteNode(db, 999)).toThrow(NotFoundError);
-  });
-});
-
-// =============================================================================
-// getArgument
-// =============================================================================
-
-describe("getArgument", () => {
-  test("Claim 返回完整子图", () => {
-    const claim = service.createClaim(db, "主张", "很可能");
-    const g1 = makeGround(db, { content: "G1" });
-    const g2 = makeGround(db, { content: "G2" });
-    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
-    const backing = makeBacking(db, warrant.id, "B1");
-
-    const result = service.getArgument(db, claim.id) as any;
-
-    expect(result.claim.id).toBe(claim.id);
-    expect(result.claim.content).toBe("主张");
-    expect(result.claim.status).toBe("proposed");
-    expect(result.claim.qualifier).toBe("很可能");
-    expect(result.warrants.length).toBe(1);
-    expect(result.warrants[0].grounds.length).toBe(2);
-    expect(result.warrants[0].backings.length).toBe(1);
-  });
-
-  test("Claim 无 Warrant 时返回空数组", () => {
-    const claim = makeClaim(db);
-    const result = service.getArgument(db, claim.id) as any;
-    expect(result.warrants.length).toBe(0);
-    expect(result.rebuttals.length).toBe(0);
-  });
-
-  test("Warrant 返回 warrant + grounds + backings", () => {
-    const claim = makeClaim(db);
-    const ground = makeGround(db);
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    const backing = makeBacking(db, warrant.id);
-
-    const result = service.getArgument(db, warrant.id) as any;
-    expect(result.warrant.id).toBe(warrant.id);
-    expect(result.grounds.length).toBe(1);
-    expect(result.backings.length).toBe(1);
-  });
-
-  test("Ground 返回节点信息 + used_in_warrants", () => {
-    const claim = makeClaim(db);
-    const ground = makeGround(db, { content: "证据" });
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-
-    const result = service.getArgument(db, ground.id) as any;
-    expect(result.node.id).toBe(ground.id);
-    expect(result.node.content).toBe("证据");
-    expect(result.used_in_warrants.length).toBe(1);
-    expect(result.used_in_warrants[0].warrant_id).toBe(warrant.id);
-  });
-
-  test("Backing 返回节点信息", () => {
-    const claim = makeClaim(db);
-    const warrant = makeWarrant(db, claim.id);
-    const backing = makeBacking(db, warrant.id, "支撑");
-
-    const result = service.getArgument(db, backing.id) as any;
-    expect(result.node.id).toBe(backing.id);
-    expect(result.node.content).toBe("支撑");
-  });
-
-  test("不存在节点抛出 NotFoundError", () => {
-    expect(() => service.getArgument(db, 999)).toThrow(NotFoundError);
-  });
-});
-
-// =============================================================================
-// listClaims
-// =============================================================================
-
-describe("listClaims", () => {
-  test("空数据库返回空数组", () => {
-    const claims = service.listClaims(db);
-    expect(claims.rows).toEqual([]);
-  });
-
-  test("只返回 Claim 类型", () => {
-    makeClaim(db, "C1");
-    makeGround(db, { content: "G1" });
-    const claims = service.listClaims(db);
-    expect(claims.rows.length).toBe(1);
-    expect(claims.rows[0].type).toBe("claim");
-  });
-
-  test("按 status 过滤", () => {
-    const c1 = makeClaim(db, "C1", "proposed");
-    const c2 = makeClaim(db, "C2", "supported");
-    const c3 = makeClaim(db, "C3", "proposed");
-
-    const proposed = service.listClaims(db, "proposed");
-    expect(proposed.rows.length).toBe(2);
-
-    const supported = service.listClaims(db, "supported");
-    expect(supported.rows.length).toBe(1);
-  });
-});
-
-// =============================================================================
-// listStatements
-// =============================================================================
-
-describe("listStatements", () => {
-  test("空数据库返回空数组", () => {
-    const statements = service.listStatements(db);
-    expect(statements.rows).toEqual([]);
-  });
-
-  test("只返回 statement 类型节点", () => {
-    makeClaim(db, "C1");
-    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    const statements = service.listStatements(db);
-    expect(statements.rows.length).toBe(1);
-    expect(statements.rows[0].type).toBe("statement");
-  });
-
-  test("无过滤器返回所有 statement", () => {
-    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    makeGround(db, { content: "G2", source: "literature", verification: "pending" });
-    makeGround(db, { content: "G3", source: "observed", verification: "pending" });
-    const statements = service.listStatements(db);
-    expect(statements.rows.length).toBe(3);
-  });
-
-  test("source 单值过滤", () => {
-    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    makeGround(db, { content: "G2", source: "literature", verification: "verified" });
-    const statements = service.listStatements(db, "literature");
-    expect(statements.rows.length).toBe(1);
-    expect(statements.rows[0].content).toBe("G2");
-  });
-
-  test("source 逗号分隔多值过滤（OR 语义），且排除无 source 字段的 statement（backing）", () => {
-    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    makeGround(db, { content: "G2", source: "literature", verification: "verified" });
-    makeGround(db, { content: "G3", source: "observed", verification: "pending" });
-    const claim = makeClaim(db, "Claim");
-    const warrant = makeWarrant(db, claim.id, []);
-    makeBacking(db, warrant.id, "B1 (no source field)");
-    const statements = service.listStatements(db, "literature,observed");
-    expect(statements.rows.length).toBe(3);
-    expect(statements.rows.map(g => g.content).sort()).toEqual(["G1", "G2", "G3"]);
-  });
-
-  test("verification 过滤", () => {
-    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    makeGround(db, { content: "G2", source: "observed", verification: "pending" });
-    const verified = service.listStatements(db, undefined, "verified");
-    expect(verified.rows.length).toBe(1);
-    expect(verified.rows[0].content).toBe("G1");
-  });
-
-  test("source + verification AND 组合过滤", () => {
-    makeGround(db, { content: "G1", source: "literature", verification: "verified" });
-    makeGround(db, { content: "G2", source: "literature", verification: "pending" });
-    makeGround(db, { content: "G3", source: "observed", verification: "verified" });
-    const statements = service.listStatements(db, "literature", "verified");
-    expect(statements.rows.length).toBe(1);
-    expect(statements.rows[0].content).toBe("G1");
-  });
-
-  test("无效 source 值静默返回空列表", () => {
-    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    const statements = service.listStatements(db, "nonexistent");
-    expect(statements.rows).toEqual([]);
-  });
-
-  test("无效 verification 值静默返回空列表", () => {
-    makeGround(db, { content: "G1", source: "observed", verification: "verified" });
-    const statements = service.listStatements(db, undefined, "invalid");
-    expect(statements.rows).toEqual([]);
-  });
-});
-
-// =============================================================================
-// getStats
-// =============================================================================
-
-describe("getStats", () => {
-  test("空数据库全零", () => {
-    const stats = service.getStats(db);
-    expect(stats.claims.total).toBe(0);
-    expect(stats.warrants.total).toBe(0);
-    expect(stats.scale.roles.grounds.total).toBe(0);
-  });
-
-  test("正确统计各类型数量", () => {
-    makeClaim(db);
-    makeClaim(db);
-    const claim = makeClaim(db);
-    const ground = makeGround(db);
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    makeBacking(db, warrant.id);
-
-    const stats = service.getStats(db);
-    expect(stats.claims.total).toBe(3);
-    expect(stats.warrants.total).toBe(1);
-    expect(stats.scale.roles.grounds.total).toBe(1);
-    expect(stats.scale.roles.backings.total).toBe(1);
-  });
-
-  test("正确统计 by_status", () => {
-    makeClaim(db, "C1", "proposed");
-    makeClaim(db, "C2", "proposed");
-    makeClaim(db, "C3", "supported");
-
-    const stats = service.getStats(db);
-    expect(stats.claims.by_status.proposed).toBe(2);
-    expect(stats.claims.by_status.supported).toBe(1);
-  });
-
-  // D38：ground 的条数只能查 warrant_grounds。以前是"所有带 source 字段的 statement"，
-  // 0.5.0 把 source 改成必填之后这个条件对每条 statement 都成立，于是 Backing、
-  // Rebuttal、没挂上任何 Warrant 的游离 statement 全被算成了 ground，
-  // 而真正挂在 Warrant 上的 claim 型 ground 反倒数不进去。
-  test("ground 条数不含 Backing / Rebuttal / 游离 statement，含 claim 型 ground", () => {
-    const lower = makeClaim(db, "下层结论", "supported");
-    const upper = makeClaim(db, "上层结论");
-    const lowerWarrant = makeWarrant(db, lower.id, [makeGround(db, { content: "G1" }).id], "下层推理");
-    makeBacking(db, lowerWarrant.id, "依据");
-    makeRebuttal(db, upper.id, "claim", "反驳");
-    makeGround(db, { content: "没挂上任何 Warrant 的游离证据" });
-    // 上层压在下层结论上 —— 这条 ground 是 claim 型
-    makeChainReasoning(db, upper.id, lower.id);
-
-    const roles = service.getStats(db).scale.roles;
-    expect(roles.grounds.total).toBe(2); // G1 + 下层 Claim
-    expect(roles.grounds.verified).toBe(2); // G1 已核实，下层 Claim supported
-    expect(roles.backings.total).toBe(1);
-    expect(roles.rebuttals.total).toBe(1);
-  });
-
-  test("无 stale Claim 时 stale 计数为 0", () => {
-    makeClaim(db, "C1");
-    makeClaim(db, "C2");
-    const stale = service.getStats(db).scale.claims_detail.stale;
-    expect(stale.count).toBe(0);
-    expect(stale.ids).toEqual([]);
-  });
-
-  test("有 stale Claim 时报出条数和具体 id", () => {
-    const c1 = makeClaim(db, "C1");
-    const c2 = makeClaim(db, "C2");
-    makeClaim(db, "C3");
-    repo.saveCompileState(db, c1.id, "stale", "");
-    repo.saveCompileState(db, c2.id, "stale", "");
-    const stale = service.getStats(db).scale.claims_detail.stale;
-    expect(stale.count).toBe(2);
-    expect(stale.ids).toEqual([c1.id, c2.id]);
-  });
-
-  // 这条测试守的是"一个主张被数两遍"这个 bug。以前失效的做法是把 compile_state
-  // 那一行删掉，于是这个主张既算"从未检查过"（因为没有行）又算"检查结果已过期"，
-  // 两个计数加起来比主张总数还多。现在改成把行留下、只把结论降级，就只算一次。
-  test("检查通过后又失效的主张，只算过期，不算从未检查", () => {
-    const claim = makeClaim(db, "先通过后失效");
-    const ground = makeGround(db, { content: "证据" });
-    makeWarrant(db, claim.id, [ground.id], "推理");
-    makeClaim(db, "真的从未检查过");
-
-    repo.saveCompileState(db, claim.id, "passed", "ok", computeArgumentHash(db, claim.id));
-    invalidateCompiledClaims(db, ground.id);
-
-    const d = service.getStats(db).scale.claims_detail;
-    expect(d.stale.ids).toContain(claim.id);
-    expect(d.never_compiled).toBe(1); // 只有那个真的从未检查过的
-    expect(d.never_compiled + d.stale.count).toBe(2); // 两个主张，两次计数
-  });
-});
-
-// =============================================================================
-// searchNodesService
-// =============================================================================
-
-describe("searchNodesService", () => {
-  test("搜索关键词", () => {
-    makeClaim(db, "ScaleOpt 优化器");
-    makeGround(db, { content: "Adam 基线实验" });
-
-    const results = service.searchNodesService(db, "ScaleOpt");
-    expect(results.rows.length).toBe(1);
-    expect(results.rows[0].type).toBe("claim");
-  });
-
-  test("类型过滤", () => {
-    makeClaim(db, "实验方法");
-    makeGround(db, { content: "实验数据" });
-
-    const claims = service.searchNodesService(db, "实验", "claim");
-    expect(claims.rows.length).toBe(1);
-    expect(claims.rows[0].type).toBe("claim");
-  });
-});
-
-// =============================================================================
-// 审查规则测试
-// =============================================================================
-
-describe("审查规则: Claim 状态转换", () => {
-  // A0/A1/A3/A4 抛的是同一个 StatusTransitionError，所以"断言抛了这个类"分不清
-  // 是哪道门拦下来的。曾经有四条用例名字写着 A1/A3，实际全撞在 A0 上（少了 compile
-  // 记录就会），断言照样通过，等于这四道门里的三道从来没被测过。
-  // 下面这些片段是四道门唯一互相区分的东西，每条用例断言自己那一条。
-  const GATE = {
-    A0_never: /argument has not been compiled yet/,
-    A0_stale: /the argument changed after it last passed compile/,
-    A1_noWarrant: /Claim has no Warrants/,
-    A1_noGrounds: /no Warrant has all Grounds verified — Warrant #\d+: no Grounds attached/,
-    A1_groundPending: /no Warrant has all Grounds verified — Warrant #\d+: Ground #\d+ not verified/,
-    A3: /no verified Rebuttals target this Claim or its Warrants/,
-    A4: /no verified Rebuttals exist to justify refutation/,
-  };
-
-  /** 断言这次转换被拦下来了，而且是被 gate 那道门拦的。fn 只调用一次。 */
-  function expectBlockedBy(fn: () => unknown, gate: RegExp) {
-    let err: unknown;
-    try {
-      fn();
-    } catch (e) {
-      err = e;
-    }
-    expect(err).toBeInstanceOf(StatusTransitionError);
-    expect((err as Error).message).toMatch(gate);
-  }
-
-  test("A0: stale Claim 不能标记 supported", () => {
-    const claim = makeClaim(db);
-    const ground = makeGround(db, { content: "G", verification: "verified" });
-    makeWarrant(db, claim.id, [ground.id]);
-    // 设置 compile_status = "stale"
-    repo.saveCompileState(db, claim.id, "stale", "");
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "supported" }),
-      GATE.A0_stale
-    );
-  });
-
-  test("A0: 从未 compile 的 Claim 不能标记 supported", () => {
-    const claim = makeClaim(db);
-    const ground = makeGround(db, { content: "G", verification: "verified" });
-    makeWarrant(db, claim.id, [ground.id]);
-    // compile_status 未设置（默认 null/undefined）
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "supported" }),
-      GATE.A0_never
-    );
-  });
-
-  test("A0: stale Claim 不能标记 disputed (有 Rebuttal)", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "stale", "");
-    makeRebuttal(db, claim.id);
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "disputed" }),
-      GATE.A0_stale
-    );
-  });
-
-  test("A0: 从未 compile 的 Claim 不能标记 disputed (有 Rebuttal)", () => {
-    const claim = makeClaim(db);
-    makeRebuttal(db, claim.id);
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "disputed" }),
-      GATE.A0_never
-    );
-  });
-
-  test("A0: stale Claim 不能标记 refuted (有 Rebuttal)", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "stale", "");
-    makeRebuttal(db, claim.id);
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "refuted" }),
-      GATE.A0_stale
-    );
-  });
-
-  test("A0: 从未 compile 的 Claim 不能标记 refuted (有 Rebuttal)", () => {
-    const claim = makeClaim(db);
-    makeRebuttal(db, claim.id);
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "refuted" }),
-      GATE.A0_never
-    );
-  });
-
-  test("A1: 无 Warrant 时不能标记 supported", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "passed", "");  // 否则先撞 A0，测不到 A1
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "supported" }),
-      GATE.A1_noWarrant
-    );
-  });
-
-  test("A1: Warrant 无 Ground 时不能标记 supported", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "passed", "");
-    makeWarrant(db, claim.id, []);  // 直接通过 repo 创建空 groundIds
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "supported" }),
-      GATE.A1_noGrounds
-    );
-  });
-
-  test("A1: Ground 未 verified 时不能标记 supported", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "passed", "");
-    const ground = makeGround(db, { content: "G", verification: "pending" });
-    makeWarrant(db, claim.id, [ground.id]);
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "supported" }),
-      GATE.A1_groundPending
-    );
-  });
-
-  test("A1: 有 Warrant + verified Ground + compiled 时可以标记 supported", () => {
-    const claim = makeCompiledClaim(db);
-    const ground = makeGround(db, { content: "G", verification: "verified" });
-    makeWarrant(db, claim.id, [ground.id]);
-    const { node } = service.updateNode(db, claim.id, { status: "supported" });
-    expect((node as any).status).toBe("supported");
-  });
-
-  test("A3: 无 Rebuttal 时不能标记 disputed", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "passed", "");
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "disputed" }),
-      GATE.A3
-    );
-  });
-
-  test("A3: 有已核实的 Rebuttal 时可以标记 disputed", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "passed", "");
-    makeRebuttal(db, claim.id);
-    const { node } = service.updateNode(db, claim.id, { status: "disputed" });
-    expect((node as any).status).toBe("disputed");
-  });
-
-  test("A4: 无 Rebuttal 时不能标记 refuted", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "passed", "");
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "refuted" }),
-      GATE.A4
-    );
-  });
-
-  test("A4: 有已核实的 Rebuttal 时可以标记 refuted", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "passed", "");
-    makeRebuttal(db, claim.id);
-    const { node } = service.updateNode(db, claim.id, { status: "refuted" });
-    expect((node as any).status).toBe("refuted");
-  });
-
-  // 下面三条守的是"反驳也要核实"这件事。以前只要有一条反驳挂在那里，不管它自己
-  // 核没核实，都能把主张标成 refuted；而标成 supported 却要求整条推理下面的证据
-  // 全部已核实。等于说一个主张是假的，比说它是真的更省证据。现在两边一样严。
-  test("A3: 未核实的 Rebuttal 不足以标记 disputed", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "passed", "");
-    makeRebuttal(db, claim.id, "claim", "光有说法，没核实", [], "pending");
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "disputed" }),
-      GATE.A3
-    );
-  });
-
-  test("A4: 未核实的 Rebuttal 不足以标记 refuted", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "passed", "");
-    makeRebuttal(db, claim.id, "claim", "光有说法，没核实", [], "pending");
-    expectBlockedBy(
-      () => service.updateNode(db, claim.id, { status: "refuted" }),
-      GATE.A4
-    );
-  });
-
-  test("A3/A4: 挂在 Warrant 上的已核实 Rebuttal 也算", () => {
-    const claim = makeClaim(db);
-    repo.saveCompileState(db, claim.id, "passed", "");
-    const ground = makeGround(db, { content: "G" });
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    makeRebuttal(db, warrant.id, "warrant", "推理本身有问题", [], "verified");
-    const { node } = service.updateNode(db, claim.id, { status: "refuted" });
-    expect((node as any).status).toBe("refuted");
-  });
-});
-
-describe("审查规则: Warrant ground_ids 操作", () => {
-  test("移除所有 Ground 后 warrant 的 groundIds 为空数组", () => {
-    const claim = makeClaim(db);
-    const g1 = makeGround(db, { content: "G1" });
-    const warrant = makeWarrant(db, claim.id, [g1.id]);
-    const { node } = service.updateNode(db, warrant.id, { ground_ids: { remove: [g1.id] } });
-    expect((node as any).groundIds).toEqual([]);
-  });
-
-  test("移除部分 Ground 保留其他 Ground 可以成功", () => {
-    const claim = makeClaim(db);
-    const g1 = makeGround(db, { content: "G1" });
-    const g2 = makeGround(db, { content: "G2" });
-    const warrant = makeWarrant(db, claim.id, [g1.id, g2.id]);
-    const { node } = service.updateNode(db, warrant.id, { ground_ids: { remove: [g1.id] } });
-    expect((node as any).groundIds).toEqual([g2.id]);
-  });
-});
-
-describe("审查规则: 删除引用完整性", () => {
-  test("D3: 删除支撑非 proposed Claim 的 Warrant 返回警告", () => {
-    const claim = makeClaim(db, "C", "supported");
-    const ground = makeGround(db);
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    const warnings = service.deleteNode(db, warrant.id);
-    expect(warnings.length).toBe(1);
-    expect(warnings[0]).toContain(`Claim #${claim.id}`);
-    expect(warnings[0]).toContain("supported");
-  });
-
-  test("D3: 删除支撑 proposed Claim 的 Warrant 无警告", () => {
-    const claim = makeClaim(db, "C", "proposed");
-    const ground = makeGround(db);
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    const warnings = service.deleteNode(db, warrant.id);
-    expect(warnings.length).toBe(0);
-  });
-
-  test("D4: cascade 删除 Claim 时清理关联 Warrants", () => {
-    const claim = makeClaim(db, "前置 Claim");
-    const ground = makeGround(db);
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    service.deleteNode(db, claim.id, true);
-    // Warrant 应被删除
-    expect(() => service.getArgument(db, warrant.id)).toThrow(NotFoundError);
-  });
-});
-
-describe("审查规则: 循环引用", () => {
-  test("E1: 直接循环引用被拒绝（Claim 作为 ground 形成环）", () => {
-    const claimA = makeClaim(db, "A");
-    const claimB = makeClaim(db, "B");
-    // B has a warrant with A as ground
-    makeWarrant(db, claimB.id, [claimA.id]);
-    // Now try to create warrant for A with B as ground (would create A→B→A cycle)
-    expect(() =>
-      service.createWarrant(db, { content: "循环推理", claimId: claimA.id, groundIds: [claimB.id] })
-    ).toThrow(ValidationError);
-  });
-
-  test("E1: 非循环引用可以成功", () => {
-    const claimA = makeClaim(db, "A");
-    const claimB = makeClaim(db, "B");
-    // A uses B as ground directly (no cycle back)
-    expect(() =>
-      service.createWarrant(db, { content: "推理规则", claimId: claimA.id, groundIds: [claimB.id] })
-    ).not.toThrow();
-  });
-});
-
-describe("審查規則: Rebuttal 約束", () => {
-  test("可以 rebut 任意 Claim 状态", () => {
-    const claim = makeClaim(db, "C", "refuted");
-    // F1 removed: no restriction on rebutting refuted claims
-    const stmt = service.createStatement(db, {
-      content: "反驳内容",
-      source: "observed",
-      verification: "pending",
-      rebuttal_for: { target_id: claim.id, target_type: "claim" },
-    });
-    expect(stmt.type).toBe("statement");
-  });
-});
-
-describe("审查规则: 结构约束", () => {
-  test("G2: 可以为任意状态 Claim 的 Warrant 创建 Backing", () => {
-    const claim = makeClaim(db, "C", "refuted");
-    const ground = makeGround(db);
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    // G2 removed: no restriction based on claim status
-    const backing = service.createStatement(db, {
-      content: "支撑内容",
-      source: "literature",
-      verification: "verified",
-      attachments: ["/refs/paper.pdf"],
-    });
-    repo.addWarrantBackings(db, warrant.id, [backing.id]);
-    expect(backing.type).toBe("statement");
-  });
-
-  test("G2: 可以为非 refuted Claim 的 Warrant 创建 Backing", () => {
-    const claim = makeClaim(db, "C", "proposed");
-    const ground = makeGround(db);
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    const backing = service.createStatement(db, {
-      content: "支撑内容",
-      source: "literature",
-      verification: "verified",
-      attachments: ["/refs/paper.pdf"],
-    });
-    repo.addWarrantBackings(db, warrant.id, [backing.id]);
-    expect(backing.type).toBe("statement");
-  });
-});
-
-describe("审查规则: Ground 验证留痕", () => {
-  test("H1: verified Ground 无 attachments 时不能通过 updateNode 设置", () => {
-    // attachments: [] 是这条用例的前提，必须写出来：夹具的默认值带一个占位证据文件
-    const ground = makeGround(db, { verification: "pending", attachments: [] });
-    expect(() =>
-      service.updateNode(db, ground.id, { verification: "verified" })
-    ).toThrow(/verified statements must have attachments/);
-  });
-
-  test("H1: verified Ground 有 attachments 时可以通过 updateNode 设置", () => {
-    const ground = makeGround(db, { verification: "pending" });
-    const { node } = service.updateNode(db, ground.id, {
-      verification: "verified",
-      attachments: ["/scripts/run.sh", "/logs/result.txt"],
-    });
-    expect((node as any).verification).toBe("verified");
-    expect((node as any).attachments).toEqual(["/scripts/run.sh", "/logs/result.txt"]);
-  });
-
-  test("H2: verified Ground 退回 pending 时弹出警告", () => {
-    const claim = makeClaim(db);
-    const ground = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
-    const warrant = makeWarrant(db, claim.id, [ground.id]);
-    const { warnings } = service.updateNode(db, ground.id, { verification: "pending" });
-    expect(warnings.length).toBe(1);
-    expect(warnings[0]).toContain("Ground #" + ground.id);
-    expect(warnings[0]).toContain("#" + warrant.id);
-    expect(warnings[0]).toContain("previously verified");
-  });
-
-  test("H2: verified Ground 无 Warrant 引用时退回无警告", () => {
-    const ground = makeGround(db, { verification: "verified", attachments: ["/data.csv"] });
-    const { warnings } = service.updateNode(db, ground.id, { verification: "pending" });
-    expect(warnings.length).toBe(0);
-  });
-});
-
-// =============================================================================
-// get_argument — Ground / Backing / Rebuttal 递出同一组字段
-// =============================================================================
-
-describe("getArgument statement 字段一致性", () => {
-  test("claim 视图: backing 与 rebuttal 都带 source/verification", () => {
-    const claim = makeClaim(db, "主张");
-    const g = makeGround(db, { content: "证据" });
-    const warrant = makeWarrant(db, claim.id, [g.id]);
-    makeBacking(db, warrant.id, "依据", ["/ref.pdf"], "literature", "verified");
-    service.createStatement(db, {
-      content: "反驳",
-      source: "observed",
-      verification: "pending",
-      rebuttal_for: { target_id: claim.id, target_type: "claim" },
+    const out = svc.dismiss(db, root, [
+      { id: res.findings[0]!.id, reason: "the reviewer misread the scope" },
+    ]);
+    expect(out[0]).toMatchObject({ target: "finding", ok: true });
+
+    const f = svc.propositionView(db, root, id).findings[0]!;
+    expect(f.state).toBe("acknowledged");
+    expect(f.dismissal!.reason).toContain("misread");
+  });
+
+  test("带未处理 finding 判档:醒目提示,但不拦截", () => {
+    const id = create();
+    svc.recordReview(db, {
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "fail",
+      findings: [
+        {
+          nodeId: id,
+          question: "Q2",
+          confidence: "high",
+          content: "does not follow",
+          citation: { nodeId: id, slot: "content", quote: "A proposition" },
+        },
+      ],
+      model: "m",
+      protocolHash: "h",
     });
 
-    const arg = service.getArgument(db, claim.id) as any;
-    expect(arg.warrants[0].backings[0].source).toBe("literature");
-    expect(arg.warrants[0].backings[0].verification).toBe("verified");
-    expect(arg.warrants[0].backings[0].attachments).toEqual(["/ref.pdf"]);
-    // A3/A4 门禁只认已核实的反驳，所以"这条核实了没有"必须在输出里
-    expect(arg.rebuttals[0].source).toBe("observed");
-    expect(arg.rebuttals[0].verification).toBe("pending");
-  });
-
-  test("claim 视图: rebuttal 带 target_id，指得出是哪一条 warrant 被攻击", () => {
-    const claim = makeClaim(db, "主张");
-    const g = makeGround(db, { content: "证据" });
-    const w1 = makeWarrant(db, claim.id, [g.id], "推理一");
-    const w2 = makeWarrant(db, claim.id, [g.id], "推理二");
-    service.createStatement(db, {
-      content: "只打推理二",
-      source: "observed",
-      verification: "verified",
-      attachments: ["/x.log"],
-      rebuttal_for: { target_id: w2.id, target_type: "warrant" },
-    });
-
-    const arg = service.getArgument(db, claim.id) as any;
-    expect(arg.rebuttals.length).toBe(1);
-    expect(arg.rebuttals[0].target_type).toBe("warrant");
-    expect(arg.rebuttals[0].target_id).toBe(w2.id);
-    expect(arg.rebuttals[0].target_id).not.toBe(w1.id);
-  });
-
-  test("warrant 视图: 攻击这条 warrant 的 rebuttal 出现在返回值里", () => {
-    const claim = makeClaim(db, "主张");
-    const g = makeGround(db, { content: "证据" });
-    const warrant = makeWarrant(db, claim.id, [g.id]);
-    service.createStatement(db, {
-      content: "打推理的反驳",
-      source: "observed",
-      verification: "verified",
-      attachments: ["/y.log"],
-      rebuttal_for: { target_id: warrant.id, target_type: "warrant" },
-    });
-
-    const arg = service.getArgument(db, warrant.id) as any;
-    expect(arg.rebuttals.length).toBe(1);
-    expect(arg.rebuttals[0].content).toBe("打推理的反驳");
-    expect(arg.rebuttals[0].verification).toBe("verified");
-    expect(arg.rebuttals[0].target_type).toBe("warrant");
-    expect(arg.rebuttals[0].target_id).toBe(warrant.id);
-    // ground 在两个视图里字段一样
-    expect(arg.grounds[0].verification).toBe("verified");
-  });
-
-  test("0.4 遗留 backing 没写过 source/verification，字段为 undefined 而不是编一个", () => {
-    const claim = makeClaim(db, "主张");
-    const g = makeGround(db, { content: "证据" });
-    const warrant = makeWarrant(db, claim.id, [g.id]);
-    makeBacking(db, warrant.id, "遗留依据");
-
-    const arg = service.getArgument(db, warrant.id) as any;
-    expect(arg.backings[0].source).toBeUndefined();
-    expect(arg.backings[0].verification).toBeUndefined();
+    const res = svc.setQualifier(db, root, [{ id, qualifier: "probably" }]);
+    expect(repo.getProposition(db, id)!.qualifier).toBe("probably");
+    expect(res[0]!.notices?.join(" ")).toContain("unresolved");
   });
 });

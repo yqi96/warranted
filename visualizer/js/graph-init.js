@@ -2,18 +2,13 @@ function initGraph() {
   svg = d3.select('#graph').append('svg').attr('width', '100%').attr('height', '100%');
   const defs = svg.append('defs');
 
-  // ── Arrow markers — semantically typed ──
+  // ── Arrow markers — 三种槽位边各一个 ──
   Object.entries(EDGE_COLORS).forEach(([type, color]) => {
     defs.append('marker').attr('id', `arrow-${type}`)
       .attr('viewBox', '0 -5 10 10').attr('refX', 10).attr('refY', 0)
       .attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
       .append('path').attr('d', 'M0,-4L8,0L0,4Z').attr('fill', color);
   });
-  // Chain-reference arrow
-  defs.append('marker').attr('id', 'arrow-chain')
-    .attr('viewBox', '0 -5 10 10').attr('refX', 10).attr('refY', 0)
-    .attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
-    .append('path').attr('d', 'M0,-4L8,0L0,4Z').attr('fill', 'rgba(200,164,72,0.40)');
 
   // ── Subtle drop shadow ──
   const shadow = defs.append('filter').attr('id', 'shadow')
@@ -146,102 +141,108 @@ function setSelectionMode(mode) {
   if (cyEl) cyEl.style.cursor = mode === 'pan' ? 'grab' : 'default';
 }
 
+/**
+ * 画一条命题。
+ *
+ * 三层编码，各管一件事，互不代偿：
+ *   颜色 / 虚实 / 大小 —— qualifier 落在哪一档
+ *   形状             —— 它靠什么站着(证据命题 / 附件 / 什么都没有)
+ *   角标             —— 有没有未处理的警告与 finding
+ *
+ * 角标是**提示不是拒绝**(design.md §2.5)：它标出该看一眼的地方，不表示这条命题
+ * 有问题。dismiss 过的不再计入 pending，于是标记自己会消失——但底层事实再变时
+ * 会复燃，这正是不把它画成"一次性徽章"的原因。
+ */
 function drawNodeShape(el, d) {
   const data   = (currentLayout === 'tree') ? d.data : d;
   const fill   = nodeFill(data);
   const stroke = nodeStroke(data);
-  const size   = nodeSize(data);
+  const dash   = nodeDash(data);
+  const s      = nodeSize(data);
+  const struct = nodeStructure(data);
 
-  if (data.type === 'claim') {
-    const status = data.data?.status;
-    let sw = 1.5, strokeColor = stroke, dash = 'none';
-    if (status === 'supported') { strokeColor = 'rgba(52,199,89,0.70)'; sw = 2; }
-    else if (status === 'disputed') { dash = '5,2'; }
-    else if (status === 'refuted')  { strokeColor = 'rgba(200,80,60,0.60)'; dash = '5,2'; }
-
+  if (struct === 'inference') {
+    // 圆角矩形：推出来的——它的证据槽里有别的命题。
     el.append('rect').attr('class', 'node-shape')
-      .attr('x', -size * 1.55).attr('y', -size * 0.68)
-      .attr('width', size * 3.1).attr('height', size * 1.36)
+      .attr('x', -s * 1.5).attr('y', -s * 0.66)
+      .attr('width', s * 3).attr('height', s * 1.32)
       .attr('rx', 8).attr('ry', 8)
-      .attr('fill', fill).attr('stroke', strokeColor).attr('stroke-width', sw)
+      .attr('fill', fill).attr('stroke', stroke).attr('stroke-width', 1.6)
       .attr('stroke-dasharray', dash).attr('filter', 'url(#shadow)');
 
     el.append('rect')
-      .attr('x', -size * 1.55 + 3).attr('y', -size * 0.68 + 2)
-      .attr('width', size * 3.1 - 6).attr('height', size * 0.35)
+      .attr('x', -s * 1.5 + 3).attr('y', -s * 0.66 + 2)
+      .attr('width', s * 3 - 6).attr('height', s * 0.34)
       .attr('rx', 5).attr('ry', 5)
-      .attr('fill', 'rgba(255,255,255,0.07)')
+      .attr('fill', 'rgba(255,255,255,0.06)')
       .attr('pointer-events', 'none');
 
-    if (status === 'supported') {
-      el.append('circle').attr('cx', size * 1.35).attr('cy', -size * 0.56).attr('r', 5)
-        .attr('fill', '#34C759').attr('stroke', '#090909').attr('stroke-width', 1.5);
-      el.append('text').attr('x', size * 1.35).attr('y', -size * 0.56 + 3.5)
-        .attr('text-anchor', 'middle').attr('fill', '#090909')
-        .attr('font-size', '6.5px').attr('font-weight', '800').text('✓');
-    }
-
-    const compileState = getClaimCompileState(data.data);
-    if (compileState) {
-      const badgeFill = compileState === 'passed' ? '#34C759' : '#FF9500';
-      el.append('circle')
-        .attr('cx', -size * 1.35).attr('cy', -size * 0.56).attr('r', 5)
-        .attr('fill', badgeFill).attr('stroke', '#090909').attr('stroke-width', 1.5);
-      el.append('text')
-        .attr('x', -size * 1.35).attr('y', -size * 0.56 + 3.5)
-        .attr('text-anchor', 'middle').attr('fill', '#090909')
-        .attr('font-size', '6.5px').attr('font-weight', '800')
-        .text(compileState === 'passed' ? '✓' : '!');
-    }
-
-    el.append('text').attr('class', 'node-type-label')
-      .attr('text-anchor', 'middle').attr('dy', 3.5).text('C#' + data.id);
-
-  } else if (data.type === 'statement' || data.type === 'ground' || data.type === 'backing' || data.type === 'rebuttal') {
-    const role = data.data?.primary_role || (data.type !== 'statement' ? data.type : 'ground');
-    const s = size;
-
-    if (role === 'rebuttal') {
-      el.append('path').attr('class', 'node-shape')
-        .attr('d', `M0,${-s} L${s * 1.15},0 L0,${s} L${-s * 1.15},0 Z`)
-        .attr('fill', fill).attr('stroke', stroke).attr('stroke-width', 1.5)
-        .attr('stroke-dasharray', '4,2').attr('filter', 'url(#shadow)');
-      el.append('text').attr('class', 'node-type-label')
-        .attr('text-anchor', 'middle').attr('dy', 4).text('R');
-
-    } else if (role === 'backing') {
-      el.append('circle').attr('class', 'node-shape')
-        .attr('r', s).attr('fill', fill).attr('stroke', stroke).attr('stroke-width', 1.5)
-        .attr('filter', 'url(#shadow)');
-      el.append('text').attr('class', 'node-type-label')
-        .attr('text-anchor', 'middle').attr('dy', 4).text('B');
-
-    } else {
-      const isVerified  = data.data?.verification === 'verified';
-      const groundFill  = isVerified ? 'rgba(91,155,213,0.18)' : fill;
-      const groundStroke = isVerified ? 'rgba(91,155,213,0.65)' : stroke;
-      const sdash       = isVerified ? 'none' : '3,2.5';
-      el.append('rect').attr('class', 'node-shape')
-        .attr('x', -s).attr('y', -s)
-        .attr('width', s * 2).attr('height', s * 2)
-        .attr('fill', groundFill).attr('stroke', groundStroke).attr('stroke-width', 1.5)
-        .attr('stroke-dasharray', sdash).attr('filter', 'url(#shadow)');
-      el.append('text').attr('class', 'node-icon')
-        .attr('text-anchor', 'middle').attr('dy', 4).text(isVerified ? '✓' : '·');
-    }
-
-  } else if (data.type === 'warrant') {
-    const s = size, a = s * 0.87, b = s * 0.50;
-    el.append('path').attr('class', 'node-shape')
-      .attr('d', `M${-a},${-b} L${a},${-b} L${s},0 L${a},${b} L${-a},${b} L${-s},0 Z`)
+  } else if (struct === 'sourced') {
+    // 方块：靠附件站着。
+    el.append('rect').attr('class', 'node-shape')
+      .attr('x', -s).attr('y', -s)
+      .attr('width', s * 2).attr('height', s * 2)
+      .attr('rx', 3).attr('ry', 3)
       .attr('fill', fill).attr('stroke', stroke).attr('stroke-width', 1.5)
-      .attr('filter', 'url(#shadow)');
-    el.append('text').attr('class', 'node-type-label').attr('text-anchor', 'middle').attr('dy', 3.5).text('W');
+      .attr('stroke-dasharray', dash).attr('filter', 'url(#shadow)');
 
   } else {
+    // 圆：证据槽是空的。
     el.append('circle').attr('class', 'node-shape')
-      .attr('r', size).attr('fill', fill).attr('stroke', stroke).attr('stroke-width', 1.5)
-      .attr('filter', 'url(#shadow)');
-    el.append('text').attr('class', 'node-type-label').attr('text-anchor', 'middle').attr('dy', 3.5).text('?');
+      .attr('r', s * 0.9)
+      .attr('fill', fill).attr('stroke', stroke).attr('stroke-width', 1.5)
+      .attr('stroke-dasharray', dash).attr('filter', 'url(#shadow)');
   }
+
+  const halfW = struct === 'inference' ? s * 1.5 : s;
+  const halfH = struct === 'inference' ? s * 0.66 : s;
+
+  // id 落在节点中央——一条命题没有"类型"可显示了，能一眼对上的只有编号。
+  el.append('text').attr('class', 'node-id-label')
+    .attr('text-anchor', 'middle').attr('dy', 3.5)
+    .attr('fill', nodeColor(data))
+    .text('#' + data.id);
+
+  // 已展开过的引用：画一圈虚边，表示"完整子树在别处"。
+  if (data.isRef) {
+    el.append('text').attr('class', 'node-icon')
+      .attr('x', halfW - 4).attr('y', halfH - 3)
+      .attr('text-anchor', 'end')
+      .attr('font-size', '8px').attr('fill', 'rgba(255,255,255,0.35)')
+      .text('↗');
+  }
+
+  // ── 角标 ──
+  const pendingW = data.warnings?.pending || 0;
+  const pendingF = data.findings?.pending || 0;
+
+  if (pendingW > 0) {
+    el.append('circle')
+      .attr('cx', -halfW + 2).attr('cy', -halfH + 1).attr('r', 5.5)
+      .attr('fill', '#FF9500').attr('stroke', '#090909').attr('stroke-width', 1.5);
+    el.append('text')
+      .attr('x', -halfW + 2).attr('y', -halfH + 4.5)
+      .attr('text-anchor', 'middle').attr('fill', '#090909')
+      .attr('font-size', '7px').attr('font-weight', '800')
+      .text(pendingW > 9 ? '9+' : String(pendingW));
+  }
+
+  if (pendingF > 0) {
+    el.append('circle')
+      .attr('cx', halfW - 2).attr('cy', -halfH + 1).attr('r', 5.5)
+      .attr('fill', '#E05A4A').attr('stroke', '#090909').attr('stroke-width', 1.5);
+    el.append('text')
+      .attr('x', halfW - 2).attr('y', -halfH + 4.5)
+      .attr('text-anchor', 'middle').attr('fill', '#090909')
+      .attr('font-size', '7px').attr('font-weight', '800')
+      .text(pendingF > 9 ? '9+' : String(pendingF));
+  }
+
+  // 档位缩写放在底边外侧，不与内容标签抢位置。
+  el.append('text').attr('class', 'node-band-label')
+    .attr('text-anchor', 'middle').attr('dy', halfH + 9)
+    .attr('font-size', '7.5px').attr('letter-spacing', '0.08em')
+    .attr('fill', nodeColor(data)).attr('opacity', 0.72)
+    .text(nodeBandLabel(data));
 }
+

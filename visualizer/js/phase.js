@@ -36,59 +36,64 @@ function animateCount(el, target, duration) {
 }
 
 // Update Phase 1 dashboard stats
-function updatePhase1Stats(nodes, stats) {
-  const total = Object.values(stats).reduce((a, b) => a + b, 0);
-  const statements = nodes.filter(n => n.type === 'statement');
-  const claims     = nodes.filter(n => n.type === 'claim');
-  const verified   = statements.filter(n => n.data?.verification === 'verified').length;
-  const supported  = claims.filter(n => n.data?.status === 'supported').length;
-  const pending    = statements.filter(n => n.data?.verification !== 'verified').length;
+//
+// 三个数字答三个问题：挣到正向档的有多少、还没挣到的有多少、有多少条等着人看一眼。
+// 最后一个不是"错误数"——标红是提示不是拒绝(design.md §2.5)。
+function updatePhase1Stats(nodes, stats, totalArg) {
+  const total    = totalArg ?? Object.values(stats).reduce((a, b) => a + b, 0);
+  const settled  = (stats.possibly || 0) + (stats.probably || 0) + (stats.certainly || 0);
+  const open     = stats.unestablished || 0;
+  const flagged  = nodes.filter(hasAttention).length;
 
-  const totalEl     = document.getElementById('phase1-total-num');
-  const verifiedEl  = document.getElementById('phase1-verified');
-  const supportedEl = document.getElementById('phase1-supported');
-  const pendingEl   = document.getElementById('phase1-pending');
+  const totalEl    = document.getElementById('phase1-total-num');
+  const settledEl  = document.getElementById('phase1-settled');
+  const openEl     = document.getElementById('phase1-open');
+  const flaggedEl  = document.getElementById('phase1-flagged');
 
   if (!totalEl) return;
 
   // First load: animate counting up
   const wasZero = parseInt(totalEl.textContent) === 0;
   if (wasZero && total > 0) {
-    animateCount(totalEl,     total,     900);
-    animateCount(verifiedEl,  verified,  800);
-    animateCount(supportedEl, supported, 850);
-    animateCount(pendingEl,   pending,   820);
+    animateCount(totalEl,   total,   900);
+    animateCount(settledEl, settled, 800);
+    animateCount(openEl,    open,    850);
+    animateCount(flaggedEl, flagged, 820);
   } else {
-    totalEl.textContent     = total;
-    verifiedEl.textContent  = verified;
-    supportedEl.textContent = supported;
-    pendingEl.textContent   = pending;
+    totalEl.textContent   = total;
+    settledEl.textContent = settled;
+    openEl.textContent    = open;
+    flaggedEl.textContent = flagged;
   }
 
   // Attention items
-  buildAttentionItems(nodes);
+  buildAttentionItems(nodes, stats);
 }
 
-function buildAttentionItems(nodes) {
+function buildAttentionItems(nodes, stats) {
   const container = document.getElementById('phase1-attention');
   if (!container) return;
   container.innerHTML = '';
 
-  const pendingGrounds  = nodes.filter(n => n.data?.roles?.includes('ground') && n.data?.verification !== 'verified');
-  const unsupportedClaims = nodes.filter(n => n.type === 'claim' && n.data?.status !== 'supported');
+  const add = (cls, text) => {
+    const item = document.createElement('div');
+    item.className = 'attention-item' + (cls ? ' ' + cls : '');
+    item.textContent = text;
+    container.appendChild(item);
+  };
 
-  if (pendingGrounds.length) {
-    const item = document.createElement('div');
-    item.className = 'attention-item warning';
-    item.textContent = `⚠ ${pendingGrounds.length} ground${pendingGrounds.length > 1 ? 's' : ''} pending verification`;
-    container.appendChild(item);
-  }
-  if (unsupportedClaims.length) {
-    const item = document.createElement('div');
-    item.className = 'attention-item';
-    item.textContent = `○ ${unsupportedClaims.length} claim${unsupportedClaims.length > 1 ? 's' : ''} not yet supported`;
-    container.appendChild(item);
-  }
+  const warned  = nodes.filter(n => (n.warnings?.pending || 0) > 0);
+  const found   = nodes.filter(n => (n.findings?.pending || 0) > 0);
+  const bare    = nodes.filter(n => isPositive(n) && nodeStructure(n) === 'bare');
+  const refuted = stats.refuted || 0;
+
+  // 结构检查只"照"不"判"：这里列的是该重查的触发点，不是结论。
+  if (warned.length) add('warning', `⚑ ${warned.length} 条命题有未处理的结构警告`);
+  if (found.length)  add('warning', `⚑ ${found.length} 条命题有未处理的 finding`);
+  // 正向档却空证据槽——S1 会报，单独提一句是因为它是最常见的那一种。
+  if (bare.length)   add('', `○ ${bare.length} 条正向档命题证据槽为空`);
+  if (refuted)       add('', `✕ ${refuted} 条已被推翻(仍可作为证据使用)`);
+  if (!container.children.length) add('', '— 没有待处理项');
 }
 
 // Transition Phase 1 → Phase 2 with FLIP animation

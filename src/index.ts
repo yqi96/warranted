@@ -2,18 +2,18 @@
 /**
  * Warranted MCP Server — 入口文件
  *
- * 启动 MCP Server，注册 12 个论证管理工具。
+ * 启动 MCP Server，注册 11 个论证管理工具。
  * 通过 stdio 与 Agent 通信。
  *
  * Usage:
  *   bun src/index.ts [--db-path ./toulmin.db] [--review-config ./review.json]
  *
- * 默认数据库路径：.toulmin/argument.db（项目目录下，支持跨 Session 恢复）
+ * 默认数据库路径：.toulmin/graph.db（项目目录下，支持跨 Session 恢复）
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { openDatabase } from "./db.ts";
+import { openDatabase, DEFAULT_DB_PATH } from "./db.ts";
 import { registerTools } from "./tools.ts";
 import type { Lifecycle } from "./tools.ts";
 import { initLogger } from "./logger.ts";
@@ -25,8 +25,6 @@ import { dirname } from "path";
 // =============================================================================
 // CLI 参数解析
 // =============================================================================
-
-const DEFAULT_DB_PATH = ".toulmin/argument.db";
 
 function parseArgs(): { dbPath: string; reviewConfigPath: string | null; noPersist: boolean } {
   const args = process.argv.slice(2);
@@ -87,7 +85,6 @@ async function main() {
   const reviewConfig = loadReviewConfig(reviewConfigPath, dbPath);
   if (reviewConfig) {
     if (noPersist) {
-      reviewConfig.reviewDir = null;
       reviewConfig.auditDir = null;
     }
     console.error(`[Warranted] Review enabled (synchronous, model: ${reviewConfig.model})`);
@@ -115,8 +112,8 @@ async function main() {
   };
 
   // 注册工具
-  registerTools(server, db, reviewConfig, lifecycle);
-  console.error("[Warranted] 12 tools registered");
+  registerTools(server, db, dbPath, reviewConfig, lifecycle);
+  console.error("[Warranted] 11 tools registered");
 
   // 连接 stdio transport
   const transport = new StdioServerTransport();

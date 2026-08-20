@@ -1,1571 +1,938 @@
 /**
  * Warranted — Service 层
  *
- * 业务逻辑：参数校验、互斥模式检查、级联删除、类型检查。
- * 所有函数接收 Database 作为首参数。
+ * 业务逻辑住在这里:V1–V3 硬拒、事件留痕、自动晋升、基线写入。
+ * repo 只看得见单条 SQL,tools 只负责 MCP 的形状;规则必须在两者之间。
+ *
+ * 三条贯穿全层的约束,改动时先读它们:
+ *
+ * 1. **姿态原则零例外**(design.md §3.1)。抛 `ValidationError` 的地方只有三处成因:
+ *    content 空、引用悬空、写入时附件不存在。认识论要求(证据非空、理由非空、
+ *    引用链可用)**一律不在这里拦**,它们由结构检查在读时标红。
+ * 2. **基线只有一个写入者**(§3.1c)。`repo.writeBaseline` 在本文件里只被
+ *    `setQualifier` 调用;`createPropositions` / `updateProposition` 都不接受
+ *    qualifier 入参,连"顺手落一档"的机会都不给。
+ * 3. **一次操作一条事件,写在同一个事务里**(I8)。事件不是日志,是过期检测与
+ *    "已阅"判定的数据源;写在事务外就会出现"图变了但没人知道它变过"。
  */
 
 import type { Database } from "bun:sqlite";
-import * as repo from "./repo.ts";
-import type {
-  NodeRow,
-  ClaimNode,
-  WarrantNode,
-  StatementNode,
-  ClaimData,
-  ClaimStatus,
-  GroundSource,
-  VerificationStatus,
-  TargetType,
-  UpdateNodeParams,
-  ArgumentResult,
-  ClaimArgument,
-  WarrantArgument,
-  NodeArgument,
-  ArgumentGround,
-  ArgumentBacking,
-  ArgumentStatement,
-  ArgumentWarrant,
-  ArgumentRebuttal,
-  Stats,
-  ScaleBlock,
-  RoleCount,
-  ToulminNode,
-  TagRow,
-  NamespaceCardinality,
-} from "./types.ts";
-import {
-  NotFoundError,
-  ValidationError,
-  CascadeRequiredError,
-  TypeMismatchError,
-  StatusTransitionError,
-} from "./errors.ts";
-import { WARNINGS, HINTS } from "./content/index.ts";
-import { findNearMatches } from "./tag-similarity.ts";
-import { isFtsAvailable } from "./db.ts";
 import { existsSync } from "fs";
+import * as repo from "./repo.ts";
+import { NotFoundError, ValidationError } from "./errors.ts";
+import {
+  checkContext,
+  computeWarningsFor,
+  loadNodeState,
+  loadRefStates,
+  resolveAttachment,
+  selfFingerprintOf,
+  warrantSlotOf,
+  type CheckContext,
+  type NodeState,
+} from "./structural-check.ts";
+import { suggestNote, deleteAffected, unresolvedFindingsOnSettle } from "./content/warnings.ts";
+import type {
+  ArgumentResult,
+  CreatePropositionItem,
+  CreateResultItem,
+  DeleteResult,
+  DismissItem,
+  DismissResultItem,
+  EventRecord,
+  EventRow,
+  FieldDiff,
+  Finding,
+  FindingView,
+  FindPropositionsParams,
+  FindResult,
+  PromoteResult,
+  PromoteWarrantParams,
+  PropositionRow,
+  PropositionView,
+  Qualifier,
+  ReviewOutcome,
+  SetQualifierItem,
+  SetQualifierResultItem,
+  SettlementSummary,
+  StructuralWarning,
+  UpdatePropositionParams,
+  UpdateResult,
+} from "./types.ts";
+import { QUALIFIERS } from "./types.ts";
+
+export { checkContext, type CheckContext };
 
 // =============================================================================
-// 辅助函数
+// V1–V3:三条硬拒,全是数据合法性
 // =============================================================================
 
-const VALID_GROUND_SOURCES: string[] = ["literature", "observed"];
-
-/** 将 NodeRow 转换为具体类型的节点对象 */
-function toClaimNode(row: NodeRow, db: Database): ClaimNode {
-  const data = JSON.parse(row.data);
-  return {
-    id: row.id,
-    type: "claim",
-    content: row.content,
-    status: data.status || "proposed",
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    tags: repo.getNodeTags(db, row.id),
-  };
+/** V1 content 非空。空白串也算空——一条只有空格的命题不是命题。 */
+function requireContent(content: unknown, label = "content"): string {
+  if (typeof content !== "string" || content.trim() === "") {
+    throw new ValidationError(`${label} must be a non-empty string.`);
+  }
+  return content;
 }
 
-function toWarrantNode(row: NodeRow, db: Database): WarrantNode {
-  const data = JSON.parse(row.data);
-  return {
-    id: row.id,
-    type: "warrant",
-    content: row.content,
-    claimId: data.claim_id,
-    groundIds: repo.findGroundIdsByWarrant(db, row.id),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    tags: repo.getNodeTags(db, row.id),
-  };
-}
-
-function toStatementNode(row: NodeRow, db: Database): StatementNode {
-  const data = JSON.parse(row.data);
-  return {
-    id: row.id,
-    type: "statement",
-    content: row.content,
-    source: data.source,
-    verification: data.verification,
-    attachments: data.attachments || [],
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    tags: repo.getNodeTags(db, row.id),
-  };
-}
-
-/** 根据 type 转换 NodeRow 为具体节点 */
-function toNode(row: NodeRow, db: Database): ToulminNode {
-  switch (row.type) {
-    case "claim": return toClaimNode(row, db);
-    case "warrant": return toWarrantNode(row, db);
-    case "statement": return toStatementNode(row, db);
-    default: throw new ValidationError(`Unknown node type: ${row.type}`);
+/** V2 引用不悬空。 */
+function requireExists(db: Database, ids: number[], label: string): void {
+  for (const id of ids) {
+    if (!Number.isInteger(id)) {
+      throw new ValidationError(`${label} must be proposition ids (integers), got ${String(id)}.`);
+    }
+    if (!repo.propositionExists(db, id)) {
+      throw new ValidationError(`${label} references #${id}, which does not exist.`);
+    }
   }
 }
 
-function assertNodeExists(row: NodeRow | null, id: number): NodeRow {
+/**
+ * V3 写入时附件路径存在。
+ *
+ * 解析基准与结构检查、与审查子进程的 cwd 是同一个(见 structural-check 的
+ * CheckContext 注释):校验器算出与读取侧不同的基准,比没有校验器更糟。
+ *
+ * URL 单独挡:它不是"文件不存在",而是把一个取不回来的东西当成了证据。
+ */
+function requireAttachments(ctx: CheckContext, paths: string[]): void {
+  for (const p of paths) {
+    if (typeof p !== "string" || p.trim() === "") {
+      throw new ValidationError("Attachment paths must be non-empty strings.");
+    }
+    if (p.startsWith("http://") || p.startsWith("https://")) {
+      throw new ValidationError(
+        `Attachment "${p}" is a URL. Attach local files — a link is not something a reviewer can read back.`
+      );
+    }
+    if (!existsSync(resolveAttachment(ctx, p))) {
+      throw new ValidationError(
+        `Attachment "${p}" does not exist (resolved from ${ctx.root}).`
+      );
+    }
+  }
+}
+
+function requireQualifier(q: unknown): Qualifier {
+  if (typeof q !== "string" || !(QUALIFIERS as readonly string[]).includes(q)) {
+    throw new ValidationError(
+      `qualifier must be one of ${QUALIFIERS.join(", ")}, got ${JSON.stringify(q)}.`
+    );
+  }
+  return q as Qualifier;
+}
+
+function mustLoad(db: Database, id: number): PropositionRow {
+  const row = repo.getProposition(db, id);
   if (!row) throw new NotFoundError(id);
   return row;
 }
 
-function assertNodeType(row: NodeRow, expectedType: string): void {
-  if (row.type !== expectedType) {
-    throw new TypeMismatchError(row.id, expectedType, row.type);
-  }
-}
-
 // =============================================================================
-// 审查辅助函数
+// 视图组装
 // =============================================================================
 
-/** 查找引用某 Ground 的所有 Warrants */
-export function findWarrantsUsingGround(db: Database, groundId: number): NodeRow[] {
-  return db.prepare(
-    "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.warrant_id WHERE wg.ground_id = ?"
-  ).all(groundId) as NodeRow[];
-}
-
 /**
- * 判断一个节点是否"已核实"，供 A1/A3/A4 门禁和 compile 阶段共用。
- * 名字不带 Ground 是因为 Ground 不是唯一的消费者：A3/A4 用同一个判据检查
- * Rebuttal（见 hasVerifiedRebuttal）。角色由关系表决定，判据只看节点本身。
- * - statement 类型：verification === "verified"
- * - claim 类型（链式推理）：该 claim 自身 status ∈ {supported, disputed}。
- *   proposed 未经确认、refuted 已被推翻，均不能作为可信 ground。
- *   disputed 包含在内是因为证据冲突本身就是一种经过审查的结论状态
- *   （A3 要求已核实的 Rebuttal，所以走到 disputed 必然经过核实），
- *   且 disputed 没有退路（无法像 refuted 那样改挂窄 Claim）。
- */
-export function isClaimOrStatementVerified(nodeRow: NodeRow): boolean {
-  const data = JSON.parse(nodeRow.data);
-  if (nodeRow.type === "claim") return data.status === "supported" || data.status === "disputed";
-  return data.verification === "verified";
-}
-
-/** 简短标注一个未通过 isClaimOrStatementVerified 的 ground，用于错误/警告文案定位具体节点。 */
-export function describeUnverifiedGround(groundRow: NodeRow): string {
-  if (groundRow.type === "claim") {
-    const data = JSON.parse(groundRow.data);
-    const status = data.status || "proposed";
-    if (status === "proposed") {
-      return `Ground Claim #${groundRow.id} has no verdict yet — settle it before this Claim can be`;
-    }
-    if (status === "refuted") {
-      return `Ground Claim #${groundRow.id} is refuted — reground on what survives it`;
-    }
-    return `Claim #${groundRow.id} not supported`;
-  }
-  return `Ground #${groundRow.id} not verified`;
-}
-
-/** 查找某 Warrant 的 Backings（via warrant_backings 关系表） */
-function findAllBackingsByWarrant(db: Database, warrantId: number): NodeRow[] {
-  return repo.findBackingsByWarrant(db, warrantId);
-}
-
-/** 查找指向目标的 Rebuttals（via rebuttal_targets 关系表） */
-function findAllRebuttalsByTarget(db: Database, targetId: number, targetType?: string): NodeRow[] {
-  return repo.findRebuttalsByTarget(db, targetId, targetType);
-}
-
-/**
- * 检查 Claim 或其 Warrants 是否有**已核实**的 Rebuttal。
+ * 一条命题当前"算数"的 findings。
  *
- * 只看有没有反驳存在是不够的：那样一条 verification="pending"、零附件的
- * Statement 就足以把一个主张标成 refuted，而标成 supported 却要求整条推理
- * 下面的 Ground 全部已核实 —— 说一个主张是假的比说它是真的更省证据。
- * 判据与 Ground 共用（isClaimOrStatementVerified），避免第二份实现漂移。
+ * 只取**最近一次 review** 的那批:design.md §3.1b 说 finding 由"驳回"或
+ * "新一次 review 取代"结算,后者在这里落地。更早的批次不消失——它们还在事件流里,
+ * `get_history` 读得到——只是不再算作待处理。
  */
-export function hasVerifiedRebuttal(db: Database, claimId: number): boolean {
-  if (findAllRebuttalsByTarget(db, claimId, "claim").some(isClaimOrStatementVerified)) return true;
-  for (const w of repo.findWarrantsByClaim(db, claimId)) {
-    if (findAllRebuttalsByTarget(db, w.id, "warrant").some(isClaimOrStatementVerified)) return true;
-  }
-  return false;
-}
+export function findingViews(db: Database, nodeId: number): FindingView[] {
+  const rows = repo.listFindingsByNode(db, nodeId);
+  if (rows.length === 0) return [];
 
-/**
- * A1 的判据：该 Claim 是否有某个 Warrant，其 Grounds 全部已核实。
- *
- * 从 A1 门禁里抽出来，因为撤回核实后的复检需要同一个判据
- * （见 compile-service.ts revertUnsupportedClaimStatuses）。抽出而不是复制一份，
- * 是 PR6 §D7 的教训：同一条政策写两遍，改动一处不会传到另一处，而且两边各自的
- * 测试都会继续通过，漂移从任何一个文件里都看不出来。
- *
- * `blockers` 只服务 A1 的错误文案（要指出是哪条 Warrant 的哪个 Ground 没核实）；
- * 复检只看 `satisfied`。
- *
- * satisfied=false 时 blockers 必须非空。调用点把它拼在破折号后面，空数组会印出一句
- * 以 "— " 结尾的半句话。会漏掉原因的两种形状都不是「Ground 没核实」：一条 Warrant
- * 都没有（循环不进），以及某条 Warrant 没挂 Ground（不能算满足——「全部已核实」在空集
- * 上恒真——但也得留下原因）。今天两种都被更前面的 A0 挡着走不到，写在这里是因为
- * 「不满足就必须说出为什么」是这个返回值的约定，不该依赖调用顺序才成立。
- */
-export function hasWarrantWithAllGroundsVerified(
-  db: Database,
-  claimId: number
-): { satisfied: boolean; blockers: string[] } {
-  const blockers: string[] = [];
-  const warrants = repo.findWarrantsByClaim(db, claimId);
-  if (warrants.length === 0) {
-    return { satisfied: false, blockers: [`Claim #${claimId} has no Warrants`] };
-  }
-  for (const w of warrants) {
-    const groundRows = repo.findGroundsByWarrant(db, w.id);
-    if (groundRows.length === 0) {
-      blockers.push(`Warrant #${w.id}: no Grounds attached`);
-      continue;
-    }
-    const unverified = groundRows.filter(gRow => !isClaimOrStatementVerified(gRow));
-    if (unverified.length === 0) return { satisfied: true, blockers: [] };
-    blockers.push(`Warrant #${w.id}: ${unverified.map(describeUnverifiedGround).join(", ")}`);
-  }
-  return { satisfied: false, blockers };
-}
+  const latest = Math.max(...rows.map((r) => r.review_event_id));
+  const current = rows.filter((r) => r.review_event_id === latest);
 
-/**
- * 检测 Warrant 是否形成完整的推理链（Claim → Warrant → Ground）。
- * 返回链路数据（供审查 agent 使用），或 null（链路不完整）。
- */
-export function detectConnectedChain(
-  db: Database,
-  warrantId: number
-): { claimId: number; warrantId: number; groundIds: number[] } | null {
-  const wRow = repo.getNodeById(db, warrantId);
-  if (!wRow || wRow.type !== "warrant") return null;
+  const dismissals = repo.findDismissals(
+    db,
+    current.map((r) => r.id)
+  );
 
-  const wData = JSON.parse(wRow.data);
-  const claimId: number = wData.claim_id;
-
-  // Use relationship table for ground IDs
-  const groundRows = repo.findGroundsByWarrant(db, warrantId);
-  const groundIds = groundRows.map(g => g.id);
-
-  // 链路不完整：无 Ground 或无 Claim
-  if (groundIds.length === 0 || !claimId) return null;
-
-  const claimRow = repo.getNodeById(db, claimId);
-  if (!claimRow || claimRow.type !== "claim") return null;
-
-  // 验证所有 Ground 存在
-  for (const gid of groundIds) {
-    const gRow = repo.getNodeById(db, gid);
-    if (!gRow || gRow.type !== "statement") return null;
-  }
-
-  return { claimId, warrantId, groundIds };
-}
-
-/**
- * BFS cycle detection: check if adding groundClaimId as ground/backing/rebuttal of a
- * node belonging to targetClaimId creates a cycle.
- *
- * 依赖图的判据只有一条：要定 current 的案，得先知道谁的结论。三种角色都会造出这种
- * 依赖，所以三条边都要走：
- *   - current 的 warrant 的 claim 型 Ground / Backing（要它们成立才能推出 current）
- *   - 反驳 current 或 current 的 warrant 的 claim（current 的 disputed/refuted 依赖它已核实）
- * 只下探 claim 型节点；statement 是叶子，不会把依赖继续往下传。
- */
-function wouldCreateCycle(db: Database, groundClaimId: number, targetClaimId: number): boolean {
-  const visited = new Set<number>();
-  const queue = [groundClaimId];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (visited.has(current)) continue;
-    visited.add(current);
-    if (current === targetClaimId) return true;
-
-    const warrants = repo.findWarrantsByClaim(db, current);
-    const enqueue = (rows: NodeRow[]) => {
-      for (const r of rows) if (!visited.has(r.id)) queue.push(r.id);
+  return current.map((r) => {
+    const hit = dismissals.get(r.id);
+    return {
+      id: r.id,
+      nodeId: r.node_id,
+      question: r.question,
+      confidence: r.confidence,
+      content: r.content,
+      citation: JSON.parse(r.citation),
+      state: hit ? ("acknowledged" as const) : ("pending" as const),
+      ...(hit ? { dismissal: hit } : {}),
+      at: r.at,
     };
+  });
+}
 
-    for (const w of warrants) {
-      // claim 型 Ground + claim 型 Backing：current 的成立依赖它们
-      enqueue(
-        db.prepare(
-          `SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.ground_id WHERE wg.warrant_id = ? AND n.type = 'claim'
-           UNION
-           SELECT n.* FROM nodes n JOIN warrant_backings wb ON n.id = wb.statement_id WHERE wb.warrant_id = ? AND n.type = 'claim'`
-        ).all(w.id, w.id) as NodeRow[]
-      );
-    }
+function viewOf(db: Database, ctx: CheckContext, state: NodeState, row: PropositionRow): PropositionView {
+  return {
+    id: state.id,
+    content: state.content,
+    qualifier: state.qualifier,
+    warrant: state.warrant,
+    evidence: { attachments: state.attachments, nodes: state.evidenceNodes },
+    rebuttals: state.rebuttals,
+    warnings: computeWarningsFor(db, ctx, state),
+    findings: findingViews(db, state.id),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
-    // 反驳 current 或 current 任一 warrant 的 claim：current 的状态依赖它已核实
-    const targetIds = [current, ...warrants.map(w => w.id)];
-    const placeholders = targetIds.map(() => "?").join(",");
-    enqueue(
-      db.prepare(
-        `SELECT n.* FROM nodes n JOIN rebuttal_targets rt ON n.id = rt.statement_id WHERE rt.target_id IN (${placeholders}) AND n.type = 'claim'`
-      ).all(...targetIds) as NodeRow[]
-    );
-  }
-  return false;
+export function propositionView(db: Database, ctx: CheckContext, id: number): PropositionView {
+  const row = mustLoad(db, id);
+  const state = loadNodeState(db, id)!;
+  return viewOf(db, ctx, state, row);
+}
+
+function warningsOf(db: Database, ctx: CheckContext, id: number): StructuralWarning[] {
+  const state = loadNodeState(db, id);
+  return state ? computeWarningsFor(db, ctx, state) : [];
 }
 
 // =============================================================================
-// 创建操作
+// 写入 1:create_propositions
 // =============================================================================
-
-/** 创建 Claim */
-export function createClaim(db: Database, content: string, qualifier?: string | null, tags?: string[]): ClaimNode {
-  if (!content || !content.trim()) {
-    throw new ValidationError("Claim content cannot be empty");
-  }
-  if (tags && tags.length > 0) {
-    assertTagsRegistered(db, tags);
-  }
-  const data: ClaimData = { status: "proposed" };
-  if (qualifier) data.qualifier = qualifier;
-  const row = repo.insertNode(db, "claim", content.trim(), data);
-  if (tags && tags.length > 0) {
-    repo.addNodeTags(db, row.id, tags);
-  }
-  return toClaimNode(row, db);
-}
 
 /**
- * Every validation a Statement write must pass, evaluated against the result
- * state `(content, source, verification, attachments, tags)`.
+ * 新建命题(批量)。**没有 qualifier 入参**,一律落 `unestablished`(api.md §2.1)。
  *
- * Single-item and bulk entry points call this same function so the two cannot
- * drift apart (pr3-batch.md §0.3, §4.0). It performs no writes, which is what
- * lets `create_statements` run it over every item before deciding whether to
- * write any of them (§2.2's validate-all → write-all contract).
+ * `attacks.slot === "warrant"` 且目标理由是内联的时候,系统在同一事务内把那段
+ * 内联理由晋升成命题,再把反驳挂到晋升出来的命题上。这是全系统唯一一处系统替
+ * agent 建节点的地方,所以返回体必须显式报告(`promoted`)。
  */
-export function assertStatementWritable(
+export function createPropositions(
   db: Database,
-  opts: {
-    content: string;
-    source: GroundSource;
-    verification: VerificationStatus;
-    attachments?: string[];
-    tags?: string[];
-  }
-): void {
-  const { content, source, verification, attachments, tags } = opts;
-
-  if (!content || !content.trim()) {
-    throw new ValidationError("Statement content cannot be empty");
+  ctx: CheckContext,
+  items: CreatePropositionItem[]
+): CreateResultItem[] {
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new ValidationError("items must be a non-empty array.");
   }
 
-  if (tags && tags.length > 0) {
-    assertTagsRegistered(db, tags);
-  }
-  const validSources = VALID_GROUND_SOURCES;
-  if (!validSources.includes(source)) {
-    throw new ValidationError(`Invalid source: ${source}. Must be one of: ${validSources.join(", ")}`);
-  }
-  const validVerifications: string[] = ["verified", "pending"];
-  if (!validVerifications.includes(verification)) {
-    throw new ValidationError(`Invalid verification: ${verification}. Must be one of: ${validVerifications.join(", ")}`);
-  }
+  return db.transaction((): CreateResultItem[] => {
+    const out: CreateResultItem[] = [];
 
-  // H1: verified Statement 必须有 attachments（与 updateNode 一致）
-  if (verification === "verified" && (attachments || []).length === 0) {
-    throw new ValidationError(
-      `Cannot create statement as "verified": verified statements must have attachments. Provide scripts, logs, or other evidence files via the attachments parameter.`
-    );
-  }
+    for (const item of items) {
+      const content = requireContent(item.content);
+      const attachments = item.evidence?.attachments ?? [];
+      const evidenceNodes = item.evidence?.nodes ?? [];
 
-  // §4.1: source='literature' with no attachments
-  if (source === 'literature' && (!attachments || attachments.length === 0)) {
-    throw new ValidationError(
-      'source="literature" requires at least one attachment. Provide the reference files (e.g., paper PDF, reference document) as attachments.'
-    );
-  }
-  // §4.3: reject URLs (path resolution needs reviewCwd and is layered on in tools.ts)
-  for (const p of attachments ?? []) {
-    assertNotUrl(p);
-  }
-}
+      requireAttachments(ctx, attachments);
+      requireExists(db, evidenceNodes, "evidence.nodes");
+      if (item.attacks) requireExists(db, [item.attacks.node], "attacks.node");
 
-/** §4.3: attachments must be locally readable files; a URL can never resolve. */
-function assertNotUrl(p: string): void {
-  if (p.startsWith("http://") || p.startsWith("https://")) {
-    throw new ValidationError(`Attachment path "${p}" is a URL. Use local file paths.`);
-  }
-}
+      const warrantText =
+        typeof item.warrant === "string" && item.warrant.trim() !== "" ? item.warrant : null;
 
-/**
- * 创建 Statement 节点（通用）。可选立即挂载为 rebuttal。
- */
-export function createStatement(
-  db: Database,
-  opts: {
-    content: string;
-    source: GroundSource;
-    verification: VerificationStatus;
-    attachments?: string[];
-    rebuttal_for?: { target_id: number; target_type: TargetType };
-    tags?: string[];
-  }
-): StatementNode {
-  const { content, source, verification, attachments, rebuttal_for, tags } = opts;
+      const row = repo.insertProposition(db, content, warrantText);
+      if (attachments.length > 0) repo.addAttachments(db, row.id, attachments);
+      if (evidenceNodes.length > 0) repo.addEvidenceNodes(db, row.id, evidenceNodes);
 
-  assertStatementWritable(db, { content, source, verification, attachments, tags });
+      let promoted: { from_node: number; new_id: number } | undefined;
+      if (item.attacks) {
+        const target = attachRebuttal(db, item.attacks.node, item.attacks.slot, row.id);
+        promoted = target.promoted;
+      }
 
-  const row = repo.insertNode(db, "statement", content.trim(), {
-    source,
-    verification,
-    attachments: attachments || [],
-  });
-
-  if (rebuttal_for) {
-    const targetRow = assertNodeExists(repo.getNodeById(db, rebuttal_for.target_id), rebuttal_for.target_id);
-    if (targetRow.type !== rebuttal_for.target_type) {
-      throw new TypeMismatchError(rebuttal_for.target_id, rebuttal_for.target_type, targetRow.type);
-    }
-    repo.insertRebuttalTarget(db, row.id, rebuttal_for.target_id, rebuttal_for.target_type);
-  }
-
-  if (tags && tags.length > 0) {
-    repo.addNodeTags(db, row.id, tags);
-  }
-
-  return toStatementNode(row, db);
-}
-
-
-/** 创建 Warrant */
-export function createWarrant(
-  db: Database,
-  opts: {
-    content: string;
-    claimId: number;
-    groundIds?: number[];
-    backingIds?: number[];
-  }
-): WarrantNode {
-  const { content, claimId, groundIds, backingIds } = opts;
-
-  if (!content || !content.trim()) {
-    throw new ValidationError("Warrant content cannot be empty");
-  }
-
-  // 校验 claimId
-  const claimRow = assertNodeExists(repo.getNodeById(db, claimId), claimId);
-  assertNodeType(claimRow, "claim");
-
-  // 校验 groundIds：接受 statement 或 claim 类型
-  const gIds = groundIds || [];
-  for (const gid of gIds) {
-    const groundRow = assertNodeExists(repo.getNodeById(db, gid), gid);
-    if (groundRow.type !== "statement" && groundRow.type !== "claim") {
-      throw new TypeMismatchError(gid, "statement", groundRow.type);
-    }
-  }
-
-  // E1: 循环推理检测（仅对 claim-type grounds）
-  for (const gid of gIds) {
-    const gRow = repo.getNodeById(db, gid);
-    if (!gRow || gRow.type !== "claim") continue;
-    if (wouldCreateCycle(db, gRow.id, claimId)) {
-      throw new ValidationError(
-        `Circular chain reasoning detected: Claim #${claimId} would reference itself through Claim #${gid}.`
-      );
-    }
-  }
-
-  const row = repo.insertNode(db, "warrant", content.trim(), {
-    claim_id: claimId,
-  });
-  // warrant_grounds 是 ground 集合的唯一记录，节点 blob 不再存 ground_ids 副本。
-  // INSERT OR IGNORE 顺带吸收调用方传进来的重复 id。
-  for (const gid of gIds) {
-    db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(row.id, gid);
-  }
-  // Also populate warrant_backings relationship table
-  const bIds = backingIds || [];
-  for (const bid of bIds) {
-    const backingRow = assertNodeExists(repo.getNodeById(db, bid), bid);
-    if (backingRow.type !== "statement" && backingRow.type !== "claim") {
-      throw new TypeMismatchError(bid, "statement", backingRow.type);
-    }
-    if (backingRow.type === "claim" && wouldCreateCycle(db, backingRow.id, claimId)) {
-      throw new ValidationError(
-        `Circular chain reasoning detected: Claim #${claimId} would reference itself through Claim #${bid}.`
-      );
-    }
-    db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(row.id, bid);
-  }
-  return toWarrantNode(row, db);
-}
-
-// =============================================================================
-// 读取操作
-// =============================================================================
-
-/** 列出所有 Claim */
-export function listClaims(
-  db: Database,
-  statusFilter?: string,
-  compileStatusFilter?: string,
-  tag?: string,
-  limit: number = 50,
-  offset: number = 0
-): { rows: ClaimNode[]; total: number } {
-  let sql = "SELECT n.* FROM nodes n LEFT JOIN compile_state cs ON cs.claim_id = n.id WHERE n.type = 'claim'";
-  const params: (string | number)[] = [];
-
-  const tagClause = repo.tagFilterClause(tag, false, "n");
-  sql += tagClause.clause;
-  params.push(...tagClause.params);
-
-  if (statusFilter) {
-    const statuses = statusFilter.split(",").map(s => s.trim());
-    sql += ` AND COALESCE(json_extract(n.data, '$.status'), 'proposed') IN (${statuses.map(() => "?").join(", ")})`;
-    params.push(...statuses);
-  }
-
-  if (compileStatusFilter) {
-    const statuses = compileStatusFilter.split(",").map(s => s.trim());
-    // compile_state 是编译状态的唯一存储；没有行 = 从未编译过，用字面量 'null' 过滤。
-    // claim_id 是主键，join 走索引；原先的 json_extract 用不上索引。
-    sql += ` AND COALESCE(cs.verdict, 'null') IN (${statuses.map(() => "?").join(", ")})`;
-    params.push(...statuses);
-  }
-
-  const total = (db.prepare(`SELECT COUNT(*) AS cnt FROM (${sql}) AS sub`).get(...params) as { cnt: number }).cnt;
-
-  const rows = db.prepare(`${sql} ORDER BY n.id LIMIT ? OFFSET ?`).all(...params, limit, offset) as NodeRow[];
-  return { rows: rows.map(r => toClaimNode(r, db)), total };
-}
-
-/** 列出所有 Statement 节点，可按 source / verification / tag / role / without_tag 过滤，支持分页 */
-export function listStatements(
-  db: Database,
-  sourceFilter?: string,
-  verificationFilter?: string,
-  tag?: string,
-  without_tag?: string,
-  role?: string,
-  limit: number = 50,
-  offset: number = 0
-): { rows: StatementNode[]; total: number } {
-  // Build base query
-  let baseSql: string;
-  let baseParams: (string | number)[] = [];
-
-  if (role === "ground") {
-    baseSql = "SELECT DISTINCT n.* FROM nodes n JOIN warrant_grounds wg ON wg.ground_id = n.id WHERE n.type = 'statement'";
-  } else if (role === "backing") {
-    baseSql = "SELECT DISTINCT n.* FROM nodes n JOIN warrant_backings wb ON wb.statement_id = n.id WHERE n.type = 'statement'";
-  } else if (role === "rebuttal") {
-    baseSql = "SELECT DISTINCT n.* FROM nodes n JOIN rebuttal_targets rt ON rt.statement_id = n.id WHERE n.type = 'statement'";
-  } else {
-    baseSql = "SELECT n.* FROM nodes n WHERE n.type = 'statement'";
-  }
-
-  // Build filter clauses
-  let filters: string[] = [];
-  let filterParams: (string | number)[] = [];
-
-  if (sourceFilter) {
-    const sources = sourceFilter.split(",").map(s => s.trim());
-    filters.push(`json_extract(n.data, '$.source') IN (${sources.map(() => "?").join(", ")})`);
-    filterParams.push(...sources);
-  }
-
-  if (verificationFilter) {
-    const statuses = verificationFilter.split(",").map(s => s.trim());
-    filters.push(`json_extract(n.data, '$.verification') IN (${statuses.map(() => "?").join(", ")})`);
-    filterParams.push(...statuses);
-  }
-
-  const tagClause = repo.tagFilterClause(tag, false, "n");
-  if (tagClause.clause) {
-    filters.push(tagClause.clause.replace(/^ AND /, ""));
-    filterParams.push(...tagClause.params);
-  }
-
-  const withoutTagClause = repo.tagFilterClause(without_tag, true, "n");
-  if (withoutTagClause.clause) {
-    filters.push(withoutTagClause.clause.replace(/^ AND /, ""));
-    filterParams.push(...withoutTagClause.params);
-  }
-
-  // For role queries, filters use AND on the outer WHERE clause
-  let dataSql: string;
-  let dataParams: (string | number)[];
-  let countSql: string;
-  let countParams: (string | number)[];
-
-  if (filters.length > 0) {
-    const filterClause = filters.join(" AND ");
-    dataSql = `${baseSql} AND ${filterClause} ORDER BY n.id LIMIT ? OFFSET ?`;
-    dataParams = [...baseParams, ...filterParams, limit, offset];
-    countSql = `SELECT COUNT(*) AS cnt FROM (${baseSql} AND ${filterClause}) AS sub`;
-    countParams = [...baseParams, ...filterParams];
-  } else {
-    dataSql = `${baseSql} ORDER BY n.id LIMIT ? OFFSET ?`;
-    dataParams = [...baseParams, limit, offset];
-    countSql = `SELECT COUNT(*) AS cnt FROM (${baseSql}) AS sub`;
-    countParams = [...baseParams];
-  }
-
-  const total = (db.prepare(countSql).get(...countParams) as { cnt: number }).cnt;
-  const rows = db.prepare(dataSql).all(...dataParams) as NodeRow[];
-  return { rows: rows.map(r => toStatementNode(r, db)), total };
-}
-
-/** 获取节点的完整论证子图 */
-export function getArgument(db: Database, nodeId: number): ArgumentResult {
-  const row = assertNodeExists(repo.getNodeById(db, nodeId), nodeId);
-
-  switch (row.type) {
-    case "claim":
-      return getClaimArgument(db, row);
-    case "warrant":
-      return getWarrantArgument(db, row);
-    default:
-      return getNodeArgument(db, row);
-  }
-}
-
-/**
- * 一个 statement 节点在 get_argument 里的形状 —— Ground / Backing / Rebuttal 共用。
- *
- * 三个角色共用一个映射，是因为它们曾经各写一遍，而 Backing 和 Rebuttal 那两遍漏了
- * source 和 verification。角色由关系表决定，字段不该跟着角色变。
- */
-function toArgumentStatement(row: NodeRow): ArgumentStatement {
-  const data = JSON.parse(row.data);
-  return {
-    id: row.id,
-    content: row.content,
-    attachments: data.attachments || [],
-    source: data.source,
-    verification: data.verification,
-  };
-}
-
-/** 同上，外加"攻击的是哪一条"。目标由调用方给：反驳都是按目标查出来的，那里就知道。 */
-function toArgumentRebuttal(row: NodeRow, targetType: TargetType, targetId: number): ArgumentRebuttal {
-  return { ...toArgumentStatement(row), target_type: targetType, target_id: targetId };
-}
-
-function getClaimArgument(db: Database, claimRow: NodeRow): ClaimArgument {
-  const claim = toClaimNode(claimRow, db);
-
-  // Qualifier (now a Claim attribute)
-  const claimData = JSON.parse(claimRow.data);
-  const qualifier = claimData.qualifier || null;
-
-  // Warrants + their Grounds and Backings
-  const warrantRows = repo.findWarrantsByClaim(db, claim.id);
-  const warrants: ArgumentWarrant[] = warrantRows.map(w => {
-    const groundRows = repo.findGroundsByWarrant(db, w.id);
-
-    const grounds: ArgumentGround[] = groundRows
-      .filter((g): g is NodeRow => g !== null && (g.type === "statement" || g.type === "claim"))
-      .map(toArgumentStatement);
-
-    const backings: ArgumentBacking[] = findAllBackingsByWarrant(db, w.id).map(toArgumentStatement);
-
-    return { id: w.id, content: w.content, grounds, backings };
-  });
-
-  // Rebuttals targeting this claim or its warrants.
-  // 目标在这里是已知的（是按目标查出来的），所以直接带上，不再回查 rebuttal_targets。
-  const rebuttals: ArgumentRebuttal[] = [
-    ...findAllRebuttalsByTarget(db, claim.id, "claim").map(r => toArgumentRebuttal(r, "claim", claim.id)),
-    ...warrantRows.flatMap(w =>
-      findAllRebuttalsByTarget(db, w.id, "warrant").map(r => toArgumentRebuttal(r, "warrant", w.id))
-    ),
-  ];
-
-  return {
-    claim: { ...claim, qualifier, compile_status: repo.getCompileState(db, claim.id)?.verdict ?? null },
-    warrants,
-    rebuttals,
-  } as ClaimArgument;
-}
-
-function getWarrantArgument(db: Database, warrantRow: NodeRow): WarrantArgument {
-  const wData = JSON.parse(warrantRow.data);
-
-  const grounds: ArgumentGround[] = repo.findGroundsByWarrant(db, warrantRow.id)
-    .filter((g): g is NodeRow => g !== null && (g.type === "statement" || g.type === "claim"))
-    .map(toArgumentStatement);
-
-  const backings: ArgumentBacking[] = findAllBackingsByWarrant(db, warrantRow.id).map(toArgumentStatement);
-
-  const rebuttals: ArgumentRebuttal[] = findAllRebuttalsByTarget(db, warrantRow.id, "warrant")
-    .map(r => toArgumentRebuttal(r, "warrant", warrantRow.id));
-
-  return {
-    warrant: { id: warrantRow.id, content: warrantRow.content, claim_id: wData.claim_id },
-    grounds,
-    backings,
-    rebuttals,
-  };
-}
-
-function getNodeArgument(db: Database, row: NodeRow): NodeArgument {
-  const data = JSON.parse(row.data);
-
-  const result: NodeArgument = {
-    node: {
-      id: row.id,
-      type: row.type as any,
-      content: row.content,
-    },
-  };
-
-  // Add type-specific fields
-  if (row.type === "statement") {
-    result.node.attachments = data.attachments || [];
-    result.node.source = data.source;
-    result.node.verification = data.verification;
-
-    // Find warrants that use this statement as a ground (via warrant_grounds)
-    const usingWarrantRows = db.prepare(
-      "SELECT n.* FROM nodes n JOIN warrant_grounds wg ON n.id = wg.warrant_id WHERE wg.ground_id = ?"
-    ).all(row.id) as NodeRow[];
-    result.used_in_warrants = usingWarrantRows.map(w => {
-        const wData = JSON.parse(w.data);
-        const claimRow = repo.getNodeById(db, wData.claim_id);
-        return {
-          warrant_id: w.id,
-          claim_id: wData.claim_id,
-          claim_content: claimRow?.content || "",
-        };
+      repo.appendEvent(db, {
+        nodeId: row.id,
+        op: "create",
+        actor: "tool",
+        payload: {
+          content,
+          warrant: warrantText,
+          evidence: { attachments, nodes: evidenceNodes },
+          ...(item.attacks ? { attacks: item.attacks } : {}),
+        },
+        note: item.note ?? null,
       });
-  }
 
-  // 不查"攻击这个节点的反驳"：这个分支只在节点是 statement 时走到，而反驳只能
-  // 攻击 Claim 或 Warrant（createStatement 的 rebuttal_for 拦住了别的），所以结果恒为空。
+      out.push({
+        id: row.id,
+        warnings: warningsOf(db, ctx, row.id),
+        ...(promoted ? { promoted } : {}),
+      });
+    }
 
-  return result;
+    return out;
+  })();
 }
 
-/** 搜索节点 */
-export function searchNodesService(
+/**
+ * 把 `rebuttalId` 挂到 `targetId` 的反驳槽上,必要时先晋升目标的内联理由。
+ *
+ * 攻击 `content` 与攻击 `warrant` 在存储上同形——都是"某条命题的反驳槽多一条引用",
+ * 差别只在挂到哪条命题上。这正是 §1.2 用晋升换来的东西:不为攻击理由加特例列。
+ */
+function attachRebuttal(
   db: Database,
-  keyword: string,
-  typeFilter?: string,
-  tag?: string,
-  limit: number = 20,
-  offset: number = 0
-): { rows: ToulminNode[]; total: number } {
-  // Virtual role filters: query relationship tables then intersect with keyword.
-  // §2.7: role filtering completes before pagination, and truncation happens after it.
-  const roleJoin: Record<string, string> = {
-    ground: "JOIN warrant_grounds wg ON wg.ground_id = n.id",
-    backing: "JOIN warrant_backings wb ON wb.statement_id = n.id",
-    rebuttal: "JOIN rebuttal_targets rt ON rt.statement_id = n.id",
-  };
-  if (typeFilter && roleJoin[typeFilter]) {
-    let sql = `SELECT DISTINCT n.* FROM nodes n ${roleJoin[typeFilter]} WHERE n.content LIKE ?`;
-    const params: (string | number)[] = [`%${keyword}%`];
-    const tagClause = repo.tagFilterClause(tag, false, "n");
-    sql += tagClause.clause;
-    params.push(...tagClause.params);
-
-    const total = (db.prepare(`SELECT COUNT(*) AS cnt FROM (${sql}) AS sub`).get(...params) as { cnt: number }).cnt;
-    const rows = db.prepare(`${sql} ORDER BY n.id LIMIT ? OFFSET ?`).all(...params, limit, offset) as NodeRow[];
-    return { rows: rows.map(r => toNode(r, db)), total };
+  targetId: number,
+  slot: "content" | "warrant",
+  rebuttalId: number
+): { attachedTo: number; promoted?: { from_node: number; new_id: number } } {
+  if (slot === "content") {
+    repo.addRebuttals(db, targetId, [rebuttalId]);
+    repo.touchProposition(db, targetId);
+    return { attachedTo: targetId };
   }
 
-  // FTS for keyword >= 3 chars, otherwise LIKE
-  const ftsAvail = isFtsAvailable();
-  if (keyword.length >= 3 && ftsAvail) {
-    const result = repo.searchNodesFts(db, keyword, {
-      type: typeFilter as any,
-      tag,
+  const target = mustLoad(db, targetId);
+  const warrant = warrantSlotOf(target);
+
+  if (warrant.kind === "promoted") {
+    // 已经是独立命题了,直接攻击它。
+    repo.addRebuttals(db, warrant.node_id, [rebuttalId]);
+    repo.touchProposition(db, warrant.node_id);
+    return { attachedTo: warrant.node_id };
+  }
+
+  if (warrant.kind === "empty") {
+    // 空槽没有可攻击的对象。这不是认识论判断,是 V2 那一类的悬空引用:
+    // 你指名要攻击的东西不存在。
+    throw new ValidationError(
+      `#${targetId} has no warrant to attack — its warrant slot is empty. ` +
+        `Attack its content instead, or give it a warrant first.`
+    );
+  }
+
+  const { newId } = promoteInline(db, targetId, warrant.text, null, [], [], "system");
+  repo.addRebuttals(db, newId, [rebuttalId]);
+  return { attachedTo: newId, promoted: { from_node: targetId, new_id: newId } };
+}
+
+/**
+ * 内联理由 → 独立命题。`promote_warrant` 与自动晋升共用这一条路径。
+ *
+ * 晋升**不触发原命题重查**(design.md §3.1):原命题的理由在语义上一个字没变,
+ * 变的只是它存在哪儿。但 `warrant_text → warrant_node_id` 会改掉自身指纹,所以
+ * 原命题上的已阅警告仍会复燃——这是指纹派生的既有代价,不为它开特例。
+ */
+function promoteInline(
+  db: Database,
+  fromNode: number,
+  text: string,
+  ownWarrant: string | null,
+  attachments: string[],
+  evidenceNodes: number[],
+  actor: "tool" | "system"
+): { newId: number } {
+  const created = repo.insertProposition(db, text, ownWarrant);
+  if (attachments.length > 0) repo.addAttachments(db, created.id, attachments);
+  if (evidenceNodes.length > 0) repo.addEvidenceNodes(db, created.id, evidenceNodes);
+
+  repo.updatePropositionFields(db, fromNode, {
+    warrantText: null,
+    warrantNodeId: created.id,
+  });
+
+  repo.appendEvent(db, {
+    nodeId: created.id,
+    op: "promote",
+    actor,
+    payload: { from_node: fromNode, new_id: created.id, content: text },
+  });
+
+  return { newId: created.id };
+}
+
+// =============================================================================
+// 写入 2:update_proposition
+// =============================================================================
+
+/**
+ * 改 content / 内联理由 / 证据成员 / 反驳成员。**不接受 qualifier**。
+ *
+ * 成员一律 add/remove,不提供整体替换——整体替换会静默丢成员(见 9393354),
+ * 而"静默"正是这个系统存在的理由。
+ */
+export function updateProposition(
+  db: Database,
+  ctx: CheckContext,
+  params: UpdatePropositionParams
+): UpdateResult {
+  const before = mustLoad(db, params.id);
+
+  return db.transaction((): UpdateResult => {
+    const beforeState = loadNodeState(db, params.id)!;
+    const diff: FieldDiff = {};
+
+    if (params.content !== undefined) {
+      const content = requireContent(params.content);
+      if (content !== before.content) {
+        diff.content = { old: before.content, new: content };
+        repo.updatePropositionFields(db, params.id, { content });
+      }
+    }
+
+    if (params.warrant !== undefined) {
+      if (before.warrant_node_id !== null) {
+        // 理由已经是一条独立命题,改它要改那条命题。指出 id,免得调用方去猜。
+        throw new ValidationError(
+          `#${params.id}'s warrant was promoted to proposition #${before.warrant_node_id}. ` +
+            `Update #${before.warrant_node_id}'s content instead.`
+        );
+      }
+      const next = params.warrant.trim() === "" ? null : params.warrant;
+      if (next !== before.warrant_text) {
+        diff.warrant = { old: before.warrant_text, new: next };
+        repo.updatePropositionFields(db, params.id, { warrantText: next });
+      }
+    }
+
+    const ev = params.evidence;
+    if (ev) {
+      const addA = ev.add_attachments ?? [];
+      const addN = ev.add_nodes ?? [];
+      requireAttachments(ctx, addA);
+      requireExists(db, addN, "evidence.add_nodes");
+
+      if (addA.length > 0) repo.addAttachments(db, params.id, addA);
+      if (ev.remove_attachments?.length) {
+        repo.removeAttachments(db, params.id, ev.remove_attachments);
+      }
+      if (addN.length > 0) repo.addEvidenceNodes(db, params.id, addN);
+      if (ev.remove_nodes?.length) repo.removeEvidenceNodes(db, params.id, ev.remove_nodes);
+    }
+
+    if (params.rebuttals) {
+      const add = params.rebuttals.add ?? [];
+      requireExists(db, add, "rebuttals.add");
+      if (add.length > 0) repo.addRebuttals(db, params.id, add);
+      if (params.rebuttals.remove?.length) {
+        repo.removeRebuttals(db, params.id, params.rebuttals.remove);
+      }
+    }
+
+    const afterState = loadNodeState(db, params.id)!;
+
+    // 成员清单的 diff 事后比,不按入参记:入参说的是"我要求做什么",
+    // 事后比说的是"实际变成了什么"。事件流要记的是后者。
+    recordMemberDiff(diff, "evidence.attachments", beforeState.attachments, afterState.attachments);
+    recordMemberDiff(diff, "evidence.nodes", beforeState.evidenceNodes, afterState.evidenceNodes);
+    recordMemberDiff(diff, "rebuttals", beforeState.rebuttals, afterState.rebuttals);
+
+    if (Object.keys(diff).length === 0) {
+      // 什么都没变就不写事件:一条空 diff 的 update 事件只会稀释事件流。
+      return { id: params.id, warnings: computeWarningsFor(db, ctx, afterState) };
+    }
+
+    // 只改了成员、没改字段时 updatePropositionFields 不会刷 updated_at,补一次。
+    repo.touchProposition(db, params.id);
+    repo.appendEvent(db, {
+      nodeId: params.id,
+      op: "update",
+      actor: "tool",
+      payload: diff,
+      note: params.note ?? null,
+    });
+
+    const notices: string[] = [];
+    if (!params.note && before.qualifier !== "unestablished") {
+      notices.push(suggestNote(params.id, before.qualifier));
+    }
+
+    return {
+      id: params.id,
+      warnings: computeWarningsFor(db, ctx, loadNodeState(db, params.id)!),
+      ...(notices.length > 0 ? { notices } : {}),
+    };
+  })();
+}
+
+function recordMemberDiff<T>(diff: FieldDiff, field: string, before: T[], after: T[]): void {
+  const a = JSON.stringify(before);
+  const b = JSON.stringify(after);
+  if (a !== b) diff[field] = { old: before, new: after };
+}
+
+// =============================================================================
+// 写入 3:set_qualifier(基线的唯一写入者)
+// =============================================================================
+
+/**
+ * 判定可信度(批量),并在同一事务内落基线快照。
+ *
+ * 三件副作用(api.md §2.3):落基线、跑结构检查并返回、未处理 finding 提示。
+ * **违反结构检查不拦截**——返回警告,让 agent 看见,然后由它决定。
+ */
+export function setQualifier(
+  db: Database,
+  ctx: CheckContext,
+  updates: SetQualifierItem[]
+): SetQualifierResultItem[] {
+  if (!Array.isArray(updates) || updates.length === 0) {
+    throw new ValidationError("updates must be a non-empty array.");
+  }
+
+  return db.transaction((): SetQualifierResultItem[] => {
+    const out: SetQualifierResultItem[] = [];
+
+    for (const u of updates) {
+      const before = mustLoad(db, u.id);
+      const qualifier = requireQualifier(u.qualifier);
+
+      repo.writeQualifier(db, u.id, qualifier);
+
+      // 基线 = 判断当时的"我依据的是什么"。写在改 qualifier 之后、读引用之前,
+      // 顺序无关紧要(引用的值不受本次写入影响),但必须在同一事务里。
+      const state = loadNodeState(db, u.id)!;
+      const refs = loadRefStates(db, state);
+      repo.writeBaseline(
+        db,
+        { nodeId: u.id, qualifier, selfFingerprint: selfFingerprintOf(state) },
+        refs.map((r) => ({
+          refId: r.id,
+          refRole: r.role,
+          contentHash: r.contentHash,
+          qualifier: r.qualifier,
+        }))
+      );
+
+      repo.appendEvent(db, {
+        nodeId: u.id,
+        op: "qualifier",
+        actor: "tool",
+        payload: { old: before.qualifier, new: qualifier },
+        note: u.note ?? null,
+      });
+
+      const notices: string[] = [];
+      const unresolved = findingViews(db, u.id).filter((f) => f.state === "pending");
+      if (qualifier !== "unestablished" && unresolved.length > 0) {
+        notices.push(unresolvedFindingsOnSettle(u.id, qualifier, unresolved.length));
+      }
+
+      out.push({
+        id: u.id,
+        qualifier,
+        previous: before.qualifier,
+        warnings: computeWarningsFor(db, ctx, state, refs),
+        ...(notices.length > 0 ? { notices } : {}),
+      });
+    }
+
+    return out;
+  })();
+}
+
+// =============================================================================
+// 写入 4:promote_warrant
+// =============================================================================
+
+/** 把内联理由拎出来立成独立命题,原槽位改为指向它。 */
+export function promoteWarrant(
+  db: Database,
+  ctx: CheckContext,
+  params: PromoteWarrantParams
+): PromoteResult {
+  const row = mustLoad(db, params.id);
+
+  return db.transaction((): PromoteResult => {
+    const warrant = warrantSlotOf(row);
+    if (warrant.kind === "promoted") {
+      throw new ValidationError(
+        `#${params.id}'s warrant is already proposition #${warrant.node_id}.`
+      );
+    }
+    if (warrant.kind === "empty") {
+      throw new ValidationError(
+        `#${params.id} has no inline warrant to promote. Write one with update_proposition first.`
+      );
+    }
+
+    const attachments = params.evidence?.attachments ?? [];
+    const evidenceNodes = params.evidence?.nodes ?? [];
+    requireAttachments(ctx, attachments);
+    requireExists(db, evidenceNodes, "evidence.nodes");
+
+    const ownWarrant =
+      typeof params.warrant === "string" && params.warrant.trim() !== "" ? params.warrant : null;
+
+    const { newId } = promoteInline(
+      db,
+      params.id,
+      warrant.text,
+      ownWarrant,
+      attachments,
+      evidenceNodes,
+      "tool"
+    );
+
+    if (params.note) {
+      repo.appendEvent(db, {
+        nodeId: params.id,
+        op: "update",
+        actor: "tool",
+        payload: { warrant: { old: warrant.text, new: { promoted_to: newId } } },
+        note: params.note,
+      });
+    }
+
+    return { id: params.id, newId, warnings: warningsOf(db, ctx, newId) };
+  })();
+}
+
+// =============================================================================
+// 写入 5:delete_proposition
+// =============================================================================
+
+/**
+ * 硬删。**没有 cascade**:证据槽里挂的是引用不是所有权,级联删会销毁 agent
+ * 没有指名的节点(api.md §2.5)。
+ *
+ * 被引用时从各引用方的槽里摘掉这条引用(否则违反 V2),那些引用方因成员清单
+ * 变化被标为该重查、已阅警告全部复燃——这一条不需要代码,指纹变了 id 就全变。
+ */
+export function deleteProposition(
+  db: Database,
+  ctx: CheckContext,
+  params: { id: number; note?: string }
+): DeleteResult {
+  const row = mustLoad(db, params.id);
+
+  return db.transaction((): DeleteResult => {
+    const state = loadNodeState(db, params.id)!;
+
+    const affected = [
+      ...repo.findEvidenceReferrers(db, params.id),
+      ...repo.findRebuttalTargets(db, params.id),
+      ...repo.findWarrantReferrers(db, params.id),
+    ];
+    const uniqueAffected = [...new Set(affected)].filter((i) => i !== params.id).sort((a, b) => a - b);
+
+    // 墓碑:整节点 before 快照。事件的 node_id 没有外键,正是为了让它活过这一删。
+    repo.appendEvent(db, {
+      nodeId: params.id,
+      op: "delete",
+      actor: "tool",
+      payload: {
+        before: {
+          content: state.content,
+          qualifier: state.qualifier,
+          warrant: state.warrant,
+          evidence: { attachments: state.attachments, nodes: state.evidenceNodes },
+          rebuttals: state.rebuttals,
+          created_at: row.created_at,
+        },
+        affected: uniqueAffected,
+      },
+      note: params.note ?? null,
+    });
+
+    // 引用的摘除由 schema 的 CASCADE / SET NULL 完成;这里只需刷新引用方的
+    // updated_at,让"我变过"在时间线上可见。
+    repo.deleteProposition(db, params.id);
+    for (const id of uniqueAffected) repo.touchProposition(db, id);
+
+    const notices: string[] = [];
+    if (uniqueAffected.length > 0) notices.push(deleteAffected(params.id, uniqueAffected));
+    if (!params.note && row.qualifier !== "unestablished") {
+      notices.push(suggestNote(params.id, row.qualifier));
+    }
+
+    return {
+      id: params.id,
+      affected: uniqueAffected,
+      ...(notices.length > 0 ? { notices } : {}),
+    };
+  })();
+}
+
+// =============================================================================
+// 读取 1:get_argument
+// =============================================================================
+
+/** 读一条命题及其邻域。邻域**不分组**:角色只取决于以谁为中心看(design.md §1.3)。 */
+export function getArgument(
+  db: Database,
+  ctx: CheckContext,
+  params: { id: number; depth?: number }
+): ArgumentResult {
+  const root = propositionView(db, ctx, params.id);
+  const depth = params.depth ?? 1;
+  if (depth <= 0) return { root, neighbors: [] };
+
+  const seen = new Set<number>([params.id]);
+  let frontier: PropositionView[] = [root];
+  const neighbors: PropositionView[] = [];
+
+  for (let d = 0; d < depth; d++) {
+    const next: PropositionView[] = [];
+    for (const node of frontier) {
+      const linked = [
+        ...node.evidence.nodes,
+        ...node.rebuttals,
+        ...(node.warrant.kind === "promoted" ? [node.warrant.node_id] : []),
+      ];
+      for (const id of linked) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const view = propositionView(db, ctx, id);
+        neighbors.push(view);
+        next.push(view);
+      }
+    }
+    if (next.length === 0) break;
+    frontier = next;
+  }
+
+  return { root, neighbors };
+}
+
+// =============================================================================
+// 读取 2:find_propositions
+// =============================================================================
+
+export function findPropositions(
+  db: Database,
+  ctx: CheckContext,
+  params: FindPropositionsParams
+): FindResult {
+  const limit = params.limit ?? 20;
+  const offset = params.offset ?? 0;
+
+  if (!params.has_unresolved) {
+    const { rows, total } = repo.findPropositions(db, {
+      query: params.query,
+      qualifier: params.qualifier,
       limit,
       offset,
     });
-    return { rows: result.rows.map(r => toNode(r, db)), total: result.total };
+    return {
+      items: rows.map((r) => viewOf(db, ctx, loadNodeState(db, r.id)!, r)),
+      total,
+    };
   }
 
-  const result = repo.searchNodes(db, keyword, typeFilter as any, { tag, limit, offset });
-  return { rows: result.rows.map(r => toNode(r, db)), total: result.total };
-}
-
-/** 获取全局统计，含规模块 */
-export function getStats(db: Database): Stats {
-  const counts = repo.countNodesByType(db);
-
-  // Claims by status
-  const byStatus: Record<string, number> = {};
-  for (const row of repo.listNodesByType(db, "claim")) {
-    const status = JSON.parse(row.data).status || "proposed";
-    byStatus[status] = (byStatus[status] || 0) + 1;
-  }
-
-  // Rebuttals by target_type（via rebuttal_targets）。角色的条数交给 scale 块的 roles，
-  // 这里只保留"打在 Claim 上还是 Warrant 上"这个别处没有的分布。
-  const byTargetType: Record<string, number> = {};
-  for (const row of db.prepare("SELECT rt.target_type FROM rebuttal_targets rt").all() as Array<{ target_type: string }>) {
-    const targetType = row.target_type || "unknown";
-    byTargetType[targetType] = (byTargetType[targetType] || 0) + 1;
-  }
-
-  return {
-    claims: { total: counts.claim, by_status: byStatus },
-    warrants: { total: counts.warrant },
-    rebuttals: { by_target_type: byTargetType },
-    scale: buildScaleBlock(db),
-  };
-}
-
-/** Build the scale block for get_stats output */
-const GAP_MATRIX_MAX_LINES = 8;
-
-/**
- * 一个角色有多少条、多少已核实 —— 三个角色共用这一个口径。
- *
- * 从关系表出发取出节点行，再交给 isClaimOrStatementVerified 判核实，不在 SQL 里
- * 另写一份判据。原因：Claim 也可以扮演角色，而写在 SQL 里的
- * `json_extract(data, '$.verification') != 'verified'` 对 Claim 行永远成立，
- * 于是每个 claim 型 Backing / Rebuttal 都会被永久算作未核实，而且不报错。
- * table / column 是调用处写死的字面量，不接受外部输入。
- */
-function countRole(db: Database, table: string, column: string): RoleCount {
-  const rows = db.prepare(
-    `SELECT DISTINCT n.* FROM ${table} r JOIN nodes n ON n.id = r.${column}`
-  ).all() as NodeRow[];
-  const verified = rows.filter(isClaimOrStatementVerified).length;
-  return { total: rows.length, verified, pending: rows.length - verified };
-}
-
-function buildScaleBlock(db: Database): ScaleBlock {
-  // Tag namespace aggregates
-  const allTags = repo.listTagsWithCount(db);
-  const namespaceMap = new Map<string, { count: number; with_nodes: number; cardinality: string }>();
-
-  for (const t of allTags) {
-    const ns = t.name.split(":")[0];
-    const existing = namespaceMap.get(ns) ?? { count: 0, with_nodes: 0, cardinality: "bounded" };
-    existing.count++;
-    if (t.count > 0) existing.with_nodes++;
-    // Get cardinality from tag_namespaces table
-    const card = repo.getNamespaceCardinality(db, ns);
-    if (card) existing.cardinality = card;
-    namespaceMap.set(ns, existing);
-  }
-
-  const namespaces = Array.from(namespaceMap.entries()).map(([name, info]) => ({
-    name,
-    ...info,
-  }));
-
-  // Statement tagging coverage (the §4.2 `Statements:` line counts statements, not tags)
-  const statementTotal = (db.prepare("SELECT COUNT(*) AS cnt FROM nodes WHERE type = 'statement'").get() as { cnt: number }).cnt;
-  const statementTagged = (db.prepare(
-    "SELECT COUNT(DISTINCT nt.node_id) AS cnt FROM node_tags nt JOIN nodes n ON n.id = nt.node_id WHERE n.type = 'statement'"
-  ).get() as { cnt: number }).cnt;
-
-  // Namespace gap matrix: only (dense, bounded) ordered pairs
-  const namespaceGaps: Array<{ from: string; to: string; count: number }> = [];
-  const denseNS = namespaces.filter(n => n.cardinality === "dense").map(n => n.name);
-  const boundedNS = namespaces.filter(n => n.cardinality === "bounded" && n.name !== "meta").map(n => n.name);
-
-  for (const dense of denseNS) {
-    for (const bounded of boundedNS) {
-      if (dense === bounded) continue;
-      const gapCount = (db.prepare(
-        "SELECT COUNT(DISTINCT nt1.node_id) AS cnt FROM node_tags nt1 " +
-        "WHERE nt1.tag LIKE ? AND NOT EXISTS (" +
-        "  SELECT 1 FROM node_tags nt2 WHERE nt2.node_id = nt1.node_id AND nt2.tag LIKE ?" +
-        ")"
-      ).get(`${dense}:%`, `${bounded}:%`) as { cnt: number }).cnt;
-      if (gapCount > 0) {
-        namespaceGaps.push({ from: dense, to: bounded, count: gapCount });
-      }
-    }
-  }
-  // §4.2.1: sort ascending — the real signal shrinks as classification progresses,
-  // so descending order would squeeze it out first. Cap at 8 lines and report the
-  // omitted count, since the reader cannot otherwise know how large the matrix was.
-  namespaceGaps.sort((a, b) => a.count - b.count);
-  const gapsOmitted = Math.max(0, namespaceGaps.length - GAP_MATRIX_MAX_LINES);
-  const shownGaps = namespaceGaps.slice(0, GAP_MATRIX_MAX_LINES);
-
-  // Role counts
-  const groundRole = countRole(db, "warrant_grounds", "ground_id");
-  const backingRole = countRole(db, "warrant_backings", "statement_id");
-  const rebuttalRole = countRole(db, "rebuttal_targets", "statement_id");
-
-  // Claims detail
-  const claimRows = repo.listNodesByType(db, "claim");
-  const compileVerdicts = repo.getAllCompileVerdicts(db);
-  const staleIds: number[] = [];
-  let neverCompiled = 0;
-  let passedAwaiting = 0;
-  for (const row of claimRows) {
-    const data = JSON.parse(row.data);
-    const verdict = compileVerdicts.get(row.id);
-    if (verdict === "stale") staleIds.push(row.id);
-    if (verdict === undefined) neverCompiled++;
-    if (verdict === "passed" && (data.status || "proposed") === "proposed") passedAwaiting++;
-  }
-
-  // Attachments: collect all attachment paths from statement nodes
-  const allAttachments: Array<{ path: string; missing: boolean }> = [];
-  type AttachmentRow = { attachments: string };
-  const attRows = db.prepare(
-    "SELECT json_extract(data, '$.attachments') AS attachments FROM nodes WHERE type = 'statement'"
-  ).all() as AttachmentRow[];
-  for (const ar of attRows) {
-    if (!ar.attachments) continue;
-    try {
-      const paths = JSON.parse(ar.attachments) as string[];
-      for (const p of paths) {
-        const exists = existsSync(p);
-        allAttachments.push({ path: p, missing: !exists });
-      }
-    } catch { /* skip malformed JSON */ }
-  }
-  // Deduplicate by path
-  const seen = new Set<string>();
-  const uniqueAttachments = allAttachments.filter(a => {
-    if (seen.has(a.path)) return false;
-    seen.add(a.path);
-    return true;
+  // has_unresolved 是**算出来**的属性,SQL 里没有对应的列,所以只能先取候选集再过滤。
+  // 分页因此落在过滤之后:先分页会让每页少几条、总数对不上,那比多读一次全表更糟。
+  const { rows } = repo.findPropositions(db, {
+    query: params.query,
+    qualifier: params.qualifier,
+    limit: Number.MAX_SAFE_INTEGER,
+    offset: 0,
   });
 
+  const matched = rows
+    .map((r) => viewOf(db, ctx, loadNodeState(db, r.id)!, r))
+    .filter(
+      (v) =>
+        v.warnings.some((w) => w.state === "pending") ||
+        v.findings.some((f) => f.state === "pending")
+    );
+
+  return { items: matched.slice(offset, offset + limit), total: matched.length };
+}
+
+// =============================================================================
+// 读取 3:get_stats
+// =============================================================================
+
+/** 全图结算摘要。红点清单在前,计数在后(design.md §4)。 */
+export function getStats(db: Database, ctx: CheckContext): SettlementSummary {
+  const byQualifier = Object.fromEntries(QUALIFIERS.map((q) => [q, 0])) as Record<
+    Qualifier,
+    number
+  >;
+  for (const [q, n] of Object.entries(repo.countByQualifier(db))) {
+    byQualifier[q as Qualifier] = n;
+  }
+
+  const unresolvedFindings: SettlementSummary["unresolvedFindings"] = [];
+  const unresolvedWarnings: SettlementSummary["unresolvedWarnings"] = [];
+  const missing: string[] = [];
+  let attachmentTotal = 0;
+
+  for (const id of repo.allPropositionIds(db)) {
+    const state = loadNodeState(db, id)!;
+
+    attachmentTotal += state.attachments.length;
+    for (const p of state.attachments) {
+      if (!existsSync(resolveAttachment(ctx, p))) missing.push(p);
+    }
+
+    const pendingFindings = findingViews(db, id).filter((f) => f.state === "pending");
+    if (pendingFindings.length > 0) {
+      unresolvedFindings.push({ nodeId: id, count: pendingFindings.length });
+    }
+
+    const pendingWarnings = computeWarningsFor(db, ctx, state).filter(
+      (w) => w.state === "pending"
+    );
+    if (pendingWarnings.length > 0) {
+      unresolvedWarnings.push({
+        nodeId: id,
+        codes: [...new Set(pendingWarnings.map((w) => w.code))],
+      });
+    }
+  }
+
   return {
-    tags: { total: allTags.length, namespaces },
-    statements: { total: statementTotal, tagged: statementTagged, untagged: statementTotal - statementTagged },
-    namespace_gaps: shownGaps,
-    gaps_omitted: gapsOmitted,
-    roles: {
-      grounds: groundRole,
-      backings: backingRole,
-      rebuttals: rebuttalRole,
-    },
-    claims_detail: {
-      never_compiled: neverCompiled,
-      stale: { count: staleIds.length, ids: staleIds },
-      passed_awaiting: passedAwaiting,
-    },
-    attachments: { total: uniqueAttachments.length, files: uniqueAttachments },
+    total: repo.countPropositions(db),
+    byQualifier,
+    unresolvedFindings,
+    unresolvedWarnings,
+    attachments: { total: attachmentTotal, missing },
   };
 }
 
 // =============================================================================
-// 修改操作
+// 读取 4:get_history
 // =============================================================================
 
-/** 更新节点，返回节点和警告 */
-export function updateNode(
+/** 事件流。列名 actor 在这里变回契约里的名字 `by`。 */
+export function getHistory(
   db: Database,
-  nodeId: number,
-  params: UpdateNodeParams
-): { node: ToulminNode; warnings: string[] } {
-  return db.transaction((): { node: ToulminNode; warnings: string[] } => {
-  const row = assertNodeExists(repo.getNodeById(db, nodeId), nodeId);
-  const data = JSON.parse(row.data);
-  const warnings: string[] = [];
+  params: { id?: number; limit?: number; offset?: number }
+): { events: EventRecord[]; total: number } {
+  const { rows, total } = repo.listEvents(db, {
+    nodeId: params.id,
+    limit: params.limit ?? 50,
+    offset: params.offset ?? 0,
+  });
+  return { events: rows.map(toEventRecord), total };
+}
 
-  // 更新 content
-  if (params.content !== undefined) {
-    data.content = params.content;
-    // G_CONTENT: verified ground 内容变更 → 退回 pending
-    if (row.type === "statement" && data.verification === "verified") {
-      data.verification = "pending";
-      warnings.push(WARNINGS.verificationRevertedOnContentChange(nodeId));
-    }
+function toEventRecord(row: EventRow): EventRecord {
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = JSON.parse(row.payload) as Record<string, unknown>;
+  } catch {
+    // 载荷解析不了也要把事件交出去:一条读不懂的历史仍然是历史,
+    // 吞掉它才是真正的抹除。
+    payload = { raw: row.payload };
   }
+  return {
+    id: row.id,
+    at: row.at,
+    by: row.actor,
+    op: row.op,
+    nodeId: row.node_id,
+    payload,
+    ...(row.note ? { note: row.note } : {}),
+    ...(row.target_key ? { targetKey: row.target_key } : {}),
+  };
+}
 
-  // 更新 attachments（Ground/Backing/Rebuttal）
-  if (params.attachments !== undefined) {
-    if (row.type === "claim" || row.type === "warrant") {
-      throw new ValidationError(`${row.type} nodes do not have attachments`);
-    }
-    const dropped = ((data.attachments ?? []) as string[]).filter(
-      (p) => !params.attachments!.includes(p)
+// =============================================================================
+// 意见 1:review 落库
+// =============================================================================
+
+/**
+ * 把一次审查的结果写进事件流并建立 findings 索引。
+ *
+ * **答"是"也留痕**:Q1/Q2 全 pass、findings 为空的一次 review 照样写事件——
+ * 没有这一层,"从没 review 过"与"review 过且没问题"分不开(design.md §2.2)。
+ */
+export function recordReview(db: Database, outcome: ReviewOutcome): { eventId: number; findings: Finding[] } {
+  mustLoad(db, outcome.nodeId);
+
+  return db.transaction((): { eventId: number; findings: Finding[] } => {
+    const eventId = repo.appendEvent(db, {
+      nodeId: outcome.nodeId,
+      op: "review",
+      actor: "tool",
+      payload: {
+        Q1: outcome.Q1,
+        Q2: outcome.Q2,
+        model: outcome.model,
+        protocol: outcome.protocolHash,
+        findings: outcome.findings,
+        // 拒收记录进载荷不进表:它不是一条意见,是一次协议违规的证物。
+        ...(outcome.rejected?.length ? { rejected: outcome.rejected } : {}),
+      },
+    });
+
+    // id 在这里才生成:它要 review 事件的 id,而那要等落库(见 FindingDraft 注释)。
+    const findings: Finding[] = outcome.findings.map(
+      (f, i) => ({ ...f, id: `f_${eventId}_${i + 1}` }) as Finding
     );
-    if (dropped.length > 0) {
-      warnings.push(WARNINGS.attachmentsReplaced(nodeId, dropped));
-    }
-    data.attachments = params.attachments;
-  }
+    if (findings.length > 0) repo.insertFindings(db, eventId, findings);
 
-  // 更新 status（Claim only）
-  if (params.status !== undefined) {
-    if (row.type !== "claim") {
-      throw new ValidationError("Only Claim nodes have status");
-    }
-    const validStatuses = ["proposed", "supported", "disputed", "refuted"];
-    if (!validStatuses.includes(params.status)) {
-      throw new ValidationError(`Invalid status: ${params.status}`);
-    }
-
-    // A0: →supported/disputed/refuted 必须已通过 compile
-    if (params.status === "supported" || params.status === "disputed" || params.status === "refuted") {
-      const cs = repo.getCompileState(db, nodeId);
-      if (cs?.verdict !== "passed") {
-        // 四种状态各给各自的出路 —— 尤其是 "failed"，再 compile 一百次结果不变，
-        // 要改的是论证本身。原先这四种情况共用一句 "compile first"，会把 agent 引进死循环。
-        const reason =
-          cs === null
-            ? `argument has not been compiled yet. Run compile_arguments on Claim #${nodeId} first.`
-            : cs.verdict === "stale"
-              ? `the argument changed after it last passed compile. Run compile_arguments on Claim #${nodeId} again.`
-              : `compile rejected this argument — re-running compile will not change that. Fix the argument first. Compile said: ${cs.summary}`;
-        throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "${params.status}": ${reason}`
-        );
-      }
-    }
-
-    // A1: →supported 需至少一个 Warrant 且其 Grounds 全部 verified
-    if (params.status === "supported") {
-      const warrants = repo.findWarrantsByClaim(db, nodeId);
-      if (warrants.length === 0) {
-        throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "supported": Claim has no Warrants. Create a Warrant with verified Grounds first.`
-        );
-      }
-      const { satisfied: hasValidWarrant, blockers } = hasWarrantWithAllGroundsVerified(db, nodeId);
-      if (!hasValidWarrant) {
-        throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "supported": no Warrant has all Grounds verified — ${blockers.join("; ")}`
-        );
-      }
-    }
-
-    // A3: →disputed 需存在已核实的 Rebuttal
-    if (params.status === "disputed") {
-      if (!hasVerifiedRebuttal(db, nodeId)) {
-        throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "disputed": no verified Rebuttals target this Claim or its Warrants. A pending Rebuttal is not enough — verify it, or create one that is.`
-        );
-      }
-    }
-
-    // A4: →refuted 需存在已核实的 Rebuttal
-    if (params.status === "refuted") {
-      if (!hasVerifiedRebuttal(db, nodeId)) {
-        throw new StatusTransitionError(
-          `Cannot mark Claim #${nodeId} as "refuted": no verified Rebuttals exist to justify refutation. A pending Rebuttal is not enough — verify it, or create one that is.`
-        );
-      }
-    }
-
-    data.status = params.status;
-  }
-
-  // 更新 source（Ground/Statement only）
-  if (params.source !== undefined) {
-    if (row.type !== "statement") {
-      throw new ValidationError("Only Ground nodes have source");
-    }
-    const validSources = VALID_GROUND_SOURCES;
-    if (!validSources.includes(params.source)) {
-      throw new ValidationError(`Invalid source: ${params.source}. Must be one of: ${validSources.join(", ")}`);
-    }
-    data.source = params.source;
-  }
-
-  // 更新 verification（Ground/Statement only）
-  if (params.verification !== undefined) {
-    if (row.type !== "statement") {
-      throw new ValidationError("Only Ground nodes have verification");
-    }
-    const prevVerification = data.verification;
-    data.verification = params.verification;
-
-    // H1: verified statement 必须有 attachments
-    if (params.verification === "verified") {
-      const finalAttachments = data.attachments || [];
-      if (finalAttachments.length === 0) {
-        throw new ValidationError(
-          `Cannot mark statement #${nodeId} as "verified": verified statements must have attachments. Provide scripts, logs, or other evidence files via the attachments parameter.`
-        );
-      }
-    }
-
-    // H2: verified → 非 verified 时警告
-    if (prevVerification === "verified" && params.verification !== "verified") {
-      const usingWarrants = findWarrantsUsingGround(db, nodeId);
-      if (usingWarrants.length > 0) {
-        const wids = usingWarrants.map(w => `#${w.id}`).join(", ");
-        warnings.push(WARNINGS.revertGroundVerification(nodeId, wids));
-      }
-    }
-  }
-
-  // 更新 ground_ids（Warrant only）
-  if (params.ground_ids !== undefined) {
-    if (row.type !== "warrant") {
-      throw new ValidationError("Only Warrant nodes have ground_ids");
-    }
-
-    if (params.ground_ids.add) {
-      // 校验要添加的 ground 存在且是 statement 或 claim 类型（在任何写入前）
-      for (const gid of params.ground_ids.add) {
-        const gRow = repo.getNodeById(db, gid);
-        if (!gRow) throw new NotFoundError(gid);
-        if (gRow.type !== "statement" && gRow.type !== "claim") throw new TypeMismatchError(gid, "statement", gRow.type);
-        // E1: cycle detection for claim-type grounds
-        if (gRow.type === "claim") {
-          if (wouldCreateCycle(db, gRow.id, data.claim_id)) {
-            throw new ValidationError(
-              `Circular chain reasoning detected: Claim #${data.claim_id} would reference itself through Claim #${gid}.`
-            );
-          }
-        }
-      }
-      for (const gid of params.ground_ids.add) {
-        repo.insertWarrantGround(db, nodeId, gid);
-      }
-    }
-
-    if (params.ground_ids.remove) {
-      for (const gid of params.ground_ids.remove) {
-        db.prepare("DELETE FROM warrant_grounds WHERE warrant_id = ? AND ground_id = ?").run(nodeId, gid);
-      }
-    }
-  }
-
-  // 更新 backing_ids（Warrant only）
-  if (params.backing_ids !== undefined) {
-    if (row.type !== "warrant") {
-      throw new ValidationError("Only Warrant nodes support backing_ids");
-    }
-    if (params.backing_ids.add) {
-      for (const bid of params.backing_ids.add) {
-        const bRow = repo.getNodeById(db, bid);
-        if (!bRow) throw new NotFoundError(bid);
-        if (bRow.type !== "statement" && bRow.type !== "claim") throw new TypeMismatchError(bid, "statement", bRow.type);
-        if (bRow.type === "claim" && wouldCreateCycle(db, bRow.id, data.claim_id)) {
-          throw new ValidationError(
-            `Circular chain reasoning detected: Claim #${data.claim_id} would reference itself through Claim #${bid}.`
-          );
-        }
-      }
-      repo.addWarrantBackings(db, nodeId, params.backing_ids.add);
-    }
-    if (params.backing_ids.remove) {
-      repo.removeWarrantBackings(db, nodeId, params.backing_ids.remove);
-    }
-  }
-
-  // 更新 rebuttal_ids（Claim or Warrant）
-  if (params.rebuttal_ids !== undefined) {
-    if (row.type !== "claim" && row.type !== "warrant") {
-      throw new ValidationError("Only Claim and Warrant nodes support rebuttal_ids");
-    }
-    if (params.rebuttal_ids.add) {
-      const targetClaimId = row.type === "warrant" ? data.claim_id : nodeId;
-      for (const rid of params.rebuttal_ids.add) {
-        const rRow = repo.getNodeById(db, rid);
-        if (!rRow) throw new NotFoundError(rid);
-        if (rRow.type !== "statement" && rRow.type !== "claim") throw new TypeMismatchError(rid, "statement", rRow.type);
-        if (rRow.type === "claim" && wouldCreateCycle(db, rRow.id, targetClaimId)) {
-          throw new ValidationError(
-            `Circular chain reasoning detected: Claim #${targetClaimId} would reference itself through Claim #${rid}.`
-          );
-        }
-        repo.insertRebuttalTarget(db, rid, nodeId, row.type);
-      }
-    }
-    if (params.rebuttal_ids.remove) {
-      for (const rid of params.rebuttal_ids.remove) {
-        repo.deleteRebuttalTarget(db, rid, nodeId);
-      }
-    }
-  }
-
-  // 更新 tags（任何节点类型）
-  if (params.tags !== undefined) {
-    if (params.tags.add && params.tags.add.length > 0) {
-      assertTagsRegistered(db, params.tags.add);
-      repo.addNodeTags(db, nodeId, params.tags.add);
-    }
-    if (params.tags.remove && params.tags.remove.length > 0) {
-      repo.removeNodeTags(db, nodeId, params.tags.remove);
-    }
-  }
-
-  // 更新 qualifier（Claim only）
-  if (params.qualifier !== undefined) {
-    if (row.type !== "claim") {
-      throw new ValidationError("Only Claim nodes have qualifier");
-    }
-    data.qualifier = params.qualifier;
-  }
-
-  // ── Check block: evaluate result state (after all presence branches) ──
-  // §4.1: source='literature' with no attachments
-  if (data.source === 'literature' && (!data.attachments || data.attachments.length === 0)) {
-    if (params.source !== undefined || params.attachments !== undefined) {
-      throw new ValidationError(
-        'source="literature" requires at least one attachment. Provide the reference files.'
-      );
-    }
-  }
-  // §4.0.2: verified with no attachments
-  if (data.verification === 'verified' && (!data.attachments || data.attachments.length === 0)) {
-    if (params.verification !== undefined || params.attachments !== undefined) {
-      throw new ValidationError(
-        `Cannot mark statement #${nodeId} as "verified": verified statements must have attachments. Provide scripts, logs, or other evidence files via the attachments parameter.`
-      );
-    }
-  }
-  // §4.3: reject URLs (path resolution is handled by the tools layer with reviewCwd)
-  for (const p of data.attachments ?? []) {
-    assertNotUrl(p);
-  }
-
-  // 执行更新
-  const content = params.content !== undefined ? params.content : row.content;
-  const updated = repo.updateNodeFields(db, nodeId, { content, data });
-  return { node: toNode(assertNodeExists(updated, nodeId), db), warnings };
+    return { eventId, findings };
   })();
 }
 
 // =============================================================================
-// 删除操作
+// 意见 2:dismiss
 // =============================================================================
 
-/** Delete a node and ensure ground set consistency (JSON + relation table). Does NOT invalidate. */
-function deleteNodeWithGroundCleanup(db: Database, nodeId: number): void {
-  const row = repo.getNodeById(db, nodeId);
-  // Claims occupy the Ground role too (chain reasoning), so both types need the
-  // JSON half of the removal — ON DELETE CASCADE only covers warrant_grounds.
-  if (row && (row.type === "statement" || row.type === "claim")) {
-    repo.removeGroundFromAllWarrants(db, nodeId);
-  }
-  repo.deleteNodeById(db, nodeId);
-}
-
 /**
- * Collect all node IDs that will be deleted by deleteNode, without deleting them.
- * Drives both deleteNode's invalidation pass and its deletion pass.
- */
-export function collectCollateralNodeIds(db: Database, nodeId: number, cascade: boolean): number[] {
-  const row = repo.getNodeById(db, nodeId);
-  if (!row) return [nodeId];
-  const ids: number[] = [];
-
-  switch (row.type) {
-    case "claim": {
-      if (!cascade) return [nodeId];
-      const warrants = repo.findWarrantsByClaim(db, nodeId);
-      for (const w of warrants) {
-        const backings = findAllBackingsByWarrant(db, w.id);
-        for (const b of backings) ids.push(b.id);
-        const warrantRebuttals = findAllRebuttalsByTarget(db, w.id, "warrant");
-        for (const r of warrantRebuttals) ids.push(r.id);
-        ids.push(w.id);
-      }
-      const claimRebuttals = findAllRebuttalsByTarget(db, nodeId, "claim");
-      for (const r of claimRebuttals) ids.push(r.id);
-      ids.push(nodeId);
-      break;
-    }
-    case "statement":
-      ids.push(nodeId);
-      break;
-    case "warrant": {
-      const backings = findAllBackingsByWarrant(db, nodeId);
-      for (const b of backings) ids.push(b.id);
-      const warrantRebuttals = findAllRebuttalsByTarget(db, nodeId, "warrant");
-      for (const r of warrantRebuttals) ids.push(r.id);
-      ids.push(nodeId);
-      break;
-    }
-    default:
-      ids.push(nodeId);
-  }
-  return ids;
-}
-
-/**
- * 删除节点，返回警告信息数组。
+ * 驳回一条警告或一条 finding,必写理由。
  *
- * `invalidate` is injected rather than imported: compile-service imports from this
- * module, so calling `invalidateCompiledClaims` directly would be circular. It runs
- * for every node in the cascade set, inside this transaction and before any row is
- * removed — the reverse lookup it depends on is unusable afterwards, and it mutates
- * (reverts Claim status, drops compile_state), so a delete that throws must take the
- * invalidation down with it.
- */
-export function deleteNode(
-  db: Database,
-  nodeId: number,
-  cascade: boolean = false,
-  invalidate: (nodeId: number) => void = () => {}
-): string[] {
-  return db.transaction((): string[] => {
-  const row = assertNodeExists(repo.getNodeById(db, nodeId), nodeId);
-  const warnings: string[] = [];
-
-  switch (row.type) {
-    case "claim": {
-      if (!cascade) {
-        throw new CascadeRequiredError();
-      }
-      break;
-    }
-
-    case "statement": {
-      // D1 警告: 检查是否被 Warrant 引用
-      const usingWarrants = findWarrantsUsingGround(db, nodeId);
-      if (usingWarrants.length > 0) {
-        const wids = usingWarrants.map(w => `#${w.id}`).join(", ");
-        warnings.push(WARNINGS.deleteGroundReferencedByWarrant(nodeId, wids));
-      }
-      break;
-    }
-
-    case "warrant": {
-      // D3 警告: 检查 Claim 是否非 proposed
-      const wData = JSON.parse(row.data);
-      const claimId = wData.claim_id;
-      const claimRow = repo.getNodeById(db, claimId);
-      if (claimRow) {
-        const claimData = JSON.parse(claimRow.data);
-        const claimStatus = claimData.status || "proposed";
-        if (claimStatus !== "proposed") {
-          warnings.push(WARNINGS.deleteWarrantSupportingClaim(nodeId, claimId, claimStatus));
-        }
-      }
-      break;
-    }
-
-    default:
-      throw new ValidationError(`Unknown node type: ${row.type}`);
-  }
-
-  // One collection pass drives both invalidation and deletion — a second copy of
-  // this traversal could drift and silently leave a collateral node uninvalidated.
-  const collateralIds = collectCollateralNodeIds(db, nodeId, cascade);
-  for (const id of collateralIds) {
-    invalidate(id);
-  }
-  for (const id of collateralIds) {
-    deleteNodeWithGroundCleanup(db, id);
-  }
-
-  return warnings;
-  })();
-}
-
-// =============================================================================
-// Tag operations
-// =============================================================================
-
-const TAG_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*:[a-z0-9][a-z0-9_-]*$/;
-
-/** Validate a tag name format, throwing ValidationError on failure */
-function assertValidTagName(name: string): void {
-  if (!TAG_NAME_REGEX.test(name)) {
-    throw new ValidationError(
-      `Invalid tag name: "${name}". Tag names must match the format <namespace>:<name>, ` +
-      `e.g., "theme:attention-mechanism". Only lowercase letters, digits, hyphens, and underscores are allowed.`
-    );
-  }
-}
-
-/** Build a near-match suggestions map for finding similar tags */
-function buildTagCounts(db: Database): Map<string, number> {
-  const tags = repo.listTagsWithCount(db);
-  const map = new Map<string, number>();
-  for (const t of tags) {
-    map.set(t.name, t.count);
-  }
-  return map;
-}
-
-/**
- * Assert that all tags in the list are registered.
- * Throws ValidationError with near-match suggestions for unregistered tags.
+ * **作用域是单条**:每项自带 id 与自己的理由。批量调用省的是往返,不是思考——
+ * 这与 §3.1b"不提供命题级批量驳回"不冲突,那一条防的是"一个理由清掉一片"。
  *
- * Exported because the bulk entry points (`create_statements`, `tag_nodes`)
- * must produce the same suggestion quality as the single-node paths — the
- * near-match suggestion is the core of the vocabulary-consistency mechanism,
- * so a hand-rolled existence check at a bulk entry point is a regression.
+ * 驳回是**降级不是删除**:只往事件流里 append 一条,原对象一个字节都不改。
  */
-export function assertTagsRegistered(db: Database, tags: string[]): void {
-  const allNames = repo.getAllTagNames(db);
-  const allNamesSet = new Set(allNames);
-
-  for (const tag of tags) {
-    if (allNamesSet.has(tag)) continue;
-    // §4.3: similarity is computed only once existence has already failed,
-    // so the normal write path never pays for the count aggregation.
-    const cardinalityLookup = (ns: string) => repo.getNamespaceCardinality(db, ns);
-    const nearMatches = findNearMatches(tag, allNames, buildTagCounts(db), cardinalityLookup);
-    const suggestion =
-      nearMatches.length > 0
-        ? nearMatches.map(m => `${m.name} (${m.count} nodes)`).join(", ")
-        : "(none)";
-    throw new ValidationError(HINTS.tagNotRegistered(tag, suggestion));
-  }
-}
-
-/**
- * Register a single tag.
- * Format validation, near-match warnings, cardinality declaration handling.
- */
-export function createTagService(
+export function dismiss(
   db: Database,
-  name: string,
-  description: string,
-  claimId?: number,
-  namespaceCardinality?: NamespaceCardinality
-): { tag: TagRow; warnings: string[] } {
-  assertValidTagName(name);
-
-  // Check if already exists
-  const existing = repo.getTag(db, name);
-  if (existing) {
-    throw new ValidationError(`Tag "${name}" already exists.`);
+  ctx: CheckContext,
+  items: DismissItem[]
+): DismissResultItem[] {
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new ValidationError("items must be a non-empty array.");
   }
 
-  // Validate claim_id if provided
-  if (claimId !== undefined) {
-    const claimRow = repo.getNodeById(db, claimId);
-    if (!claimRow) throw new NotFoundError(claimId);
-    if (claimRow.type !== "claim") {
-      throw new TypeMismatchError(claimId, "claim", claimRow.type);
-    }
-  }
+  return db.transaction((): DismissResultItem[] =>
+    items.map((item) => {
+      if (typeof item.reason !== "string" || item.reason.trim() === "") {
+        // 理由是这个动作全部的审计价值,空理由等于没驳回。
+        throw new ValidationError(`dismiss ${item.id}: reason is required.`);
+      }
 
-  const warnings: string[] = [];
+      const target = classifyDismissTarget(db, ctx, item.id);
+      if (target === "unknown") {
+        // 不抛异常:警告 id 会随图变化复燃成新 id,拿着一个过期 id 来驳回是
+        // 正常现象,不是调用错误。据实说明比失败更有用。
+        return {
+          id: item.id,
+          target,
+          ok: false,
+          message:
+            `No current warning or finding has id ${item.id}. ` +
+            `Structural warnings re-arm with new ids whenever the proposition or its ` +
+            `references change — re-read the proposition and dismiss the current id.`,
+        };
+      }
 
-  // Cardinality declaration handling
-  const namespace = name.split(":")[0];
-  const existingCardinality = repo.getNamespaceCardinality(db, namespace);
-  if (namespaceCardinality !== undefined) {
-    if (existingCardinality === null) {
-      // Not yet declared — store it
-      repo.setNamespaceCardinality(db, namespace, namespaceCardinality);
-    } else if (existingCardinality !== namespaceCardinality) {
-      // Already declared with a different value — warning, no overwrite
-      warnings.push(
-        `Namespace "${namespace}:" is already declared ${existingCardinality}; ignoring "${namespaceCardinality}". ` +
-        `Use a dedicated call if you really mean to change it.`
-      );
-    }
-  }
+      repo.appendEvent(db, {
+        nodeId: null,
+        op: "dismiss",
+        actor: "tool",
+        payload: { reason: item.reason },
+        note: item.reason,
+        targetKey: item.id,
+      });
 
-  // Near-match check (soft warning)
-  const allTags = repo.getAllTagNames(db);
-  const tagCounts = buildTagCounts(db);
-  const cardinalityLookup = (ns: string) => repo.getNamespaceCardinality(db, ns);
-  const nearMatches = findNearMatches(name, allTags, tagCounts, cardinalityLookup);
-  for (const m of nearMatches) {
-    warnings.push(`Near-existing tag \`${m.name}\` (${m.count} nodes) — is this a different category?`);
-  }
-
-  const tag = repo.insertTag(db, name, description, claimId);
-  return { tag, warnings };
+      return { id: item.id, target, ok: true };
+    })
+  )();
 }
 
 /**
- * Bulk register tags (cap 200, per-item independent).
+ * 这个 id 现在指着什么。
+ *
+ * finding id 查表(它不随图变化);警告 id 只能**重算**——它不存在任何表里,
+ * 这正是可寻址性方案的代价与好处:没有一张会漂移的警告状态表。
  */
-export function createTagsService(
+function classifyDismissTarget(
   db: Database,
-  tags: Array<{ name: string; description: string; claim_id?: number }>,
-  namespaceCardinality?: NamespaceCardinality
-): { registered: TagRow[]; failed: Array<{ name: string; reason: string }>; warnings: string[] } {
-  const registered: TagRow[] = [];
-  const failed: Array<{ name: string; reason: string }> = [];
-  const warnings: string[] = [];
-
-  const maxBatch = 200;
-  if (tags.length > maxBatch) {
-    throw new ValidationError(`Batch size exceeds maximum of ${maxBatch} tags.`);
+  ctx: CheckContext,
+  id: string
+): "warning" | "finding" | "unknown" {
+  if (id.startsWith("f_")) {
+    const hit = repo
+      .listAllFindings(db)
+      .some((f) => f.id === id);
+    return hit ? "finding" : "unknown";
   }
-  const batch = tags.slice(0, maxBatch);
-
-  for (const item of batch) {
-    try {
-      const result = createTagService(db, item.name, item.description, item.claim_id, namespaceCardinality);
-      registered.push(result.tag);
-      warnings.push(...result.warnings);
-    } catch (e) {
-      failed.push({ name: item.name, reason: formatServiceError(e) });
-    }
+  for (const nodeId of repo.allPropositionIds(db)) {
+    if (warningsOf(db, ctx, nodeId).some((w) => w.id === id)) return "warning";
   }
-
-  return { registered, failed, warnings };
-}
-
-/** Extract error message from a thrown value */
-function formatServiceError(e: unknown): string {
-  if (e instanceof Error) return e.message;
-  return String(e);
-}
-
-/**
- * Update a tag's description and/or claim_id.
- * `claim_id` goes through the same Claim-type guard as registration: a tag's
- * claim pointer means "the Claim that generalizes this category" (§0.4), so it
- * must not be reachable through a path that skips the type check.
- */
-export function updateTagService(
-  db: Database,
-  name: string,
-  description?: string,
-  claimId?: number
-): TagRow {
-  const existing = repo.getTag(db, name);
-  if (!existing) {
-    throw new ValidationError(`Tag "${name}" does not exist.`);
-  }
-
-  if (claimId !== undefined) {
-    const claimRow = repo.getNodeById(db, claimId);
-    if (!claimRow) throw new NotFoundError(claimId);
-    if (claimRow.type !== "claim") {
-      throw new TypeMismatchError(claimId, "claim", claimRow.type);
-    }
-  }
-
-  repo.updateTag(db, name, description, claimId);
-  return repo.getTag(db, name)!;
-}
-
-/**
- * Rename a tag. `from` must exist; `to` must be format-legal and must not exist.
- */
-export function renameTagService(db: Database, from: string, to: string): { moved: number } {
-  const existing = repo.getTag(db, from);
-  if (!existing) {
-    throw new ValidationError(`Tag "${from}" does not exist.`);
-  }
-  assertValidTagName(to);
-  const targetExisting = repo.getTag(db, to);
-  if (targetExisting) {
-    throw new ValidationError(`Tag "${to}" already exists.`);
-  }
-
-  repo.renameTag(db, from, to);
-  // Count affected nodes from node_tags for the new name
-  const moved = (db.prepare("SELECT COUNT(*) AS cnt FROM node_tags WHERE tag = ?").get(to) as { cnt: number }).cnt;
-  return { moved };
-}
-
-/**
- * Merge tag `from` into `to`. Both must exist.
- * If `from` has a claim_id and `to` does not → warning.
- */
-export function mergeTagsService(db: Database, from: string, to: string): { moved: number; warnings: string[] } {
-  const fromTag = repo.getTag(db, from);
-  const toTag = repo.getTag(db, to);
-  if (!fromTag) throw new ValidationError(`Tag "${from}" does not exist.`);
-  if (!toTag) throw new ValidationError(`Tag "${to}" does not exist.`);
-
-  const warnings: string[] = [];
-  if (fromTag.claim_id !== null && toTag.claim_id === null) {
-    warnings.push(
-      `Tag "${from}" has a claim_id (#${fromTag.claim_id}) but "${to}" does not. ` +
-      `Consider revising the Claim to point at the merged tag.`
-    );
-  }
-
-  const moved = repo.mergeTags(db, from, to);
-  return { moved, warnings };
+  return "unknown";
 }

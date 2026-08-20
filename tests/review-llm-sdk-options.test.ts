@@ -11,7 +11,6 @@
 import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
 import { readdirSync, readFileSync, rmSync } from "fs";
 import type { ReviewConfig } from "../src/review-config.ts";
-import { createTestDb, cleanupDb, makeClaim, makeGround, makeWarrant } from "./helpers.ts";
 
 const testConfig: ReviewConfig = {
   enabled: true,
@@ -19,7 +18,6 @@ const testConfig: ReviewConfig = {
   model: "claude-opus-4-7",
   apiKey: "test-key",
   maxTurns: 10,
-  reviewDir: null,
   auditDir: null,
   dbPath: "/tmp/test.db",
 };
@@ -65,8 +63,13 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
 }));
 
 const { callAgent, callAndParse } = await import("../src/review-llm.ts");
-const { compileArgument } = await import("../src/compile-service.ts");
-const { reviewStatementEvidencePreCreate } = await import("../src/review-sync.ts");
+const { runReview } = await import("../src/review-run.ts");
+const svc = await import("../src/service.ts");
+const { ReviewUnavailableError } = await import("../src/errors.ts");
+const { createTestDb, cleanupDb, checkContextFor } = await import("./helpers.ts");
+
+/** runReview 只用 ctx 解析附件路径,这些用例一个附件都不挂。 */
+const ctx = checkContextFor("/tmp/warranted-sdk-options/.toulmin/graph.db");
 
 describe("callAgent SDK call options", () => {
   beforeEach(() => {
@@ -125,20 +128,26 @@ describe("callAgent SDK call options", () => {
     expect(denied).toEqual(["Read"]);
   });
 
-  test("被拒的审查经 review-sync 落成第三种结局，不是一次干净通过", async () => {
+  test("被拒的审查整次作废,不是一次干净通过", async () => {
+    // console.warn 走 MCP server 的 stderr,主 agent 看不到。被拒意味着审查器可能
+    // 从没读到附件,而 review 不产出 pass —— 记一条 "Q1: pass" 会在图上造出
+    // "忠实性已核实"的假象,所以整次抛掉,一条 review 事件都不留。
     mockMessages = [
       { type: "system", subtype: "permission_denied", tool_name: "Read", tool_use_id: "x" },
-      { type: "result", subtype: "success", result: '{"errors":[],"warnings":[]}' },
+      { type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' },
     ];
     spyOn(console, "warn").mockImplementation(() => {});
 
-    const r = await reviewStatementEvidencePreCreate(testConfig, {
-      content: "一条证据",
-      source: "observed",
-      attachments: ["evidence/x.txt"],
-    });
-    expect(r.deniedTools).toEqual(["Read"]);
-    expect(r.reviewError).toBeDefined();
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
+      const err = await runReview(testConfig, db, id).catch((e) => e);
+      expect(err).toBeInstanceOf(ReviewUnavailableError);
+      expect(err.message).toContain("Read");
+      expect(svc.getHistory(db, { id }).events.some((e) => e.op === "review")).toBe(false);
+    } finally {
+      cleanupDb(db);
+    }
   });
 
   test("仅 success 消息时不调用 console.warn，且正确返回结果", async () => {
@@ -177,46 +186,51 @@ describe("callAgent 全局并发上限", () => {
     expect(peakConcurrency).toBe(2);
   });
 
-  test("一个 Claim + 三个 Warrant 的定义审查与链审查在 compileArgument 中真实并行", async () => {
+  test("多条命题同时 review 时共享同一个全局信号量", async () => {
+    // 信号量是模块级的:限的是"这个进程同时在飞多少次 LLM 调用",不是"每次调用方
+    // 各自限几个"。按调用方分别限流从来限不住总量 —— 上层一个 Promise.all 就穿透了。
+    mockMessages = [
+      { type: "result", subtype: "success", result: '{"Q1":"n/a","Q2":"pass","findings":[]}' },
+    ];
     const db = createTestDb();
     try {
-      const cappedConfig: ReviewConfig = { ...testConfig, maxConcurrency: 3, reviewDir: null };
-      const claim = makeClaim(db, "Test claim");
-      const ground = makeGround(db);
-      makeWarrant(db, claim.id, [ground.id], "Warrant 1");
-      makeWarrant(db, claim.id, [ground.id], "Warrant 2");
-      makeWarrant(db, claim.id, [ground.id], "Warrant 3");
+      const capped: ReviewConfig = { ...testConfig, maxConcurrency: 2 };
+      const ids = svc
+        .createPropositions(db, ctx, [
+          { content: "one" },
+          { content: "two" },
+          { content: "three" },
+          { content: "four" },
+          { content: "five" },
+        ])
+        .map((r) => r.id);
 
-      const result = await compileArgument(db, cappedConfig, claim.id);
+      await Promise.all(ids.map((id) => runReview(capped, db, id)));
 
-      expect(result.verdict).toBe("passed");
-      // 4 个定义审查（1 claim + 3 warrant）+ 1 个链审查 = 5 次 LLM 调用，
-      // 在 maxConcurrency=3 下应真实重叠（peak >= 2），且不超过上限
       expect(peakConcurrency).toBeGreaterThanOrEqual(2);
-      expect(peakConcurrency).toBeLessThanOrEqual(3);
+      expect(peakConcurrency).toBeLessThanOrEqual(2);
     } finally {
       cleanupDb(db);
     }
   });
 
-  test("reviewStatementEvidencePreCreate 与 compile 时定义审查共享全局并发上限", async () => {
+  test("裸 callAgent 与 runReview 共用那一个信号量,不各限各的", async () => {
+    mockMessages = [
+      { type: "result", subtype: "success", result: '{"Q1":"n/a","Q2":"pass","findings":[]}' },
+    ];
     const db = createTestDb();
     try {
-      const cappedConfig: ReviewConfig = { ...testConfig, maxConcurrency: 2, reviewDir: null };
-      const claim = makeClaim(db, "Test claim");
-      const ground = makeGround(db);
-      makeWarrant(db, claim.id, [ground.id], "Test warrant");
+      const capped: ReviewConfig = { ...testConfig, maxConcurrency: 2 };
+      const id = svc.createPropositions(db, ctx, [{ content: "one" }])[0]!.id;
 
       await Promise.all([
-        compileArgument(db, cappedConfig, claim.id),
-        reviewStatementEvidencePreCreate(cappedConfig, { content: "x", source: "observed", attachments: [] }),
-        reviewStatementEvidencePreCreate(cappedConfig, { content: "y", source: "observed", attachments: [] }),
+        runReview(capped, db, id),
+        callAgent(capped, "p", []),
+        callAgent(capped, "p", []),
+        callAgent(capped, "p", []),
       ]);
 
-      // compileArgument (1 claim + 1 warrant + 1 chain) 与两次 statement 证据审查
-      // 共 5 次调用，全部经过同一 callAgent 信号量 —— 组合并发峰值不应超过 cap
-      expect(peakConcurrency).toBeGreaterThanOrEqual(2);
-      expect(peakConcurrency).toBeLessThanOrEqual(2);
+      expect(peakConcurrency).toBe(2);
     } finally {
       cleanupDb(db);
     }
@@ -450,11 +464,11 @@ describe("解析失败后的重试", () => {
 
     const r = await callAndParse(config, "p", [], "/tmp");
 
-    expect(r.errors.length).toBe(1);
+    expect(r._parseFailed).toBe(true);
     // 原来这条只说 "fallback model also failed"，不说是哪个模型 ——
     // 而那个模型名恰好是最可能出错、且用户没选过的东西
-    expect(r.errors[0]!).toContain("claude-opus-4-8");
-    expect(r.errors[0]!).toContain("Agent returned no result");
+    expect(String(r._raw)).toContain("claude-opus-4-8");
+    expect(String(r._raw)).toContain("Agent returned no result");
   });
 });
 

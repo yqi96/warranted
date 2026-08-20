@@ -1,10 +1,3 @@
-function getClaimCompileState(data) {
-  if (!data) return null;
-  if (data.compile_status === 'passed') return 'passed';
-  if (data.compile_status === 'stale')  return 'stale';
-  return null;
-}
-
 function truncate(s, l) {
   return (!s) ? '' : s.length > l ? s.slice(0, l) + '…' : s;
 }
@@ -13,13 +6,11 @@ function escapeHtml(s) {
   return (!s) ? '' : s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function inferTreeEdgeType(sType, tType) {
-  if (sType === 'claim'   && tType === 'warrant') return 'supports';
-  if (sType === 'warrant' && tType === 'ground')  return 'based_on';
-  if (sType === 'ground'  && tType === 'claim')   return 'derives_from';
-  if (sType === 'warrant' && tType === 'backing') return 'reinforces';
-  if (tType === 'rebuttal') return 'challenges';
-  return 'connects';
+/** 理由槽的三种形态渲染成一句话(design.md §1.2)。 */
+function warrantText(w) {
+  if (!w || w.kind === 'empty') return null;
+  if (w.kind === 'inline') return w.text;
+  return `→ #${w.node_id}`;
 }
 
 function refreshGraph() { positionCache.clear(); userHasMoved = false; loadGraph(); }
@@ -30,21 +21,20 @@ function fitGraph() {
 
   const nodeData = [];
   g.select('.nodes-layer').selectAll('.node-group').each(function(d) {
-    nodeData.push({ x: d.x, y: d.y, type: currentLayout === 'tree' ? d.data.type : d.type });
+    nodeData.push({ x: d.x, y: d.y });
   });
   if (!nodeData.length) return;
 
-  // Focus initial view on the first ROOT claim tree, top 4 levels
-  // Root claims are those at y=0 (they have no parent in tree layout)
-  const rootClaims = nodeData.filter(n => n.type === 'claim' && n.y === 0).sort((a, b) => a.x - b.x);
+  // 初始视野落在第一棵树的顶部四层。根在 y=0——树布局里没有父节点的就是根，
+  // 也就是没有任何命题引用的那些顶层结论。
+  const roots = nodeData.filter(n => n.y === 0).sort((a, b) => a.x - b.x);
   let focusNodes = nodeData;
-  if (rootClaims.length > 0) {
-    const firstClaimX = rootClaims[0].x;
-    const nextClaimX  = rootClaims[1]?.x ?? Infinity;
-    const xBound = isFinite(nextClaimX) ? firstClaimX + (nextClaimX - firstClaimX) / 2 : firstClaimX + 1200;
-    // Limit to first tree's x range and first 4 levels of depth (y ≤ 560 at levelH=140)
-    const maxDepthY = 560;
-    const candidates = nodeData.filter(n => n.x >= firstClaimX - 800 && n.x <= xBound + 60 && n.y <= maxDepthY);
+  if (roots.length > 0) {
+    const firstX = roots[0].x;
+    const nextX  = roots[1]?.x ?? Infinity;
+    const xBound = isFinite(nextX) ? firstX + (nextX - firstX) / 2 : firstX + 1200;
+    const maxDepthY = 560;   // levelH=140 → 前 4 层
+    const candidates = nodeData.filter(n => n.x >= firstX - 800 && n.x <= xBound + 60 && n.y <= maxDepthY);
     if (candidates.length >= 3) focusNodes = candidates;
   }
 

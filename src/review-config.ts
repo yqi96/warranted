@@ -39,10 +39,6 @@ import { dirname, resolve } from "path";
  * review-llm.ts acquirePermit 的闸门开度为 0 —— 第一个请求挂进等待队列，
  * 而唤醒队列的条件是"有请求结束"，于是永久静默卡死，连网络请求都没发出去。
  *
- * 同一条规则在 concurrency.ts getDefaultLimit 里写对过一次（Number.isFinite && > 0）。
- * 两处没有合并：那边校验的是环境变量字符串（parseInt 的产物），这边是 JSON 解析出的任意值，
- * 且改完之后两种写法对所有输入判定一致。改其中一处时记得看另一处。
- *
  * 非法值只警告 + 回落，不关闭审查：一个旋钮填错不等于整套功能没法工作
  * （对比 apiKey 缺失 —— 那是真的没法工作，直接返回 null）。
  */
@@ -84,7 +80,6 @@ export interface ReviewConfig {
   maxTurns: number;
   /** 所有 callAgent 调用共享的全局并发上限。默认 4（见 review-llm.ts DEFAULT_MAX_CONCURRENCY） */
   maxConcurrency?: number;
-  reviewDir: string | null;
   /** 审计日志目录。null = 禁用审计。默认 dirname(dbPath)/audit */
   auditDir: string | null;
   dbPath: string;
@@ -148,17 +143,11 @@ export function loadReviewConfig(
   const maxTurns = positiveInt("maxTurns", fileConfig.maxTurns) ?? 10;
   const maxConcurrency = positiveInt("maxConcurrency", fileConfig.maxConcurrency);
   const baseUrl = fileConfig.baseUrl ?? undefined;
-  const reviewDir = dirname(dbPath) + "/reviews";
 
   // auditDir: null = 禁用；string = 自定义；未设置 = 默认路径
   const auditDir = "auditDir" in fileConfig
     ? (fileConfig.auditDir ?? null)
     : dirname(dbPath) + "/audit";
-
-  // 确保 review 目录存在
-  if (!existsSync(reviewDir)) {
-    mkdirSync(reviewDir, { recursive: true });
-  }
 
   // 确保 audit 目录存在（仅在启用时）
   if (auditDir && !existsSync(auditDir)) {
@@ -179,7 +168,6 @@ export function loadReviewConfig(
     // 非法值在 positiveInt 里已经变成 undefined，这里整个键不出现，
     // 由消费处的默认值接管（review-llm.ts DEFAULT_MAX_CONCURRENCY）。
     ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
-    reviewDir,
     auditDir,
     dbPath,
   };

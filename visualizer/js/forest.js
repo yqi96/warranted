@@ -1,120 +1,75 @@
-// 将节点和边转换为适合 d3.hierarchy 的树形结构（森林）
+// 把命题与槽位边转成 d3.hierarchy 能吃的森林。
+//
+// 新本体没有节点类型，所以树的层次不再是 claim→warrant→ground 那种固定三级，
+// 而是"谁引用谁"：根是没有任何命题引用的那些(顶层结论)，孩子是它三个槽位里
+// 指向的命题——证据、晋升后的理由、反驳。
+//
+// 图是多根 DAG 而不是树：同一条命题可以坐在多个证据槽里。d3.hierarchy 不接受
+// DAG，所以一条命题只在第一次被访问到的地方展开，之后再出现就画成收起的引用
+// 节点(`isRef`)。这不是近似——它标出了"这条在别处已经展开过"，正是读图时想知道的。
 function buildForest(nodes, edges) {
   const nodeById = new Map(nodes.map(n => [String(n.id), n]));
 
-  const warrantsByClaim  = new Map(nodes.map(n => [String(n.id), []]));
-  const groundsByWarrant = new Map(nodes.map(n => [String(n.id), []]));
-  const refClaimByGround = new Map(); // chain ground id → referenced claim id
-  const referencedClaims = new Set(); // claims used as chain grounds by other claims
-  const extrasOf = new Map(nodes.map(n => [String(n.id), []])); // backing/rebuttal children
+  const childrenOf = new Map(nodes.map(n => [String(n.id), []]));
+  const cited = new Set();   // 被别的命题引用过 → 不是根
 
-  edges.filter(e => e.type === 'supports').forEach(e => {
-    const cid = String(e.source), wid = String(e.target);
-    if (warrantsByClaim.has(cid)) warrantsByClaim.get(cid).push(wid);
-  });
+  for (const e of edges) {
+    const src = String(e.source), tgt = String(e.target);
+    if (!childrenOf.has(tgt) || !nodeById.has(src)) continue;
+    childrenOf.get(tgt).push({ id: src, edgeType: e.type });
+    cited.add(src);
+  }
 
-  edges.filter(e => e.type === 'based_on').forEach(e => {
-    const gid = String(e.source), wid = String(e.target);
-    if (groundsByWarrant.has(wid)) groundsByWarrant.get(wid).push(gid);
-  });
+  const allIds = nodes.map(n => String(n.id));
+  const rootIds = allIds.filter(id => !cited.has(id));
+  // 全图成环时没有根。取 id 最小的一条当入口，总比什么都不画好。
+  const finalRoots = rootIds.length ? rootIds : (allIds.length ? [allIds[0]] : []);
 
-  // Chain grounds that are actually wired into a warrant via based_on.
-  // Orphaned chain grounds must NOT exclude their referenced claim from roots.
-  const activeChainGrounds = new Set(
-    edges.filter(e => e.type === 'based_on').map(e => String(e.source))
-  );
+  const expanded = new Set();
 
-  edges.filter(e => e.type === 'derives_from').forEach(e => {
-    const refCid = String(e.source), gid = String(e.target);
-    refClaimByGround.set(gid, refCid);
-    if (activeChainGrounds.has(gid)) {
-      referencedClaims.add(refCid);
-    }
-  });
-
-  edges.filter(e => e.type === 'reinforces').forEach(e => {
-    const wid = String(e.source), bid = String(e.target);
-    if (extrasOf.has(wid)) extrasOf.get(wid).push(bid);
-  });
-
-  edges.filter(e => e.type === 'challenges').forEach(e => {
-    const tid = String(e.source), rid = String(e.target);
-    if (extrasOf.has(tid)) extrasOf.get(tid).push(rid);
-  });
-
-  const allClaimIds = nodes.filter(n => n.type === 'claim').map(n => String(n.id));
-  const rootIds  = allClaimIds.filter(c => !referencedClaims.has(c));
-  const finalRoots = rootIds.length ? rootIds : (allClaimIds.length ? [allClaimIds[0]] : []);
-
-  const visitedClaims = new Set();
-
-  function buildLeaf(nodeId) {
-    const n = nodeById.get(nodeId);
+  function build(id, edgeType, depth) {
+    const n = nodeById.get(id);
     if (!n) return null;
-    const displayType = n.type === 'statement' ? (n.data?.primary_role || 'ground') : n.type;
-    const h = { id: nodeId, type: displayType, content: n.content, data: n.data, created_at: n.created_at, updated_at: n.updated_at };
-    const kids = (extrasOf.get(nodeId) || []).map(buildLeaf).filter(Boolean);
+
+    const h = {
+      id,
+      edgeType: edgeType || null,
+      content: n.content,
+      qualifier: n.qualifier,
+      warrant: n.warrant,
+      attachments: n.attachments || [],
+      evidence: n.evidence || [],
+      rebuttals: n.rebuttals || [],
+      warnings: n.warnings || { pending: 0, acknowledged: 0, codes: [] },
+      findings: n.findings || { pending: 0, acknowledged: 0 },
+      created_at: n.created_at,
+      updated_at: n.updated_at,
+      isRef: false,
+    };
+
+    if (expanded.has(id)) { h.isRef = true; return h; }
+    expanded.add(id);
+
+    // 深度上限防的是自引用环：DB 层刻意不加防环 CHECK(循环论证归审查器管，
+    // 不归约束管)，所以环真的会出现在图里，渲染层必须自己扛住。
+    if (depth > 24) { h.isRef = true; return h; }
+
+    const kids = (childrenOf.get(id) || [])
+      .map(c => build(c.id, c.edgeType, depth + 1))
+      .filter(Boolean);
     if (kids.length) h.children = kids;
     return h;
   }
 
-  function buildClaimNode(claimId) {
-    if (visitedClaims.has(claimId)) return null;
-    visitedClaims.add(claimId);
-    const cn = nodeById.get(claimId);
-    if (!cn) return null;
-    const h = { id: claimId, type: 'claim', content: cn.content, data: cn.data, created_at: cn.created_at, updated_at: cn.updated_at, children: [] };
+  const forests = finalRoots.map(id => build(id, null, 0)).filter(Boolean);
 
-    for (const kid of extrasOf.get(claimId) || []) {
-      const kh = buildLeaf(kid);
-      if (kh) h.children.push(kh);
+  // 环里的命题一个根都够不到时，会整片缺席。补成各自的根，别静默丢。
+  for (const id of allIds) {
+    if (!expanded.has(id)) {
+      const h = build(id, null, 0);
+      if (h) forests.push(h);
     }
-
-    for (const wid of warrantsByClaim.get(claimId) || []) {
-      const wn = nodeById.get(wid);
-      if (!wn) continue;
-      const wh = { id: wid, type: 'warrant', content: wn.content, data: wn.data, created_at: wn.created_at, updated_at: wn.updated_at, children: [] };
-
-      for (const kid of extrasOf.get(wid) || []) {
-        const kh = buildLeaf(kid);
-        if (kh) wh.children.push(kh);
-      }
-
-      for (const gid of groundsByWarrant.get(wid) || []) {
-        const gn = nodeById.get(gid);
-        if (!gn) continue;
-        const gh = { id: gid, type: 'ground', content: gn.content, data: gn.data, created_at: gn.created_at, updated_at: gn.updated_at, children: [] };
-
-        const refCid = refClaimByGround.get(gid);
-        if (refCid) {
-          const sub = buildClaimNode(refCid);
-          if (sub) gh.children.push(sub);
-        }
-
-        if (!gh.children.length) delete gh.children;
-        wh.children.push(gh);
-      }
-
-      if (!wh.children.length) delete wh.children;
-      h.children.push(wh);
-    }
-
-    if (!h.children.length) delete h.children;
-    return h;
   }
-
-  const forests = finalRoots.map(buildClaimNode).filter(Boolean);
-
-  // 将未挂入树中的孤立节点作为单节点根追加
-  const inTree = new Set();
-  function collectIds(h) { inTree.add(h.id); (h.children || []).forEach(collectIds); }
-  forests.forEach(collectIds);
-  nodes.forEach(n => {
-    if (!inTree.has(String(n.id))) {
-      const displayType = n.type === 'statement' ? (n.data?.primary_role || 'ground') : n.type;
-      forests.push({ id: String(n.id), type: displayType, content: n.content, data: n.data, created_at: n.created_at, updated_at: n.updated_at });
-    }
-  });
 
   return { forests, crossLinks: [] };
 }

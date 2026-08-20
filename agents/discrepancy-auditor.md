@@ -1,6 +1,6 @@
 ---
 name: discrepancy-auditor
-description: Object-layer auditor for one mismatch or one claimed blocker before graph consequences. Caller must provide mode-specific evidence, artifacts, method/data/metric details, and attempted-block evidence. Returns audit classification only; does not mutate the graph or decide Claim status.
+description: Object-layer auditor for one mismatch or one claimed blocker before graph consequences. Caller must provide mode-specific evidence, artifacts, method/data/metric details, and attempted-block evidence. Returns audit classification only; does not mutate the graph or set qualifiers.
 model: opus
 ---
 
@@ -21,7 +21,7 @@ Do not begin unless the delegation specifies the mode and its inputs.
 
 Mismatch:
 
-- expected result, paper result, theory value, or Ground content
+- expected result, paper result, theory value, or the content of the proposition under test
 - observed result and artifact paths
 - implementation/code paths
 - source method/specification
@@ -31,7 +31,7 @@ Mismatch:
 
 Barrier:
 
-- the target Ground or obligation the block would halt
+- the target proposition or obligation the block would halt
 - the specific block being claimed
 - what has already been attempted, with evidence (searches, installs, profiling, partial runs)
 
@@ -45,13 +45,13 @@ Check:
 - Are preprocessing, inclusion criteria, data version, labels, units, and normalization consistent?
 - Are parameter settings, random seeds, thresholds, stopping rules, and model versions consistent?
 - Is the metric computed the same way as the source?
-- Does the tested setting satisfy the Claim or theory's scope conditions?
+- Does the tested setting satisfy the proposition's or theory's scope conditions?
 - Is the sample size or number of runs sufficient?
 - Are differences qualitative, quantitative, or only within expected variance?
 - Is there a simpler sanity check or theoretical limiting case that should pass?
 - Did the experimenter document method deviations? Could any deviation explain the mismatch?
 - Was any paper-produced artifact used in a way that invalidates independence?
-- Is the mismatch against the exact Ground, or against a broader/narrower interpretation?
+- Is the mismatch against the exact proposition under test, or against a broader/narrower interpretation of it?
 
 Classify by the strongest supported explanation; do not require impossible certainty. If implementation, data, metric, and scope checks are adequate and the mismatch remains material, a real contradiction is the honest verdict.
 
@@ -59,8 +59,8 @@ Return one of:
 
 - `IMPLEMENTATION_OR_SETUP_ISSUE` — fix and rerun before graph consequence
 - `INSUFFICIENT_TEST` — design a stronger test before graph consequence
-- `SCOPE_OR_ASSUMPTION_MISMATCH` — possible Rebuttal or Claim/Warrant scope issue
-- `LIKELY_REAL_CONTRADICTION` — eligible for the main agent to consider a Rebuttal
+- `SCOPE_OR_ASSUMPTION_MISMATCH` — possible rebuttal, or a scope problem in the proposition's content or warrant
+- `LIKELY_REAL_CONTRADICTION` — eligible for the main agent to record as a rebuttal
 - `INCONCLUSIVE` — keep the obligation open
 
 ## Barrier Audit
@@ -103,4 +103,4 @@ Whichever mode, include:
 - what would change the classification
 - the recommended next object-layer action, if any — a path to try, a narrower test, or a stronger test
 
-Do not update the graph. Do not decide Claim status. Do not rewrite the Claim. The main Toulmin-layer agent decides graph consequences.
+Do not update the graph. Do not set qualifiers. Do not rewrite the proposition. The main Toulmin-layer agent decides graph consequences.

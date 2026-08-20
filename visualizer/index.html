@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Toulmin Arguments</title>
+  <title>Warranted</title>
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <link rel="stylesheet" href="css/styles.css">
 </head>
@@ -13,27 +13,27 @@
 <div id="phase-1">
   <div id="phase1-bg" aria-hidden="true"></div>
   <div id="phase1-inner">
-    <div id="phase1-label">Toulmin Argument Map</div>
+    <div id="phase1-label">Warranted · Proposition Graph</div>
 
     <div id="phase1-hero">
       <div id="phase1-total-num" class="phase1-big-num">0</div>
-      <div id="phase1-total-label">ARGUMENTS</div>
+      <div id="phase1-total-label">PROPOSITIONS</div>
     </div>
 
     <div id="phase1-stats">
       <div class="phase1-stat">
-        <div class="phase1-stat-num" id="phase1-verified">0</div>
-        <div class="phase1-stat-label">VERIFIED<br>EVIDENCE</div>
+        <div class="phase1-stat-num" id="phase1-settled">0</div>
+        <div class="phase1-stat-label">正向档<br>SETTLED</div>
       </div>
       <div class="phase1-stat-divider"></div>
       <div class="phase1-stat">
-        <div class="phase1-stat-num" id="phase1-supported">0</div>
-        <div class="phase1-stat-label">SUPPORTED<br>CLAIMS</div>
+        <div class="phase1-stat-num" id="phase1-open">0</div>
+        <div class="phase1-stat-label">未成立<br>UNESTABLISHED</div>
       </div>
       <div class="phase1-stat-divider"></div>
       <div class="phase1-stat">
-        <div class="phase1-stat-num" id="phase1-pending">0</div>
-        <div class="phase1-stat-label">PENDING<br>VERIFICATION</div>
+        <div class="phase1-stat-num" id="phase1-flagged">0</div>
+        <div class="phase1-stat-label">待看一眼<br>FLAGGED</div>
       </div>
     </div>
 
@@ -60,15 +60,15 @@
   <div id="command-window">
     <div id="cw-rest">
       <div id="cw-filters">
-        <button class="type-toggle active" data-type="claim"   title="Claim">C</button>
-        <button class="type-toggle active" data-type="ground"  title="Ground">G</button>
-        <button class="type-toggle active" data-type="warrant" title="Warrant">W</button>
-        <button class="type-toggle active" data-type="backing" title="Backing">B</button>
-        <button class="type-toggle active" data-type="rebuttal" title="Rebuttal">R</button>
+        <button class="band-toggle active band-certainly"     data-qualifier="certainly"     title="certainly">●</button>
+        <button class="band-toggle active band-probably"      data-qualifier="probably"      title="probably">◐</button>
+        <button class="band-toggle active band-possibly"      data-qualifier="possibly"      title="possibly">○</button>
+        <button class="band-toggle active band-unestablished" data-qualifier="unestablished" title="unestablished">·</button>
+        <button class="band-toggle active band-refuted"       data-qualifier="refuted"       title="refuted">✕</button>
       </div>
       <div id="cw-search-hint">
         <span class="cw-search-icon">⌕</span>
-        <span class="cw-hint-text">Search arguments…</span>
+        <span class="cw-hint-text">Search propositions…</span>
         <span class="cw-kbd">⌘K</span>
       </div>
     </div>
@@ -82,54 +82,54 @@
 
       <div id="cw-sections">
         <div class="cw-section">
-          <div class="cw-section-label">节点过滤</div>
+          <div class="cw-section-label">按档位过滤</div>
           <div class="cw-filter-pills">
-            <label class="cw-pill active" data-type="claim">
-              <span class="cw-pill-icon">C</span>
-              <span class="cw-pill-name">Claim</span>
-              <span class="cw-pill-count" id="count-claim">0</span>
+            <label class="cw-pill active band-certainly" data-qualifier="certainly">
+              <span class="cw-pill-icon">●</span>
+              <span class="cw-pill-name">Certainly</span>
+              <span class="cw-pill-count" id="count-certainly">0</span>
             </label>
-            <label class="cw-pill active" data-type="ground">
-              <span class="cw-pill-icon">G</span>
-              <span class="cw-pill-name">Ground</span>
-              <span class="cw-pill-count" id="count-ground">0</span>
+            <label class="cw-pill active band-probably" data-qualifier="probably">
+              <span class="cw-pill-icon">◐</span>
+              <span class="cw-pill-name">Probably</span>
+              <span class="cw-pill-count" id="count-probably">0</span>
             </label>
-            <label class="cw-pill active" data-type="warrant">
-              <span class="cw-pill-icon">W</span>
-              <span class="cw-pill-name">Warrant</span>
-              <span class="cw-pill-count" id="count-warrant">0</span>
+            <label class="cw-pill active band-possibly" data-qualifier="possibly">
+              <span class="cw-pill-icon">○</span>
+              <span class="cw-pill-name">Possibly</span>
+              <span class="cw-pill-count" id="count-possibly">0</span>
             </label>
-            <label class="cw-pill active" data-type="backing">
-              <span class="cw-pill-icon">B</span>
-              <span class="cw-pill-name">Backing</span>
-              <span class="cw-pill-count" id="count-backing">0</span>
+            <label class="cw-pill active band-unestablished" data-qualifier="unestablished">
+              <span class="cw-pill-icon">·</span>
+              <span class="cw-pill-name">Unestablished</span>
+              <span class="cw-pill-count" id="count-unestablished">0</span>
             </label>
-            <label class="cw-pill active" data-type="rebuttal">
-              <span class="cw-pill-icon">R</span>
-              <span class="cw-pill-name">Rebuttal</span>
-              <span class="cw-pill-count" id="count-rebuttal">0</span>
+            <label class="cw-pill active band-refuted" data-qualifier="refuted">
+              <span class="cw-pill-icon">✕</span>
+              <span class="cw-pill-name">Refuted</span>
+              <span class="cw-pill-count" id="count-refuted">0</span>
             </label>
           </div>
         </div>
 
         <div class="cw-section">
-          <div class="cw-section-label">证据验证</div>
+          <div class="cw-section-label">图的状态</div>
           <div class="cw-progress-item">
             <div class="cw-progress-header">
-              <span>Grounds</span>
-              <span id="ground-progress-label" class="cw-progress-count">0/0</span>
+              <span>已判定（正向三档）</span>
+              <span id="settled-progress-label" class="cw-progress-count">0/0</span>
             </div>
             <div class="cw-progress-track">
-              <div class="cw-progress-fill" id="ground-progress-bar" style="width:0%"></div>
+              <div class="cw-progress-fill" id="settled-progress-bar" style="width:0%"></div>
             </div>
           </div>
           <div class="cw-progress-item">
             <div class="cw-progress-header">
-              <span>Claims</span>
-              <span id="claim-progress-label" class="cw-progress-count">0/0</span>
+              <span>待看一眼</span>
+              <span id="attention-progress-label" class="cw-progress-count">0/0</span>
             </div>
             <div class="cw-progress-track">
-              <div class="cw-progress-fill" id="claim-progress-bar" style="width:0%"></div>
+              <div class="cw-progress-fill cw-progress-fill-warn" id="attention-progress-bar" style="width:0%"></div>
             </div>
           </div>
         </div>
@@ -163,8 +163,8 @@
     <div id="graph"></div>
     <div id="empty-state" style="display:none">
       <p style="font-size:40px;margin-bottom:12px;opacity:0.3">◈</p>
-      <p>暂无论证数据</p>
-      <p style="font-size:12px;margin-top:6px">使用 MCP 工具创建节点后刷新</p>
+      <p>暂无命题</p>
+      <p style="font-size:12px;margin-top:6px">使用 MCP 工具创建命题后刷新</p>
     </div>
   </div>
 
@@ -180,7 +180,7 @@
       <span id="sb-live-dot" class="sb-dot"></span>
       <span id="sb-live-text">—</span>
       <span class="sb-sep">·</span>
-      <span id="stat-total">0</span> nodes
+      <span id="stat-total">0</span> propositions
     </div>
     <div id="sb-right">
       <span id="selection-count" style="display:none; color:#4FDFFF; font-size:11px; font-weight:600; letter-spacing:0.04em;"></span>
@@ -188,13 +188,13 @@
   </div>
 </div>
 
-<!-- ════════ Hidden legacy panel (DOM constraint: data.js queries these) ════════ -->
+<!-- ════════ Hidden control panel (DOM constraint: data.js / app.js query these) ════════ -->
 <div id="filter-panel" aria-hidden="true">
-  <input type="checkbox" data-type="claim" checked>
-  <input type="checkbox" data-type="ground" checked>
-  <input type="checkbox" data-type="warrant" checked>
-  <input type="checkbox" data-type="backing" checked>
-  <input type="checkbox" data-type="rebuttal" checked>
+  <input type="checkbox" data-qualifier="certainly" checked>
+  <input type="checkbox" data-qualifier="probably" checked>
+  <input type="checkbox" data-qualifier="possibly" checked>
+  <input type="checkbox" data-qualifier="unestablished" checked>
+  <input type="checkbox" data-qualifier="refuted" checked>
   <input type="radio" name="layout" value="tree" checked>
   <input type="radio" name="layout" value="force">
   <input type="text" id="search-input">

@@ -168,21 +168,12 @@ function extractFromFences(text: string): string | null {
   return null;
 }
 
-function toStr(e: unknown): string {
-  if (typeof e === "string") return e;
-  if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
-  return String(e);
-}
-
 /**
  * 从 Agent 响应文本中提取 JSON 对象（通用解析器）。
  * 自动剥除 markdown 代码围栏，返回任意 JSON 对象。
  * 如果解析失败，在返回值中标记 _parseFailed: true。
  */
-export function parseLLMResponse(
-  raw: string,
-  _fallback: string
-): Record<string, unknown> {
+export function parseLLMResponse(raw: string): Record<string, unknown> {
   let jsonText = raw.trim();
   const extracted = extractFromFences(jsonText);
   if (extracted !== null) {
@@ -194,20 +185,23 @@ export function parseLLMResponse(
     if (parsed && typeof parsed === "object") {
       return parsed;
     }
-    return { _parseFailed: true, errors: [jsonText.slice(0, 500)], warnings: [] };
+    return { _parseFailed: true, _raw: jsonText.slice(0, 500) };
   } catch {
-    return { _parseFailed: true, errors: [raw.slice(0, 500)], warnings: [] };
+    return { _parseFailed: true, _raw: raw.slice(0, 500) };
   }
 }
 
 /**
- * 调用 Agent 并解析结果。解析失败时重试一次。
+ * 调用 Agent 并解析结果。解析失败时重试一次，两次都失败则返回带 `_parseFailed` 的对象。
+ *
+ * 返回的是**原样的 JSON 对象**，不预设任何字段形状：调用方自己知道它约的是什么协议
+ * （review-run.ts 约的是 Q1/Q2/findings），这里只负责"拿到一个能读的对象"。
  *
  * 重试用 config.fallbackModel，没配就用同一个 config.model。
  * 这里原来写死 `model: "claude-opus-4-7", maxTurns: 3`：一个 2026-07 填进来的
  * Anthropic 官方模型 ID，加上一个凭空砍到 3 的轮数上限。两者都是丢用户的配置 ——
  * 配了转发站的部署未必有这个模型名，模型不存在时 callAgent 抛错，被下面的 catch
- * 接成一条 "Reviewer error"，于是一次本该救场的重试变成归咎于审查器的编译错误，
+ * 接成一条错误，于是一次本该救场的重试变成归咎于审查器的失败，
  * 而那个模型名不是用户选的。轮数同理：解析失败的原因是"输出不是 JSON"，
  * 不是"轮数太多"，没有理由借这个机会把 20 轮改成 3 轮 —— 附件都可能读不完。
  */
@@ -217,29 +211,30 @@ export async function callAndParse(
   config: ReviewConfig,
   prompt: string,
   attachments: string[],
-  cwd: string
-): Promise<{ errors: string[]; warnings: string[] }> {
+  cwd: string,
+  deniedOut?: string[]
+): Promise<Record<string, unknown>> {
   const requestId = crypto.randomUUID();
-  const raw = await callAgent(config, prompt + NO_FENCES_SUFFIX, attachments, cwd, requestId);
-  const parsed = parseLLMResponse(raw, "");
-
-  if (!parsed._parseFailed) {
-    return {
-      errors: ((parsed.errors as unknown[]) || []).map(toStr),
-      warnings: ((parsed.warnings as unknown[]) || []).map(toStr),
-    };
-  }
+  const raw = await callAgent(config, prompt + NO_FENCES_SUFFIX, attachments, cwd, requestId, deniedOut);
+  const parsed = parseLLMResponse(raw);
+  if (!parsed._parseFailed) return parsed;
 
   // 解析失败 → 重试一次（同一 requestId，便于关联）
   const retryConfig: ReviewConfig = { ...config, model: config.fallbackModel ?? config.model };
   try {
-    const retryRaw = await callAgent(retryConfig, prompt + NO_FENCES_SUFFIX, attachments, cwd, requestId);
-    const retryParsed = parseLLMResponse(retryRaw, "");
-    return {
-      errors: ((retryParsed.errors as unknown[]) || []).map(toStr),
-      warnings: ((retryParsed.warnings as unknown[]) || []).map(toStr),
-    };
+    const retryRaw = await callAgent(
+      retryConfig,
+      prompt + NO_FENCES_SUFFIX,
+      attachments,
+      cwd,
+      requestId,
+      deniedOut
+    );
+    return parseLLMResponse(retryRaw);
   } catch (e) {
-    return { errors: [`Reviewer error: retry with model ${retryConfig.model} also failed: ${e}`], warnings: [] };
+    return {
+      _parseFailed: true,
+      _raw: `retry with model ${retryConfig.model} also failed: ${e}`,
+    };
   }
 }

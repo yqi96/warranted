@@ -30,12 +30,6 @@ rect.rubber-band {
   --gold-rgb:    200, 164, 72;
   --gold-dim:    rgba(200, 164, 72, 0.35);
 
-  /* Semantic node accent colors */
-  --clr-ground:   #5B9BD5;
-  --clr-warrant:  #9B7FCE;
-  --clr-backing:  #5EA87A;
-  --clr-rebuttal: #C86A5A;
-
   --radius-lg:   14px;
   --radius-md:   10px;
   --radius-sm:   7px;
@@ -373,7 +367,7 @@ body {
   display: flex;
   gap: 4px;
 }
-.type-toggle {
+.band-toggle {
   width: 32px;
   height: 32px;
   background: rgba(255,255,255,0.05);
@@ -390,20 +384,36 @@ body {
   align-items: center;
   justify-content: center;
 }
-.type-toggle:hover {
+.band-toggle:hover {
   background: rgba(var(--gold-rgb), 0.10);
   border-color: rgba(var(--gold-rgb), 0.25);
   color: var(--gold);
 }
-.type-toggle.active {
+.band-toggle.active {
   background: rgba(var(--gold-rgb), 0.12);
   border-color: rgba(var(--gold-rgb), 0.30);
   color: var(--gold);
 }
-.type-toggle.inactive {
+.band-toggle.inactive {
   background: rgba(255,255,255,0.02);
   border-color: rgba(255,255,255,0.06);
   color: var(--text-3);
+}
+/* 勾选时按档着色，配色与图上的节点同一套(js/config.js)——图例和图不一致
+   等于没有图例。未勾选的一律褪成灰，靠 .inactive 覆盖在后面。 */
+.band-toggle.active.band-certainly     { color:#C8A448; background:rgba(200,164,72,0.14); border-color:rgba(200,164,72,0.34); }
+.band-toggle.active.band-probably      { color:#C4B078; background:rgba(196,176,120,0.12); border-color:rgba(196,176,120,0.28); }
+.band-toggle.active.band-possibly      { color:#A0B8C8; background:rgba(160,184,200,0.10); border-color:rgba(160,184,200,0.26); }
+.band-toggle.active.band-unestablished { color:#9E9EA3; background:rgba(255,255,255,0.05); border-color:rgba(255,255,255,0.14); }
+.band-toggle.active.band-refuted       { color:#C87858; background:rgba(200,120,88,0.12); border-color:rgba(200,120,88,0.30); }
+.band-toggle.inactive.band-certainly,
+.band-toggle.inactive.band-probably,
+.band-toggle.inactive.band-possibly,
+.band-toggle.inactive.band-unestablished,
+.band-toggle.inactive.band-refuted {
+  color: var(--text-3);
+  background: rgba(255,255,255,0.02);
+  border-color: rgba(255,255,255,0.06);
 }
 
 #cw-search-hint {
@@ -518,6 +528,11 @@ body {
   border-color: rgba(var(--gold-rgb), 0.28);
   color: var(--gold);
 }
+.cw-pill.active.band-certainly     { color:#C8A448; background:rgba(200,164,72,0.14); border-color:rgba(200,164,72,0.32); }
+.cw-pill.active.band-probably      { color:#C4B078; background:rgba(196,176,120,0.12); border-color:rgba(196,176,120,0.26); }
+.cw-pill.active.band-possibly      { color:#A0B8C8; background:rgba(160,184,200,0.10); border-color:rgba(160,184,200,0.24); }
+.cw-pill.active.band-unestablished { color:#9E9EA3; background:rgba(255,255,255,0.05); border-color:rgba(255,255,255,0.13); }
+.cw-pill.active.band-refuted       { color:#C87858; background:rgba(200,120,88,0.12); border-color:rgba(200,120,88,0.28); }
 .cw-pill-icon { font-size: 11px; }
 .cw-pill-count {
   font-size: 10px;
@@ -528,29 +543,6 @@ body {
   color: var(--text-3);
   min-width: 20px;
   text-align: center;
-}
-
-/* Layout pills */
-.cw-layout-pills { display: flex; gap: 5px; }
-.cw-layout-btn {
-  padding: 5px 14px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: var(--radius-sm);
-  color: var(--text-2);
-  font-size: 12px;
-  cursor: pointer;
-  font-family: inherit;
-  transition: background 0.13s, color 0.13s, border-color 0.13s;
-}
-.cw-layout-btn.active {
-  background: rgba(var(--gold-rgb), 0.12);
-  border-color: rgba(var(--gold-rgb), 0.28);
-  color: var(--gold);
-}
-.cw-layout-btn:hover:not(.active) {
-  background: rgba(255,255,255,0.07);
-  color: var(--text);
 }
 
 /* Progress in command window */
@@ -579,6 +571,10 @@ body {
   background: linear-gradient(90deg, rgba(var(--gold-rgb),0.6), var(--gold));
   border-radius: 100px;
   transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* 待看那条不用金色：它不是进度，涨上去不是好事，也不是坏事。 */
+.cw-progress-fill-warn {
+  background: linear-gradient(90deg, rgba(255,149,0,0.45), rgba(255,149,0,0.85));
 }
 
 /* DB section */
@@ -687,16 +683,15 @@ body {
   align-items: center;
   gap: 8px;
 }
-.bs-type-tag {
+.bs-band-tag {
   padding: 2px 8px;
   border-radius: 5px;
   font-size: 9.5px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.6px;
-  background: rgba(var(--gold-rgb), 0.18);
-  color: var(--gold);
-  border: 1px solid rgba(var(--gold-rgb), 0.28);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.14);
 }
 #bs-close {
   background: none;
@@ -741,6 +736,8 @@ body {
   margin-bottom: 3px;
 }
 .bs-field-value { font-size: 12px; color: var(--text); }
+.bs-field-click { cursor: pointer; transition: background 0.13s; }
+.bs-field-click:hover { background: rgba(var(--gold-rgb), 0.10); }
 
 .bs-section { margin-bottom: 14px; }
 .bs-section-title {
@@ -763,25 +760,77 @@ body {
 }
 .bs-edge-item:hover { background: rgba(var(--gold-rgb), 0.12); }
 
-/* Status badges */
-.status-badge {
+/* ── 档位徽章 ──
+   五档是一条有序标尺(design.md §1.2)，颜色跟着序走，和图上的节点同一套。
+   refuted 不画成"错误红"：一条被推翻的命题是**结论**，不是故障，而且它照样
+   可以当证据用——你用的是"它被推翻"这个事实。 */
+.band-badge {
   display: inline-block;
   padding: 2px 9px;
   border-radius: 11px;
   font-size: 10.5px;
   font-weight: 600;
 }
-.status-proposed  { background: rgba(255,255,255,0.05); color: var(--text-2); border: 1px solid rgba(255,255,255,0.09); }
-.status-supported { background: rgba(74,148,100,0.13); color: #6DC890; border: 1px solid rgba(74,148,100,0.22); }
-.status-disputed  { background: rgba(var(--gold-rgb),0.13); color: var(--gold); border: 1px solid rgba(var(--gold-rgb),0.22); }
-.status-refuted   { background: rgba(200,80,60,0.13); color: #C87858; border: 1px solid rgba(200,80,60,0.22); }
+.band-badge.band-certainly     { background: rgba(200,164,72,0.14);  color: #C8A448; border: 1px solid rgba(200,164,72,0.30); }
+.band-badge.band-probably      { background: rgba(196,176,120,0.12); color: #C4B078; border: 1px solid rgba(196,176,120,0.26); }
+.band-badge.band-possibly      { background: rgba(160,184,200,0.10); color: #A0B8C8; border: 1px solid rgba(160,184,200,0.24); }
+.band-badge.band-unestablished { background: rgba(255,255,255,0.05); color: #9E9EA3; border: 1px solid rgba(255,255,255,0.12); }
+.band-badge.band-refuted       { background: rgba(200,120,88,0.12);  color: #C87858; border: 1px solid rgba(200,120,88,0.28); }
 
-.veri-badge { display: inline-block; padding: 2px 9px; border-radius: 11px; font-size: 10.5px; font-weight: 600; }
-.veri-verified { background: rgba(74,148,100,0.13); color: #6DC890; border: 1px solid rgba(74,148,100,0.22); }
-.veri-pending  { background: rgba(255,255,255,0.05); color: var(--text-2); border: 1px solid rgba(255,255,255,0.09); }
+/* 头部那枚档位标签：底色统一，字色由内联的 nodeColor 给，跟图上完全一致。 */
+.bs-band-tag.band-certainly     { background: rgba(200,164,72,0.14); }
+.bs-band-tag.band-probably      { background: rgba(196,176,120,0.12); }
+.bs-band-tag.band-possibly      { background: rgba(160,184,200,0.10); }
+.bs-band-tag.band-unestablished { background: rgba(255,255,255,0.05); }
+.bs-band-tag.band-refuted       { background: rgba(200,120,88,0.12); }
 
-.compile-badge-passed { display: inline-block; padding: 2px 9px; border-radius: 11px; font-size: 10.5px; font-weight: 600; background: rgba(74,148,100,0.13); color: #6DC890; border: 1px solid rgba(74,148,100,0.22); }
-.compile-badge-stale  { display: inline-block; padding: 2px 9px; border-radius: 11px; font-size: 10.5px; font-weight: 600; background: rgba(var(--gold-rgb),0.13); color: var(--gold); border: 1px solid rgba(var(--gold-rgb),0.22); }
+/* ── 待看清单(警告 + finding) ──
+   已阅的不删掉、只压暗：dismiss 是"我看过了"，不是"这事没发生过"。底层事实再变
+   时警告会自动复燃，留着它才对得上那条行为。 */
+.bs-att-list { list-style: none; display: flex; flex-direction: column; gap: 5px; }
+.bs-att-item {
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  line-height: 1.45;
+  background: rgba(255,149,0,0.07);
+  border: 1px solid rgba(255,149,0,0.18);
+  color: var(--text-2);
+}
+.bs-att-item.att-finding {
+  background: rgba(224,90,74,0.07);
+  border-color: rgba(224,90,74,0.18);
+}
+.bs-att-item.att-acknowledged {
+  background: rgba(255,255,255,0.03);
+  border-color: rgba(255,255,255,0.07);
+  color: var(--text-3);
+  opacity: 0.65;
+}
+.att-code {
+  display: inline-block;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  margin-right: 6px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.07);
+  color: var(--text-2);
+}
+.att-msg { color: inherit; }
+.att-cite {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-style: italic;
+}
+.att-dismissal {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
 
 /* ════════════════════════════════════════════
    STATUS BAR
@@ -816,13 +865,6 @@ body {
   flex-shrink: 0;
 }
 .sb-sep { opacity: 0.3; font-size: 10px; }
-#sb-layout {
-  font-size: 10.5px;
-  padding: 2px 8px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.07);
-  border-radius: 5px;
-}
 
 /* Live dot states */
 @keyframes livePulse {
@@ -915,14 +957,19 @@ body {
   pointer-events: none;
   letter-spacing: -0.1px;
 }
-.node-type-label {
-  fill: rgba(255,255,255,0.85);
+/* 不设 fill：颜色由 drawNodeShape 按档位内联给。样式表里的 fill 会盖掉表现属性，
+   写在这儿等于把档位配色废掉。 */
+.node-id-label {
   font-family: -apple-system, "SF Pro Text", BlinkMacSystemFont, sans-serif;
   font-size: 8px;
   pointer-events: none;
-  text-transform: uppercase;
   letter-spacing: 0.8px;
   font-weight: 700;
+}
+.node-band-label {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  pointer-events: none;
+  font-weight: 600;
 }
 .node-icon {
   fill: rgba(255,255,255,0.90);

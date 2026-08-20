@@ -1,324 +1,140 @@
 /**
- * Toulmin MCP — 测试辅助工具
+ * Warranted — 测试辅助
  *
- * 提供内存数据库创建、工厂函数和种子数据。
+ * 夹具走 repo 层的原始写入,**绕开 service 的 V1–V3 与事件留痕**。这是有意的:
+ * 要构造"附件写入后被删""引用被摘掉"这类状态,只能从公开接口造不出来的地方造。
+ *
+ * 但**默认值必须是公开接口造得出来的状态**——否则几百个不关心某个字段的调用点
+ * 会白拿一个非法节点(旧 helpers 的注释记过这个教训,这条约束原样保留)。
  */
 
 import { Database } from "bun:sqlite";
+import { mkdtempSync, writeFileSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import { openDatabase } from "../src/db.ts";
-import type {
-  ClaimNode,
-  StatementNode,
-  WarrantNode,
-  ClaimStatus,
-  GroundSource,
-  VerificationStatus,
-  TargetType,
-} from "../src/types.ts";
+import * as repo from "../src/repo.ts";
+import type { Qualifier } from "../src/types.ts";
+import {
+  type CheckContext,
+  checkContext,
+  loadNodeState,
+  loadRefStates,
+  selfFingerprintOf,
+} from "../src/structural-check.ts";
 
 // =============================================================================
-// 数据库管理
+// 数据库
 // =============================================================================
 
-/** 创建内存测试数据库 */
 export function createTestDb(): Database {
   return openDatabase(":memory:");
 }
 
-/** 关闭测试数据库 */
 export function cleanupDb(db: Database): void {
   db.close();
 }
 
 // =============================================================================
-// 工厂函数 — 直接操作 repo 层创建节点
+// 临时项目根(附件判据要真实文件)
 // =============================================================================
 
-let _idCounter = 0;
-
-/** 重置 ID 计数器（每个测试前调用） */
-export function resetIdCounter(): void {
-  _idCounter = 0;
+export interface TempRoot extends CheckContext {
+  /** 在根下写一个文件,返回相对路径(附件槽里存的就是相对路径)。 */
+  file(name: string, content?: string): string;
+  /** 删掉一个已写入的文件,用来制造 S2。 */
+  unlink(name: string): void;
+  cleanup(): void;
 }
 
-function nextId(): number {
-  return ++_idCounter;
-}
-
-/** 创建 Claim 节点 */
-export function makeClaim(
-  db: Database,
-  content: string = "Test claim",
-  status: ClaimStatus = "proposed"
-): ClaimNode {
-  const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({ status });
-  const stmt = db.prepare(
-    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('claim', ?, ?, ?, ?)"
-  );
-  const result = stmt.run(content, data, now, now);
-  const id = result.lastInsertRowid as number;
+export function makeTempRoot(): TempRoot {
+  const root = mkdtempSync(join(tmpdir(), "warranted-test-"));
   return {
-    id,
-    type: "claim",
-    content,
-    status,
-    createdAt: now,
-    updatedAt: now,
+    root,
+    file(name: string, content = "evidence") {
+      writeFileSync(join(root, name), content);
+      return name;
+    },
+    unlink(name: string) {
+      rmSync(join(root, name), { force: true });
+    },
+    cleanup() {
+      rmSync(root, { recursive: true, force: true });
+    },
   };
 }
 
-/**
- * 创建 Ground/Statement 节点。
- *
- * 这些夹具走原始 INSERT，绕开 service 层的校验 —— 这是有意的，需要构造非法状态的
- * 用例只能这样写。但**默认值**必须是公开 API 造得出来的状态，否则几百个不关心
- * attachments 的调用点会白拿一个非法节点：默认 verification 是 "verified"，
- * 而 createStatement 要求已核实的 statement 必须带证据文件。想测"已核实却没有
- * 证据"的用例请显式传 `attachments: []`，把这个前提写在用例里。
- */
-export function makeGround(
-  db: Database,
-  opts: {
-    content?: string;
-    source?: GroundSource;
-    verification?: VerificationStatus;
-    attachments?: string[];
-  } = {}
-): StatementNode {
+/** 只需要一个 CheckContext、不需要真实文件时用它(不建目录)。 */
+export function checkContextFor(dbPath: string): CheckContext {
+  return checkContext(dbPath);
+}
+
+// =============================================================================
+// 命题工厂
+// =============================================================================
+
+export interface MakeOpts {
+  content?: string;
+  /** 内联理由。默认非空——空理由是 S3 的用例,要显式写 `warrant: ""`。 */
+  warrant?: string;
+  attachments?: string[];
+  evidence?: number[];
+  rebuttals?: number[];
+}
+
+let _seq = 0;
+
+export function makeProposition(db: Database, opts: MakeOpts = {}): number {
   const {
-    content = "Test ground",
-    source = "observed",
-    verification = "verified",
-    attachments = ["/evidence/test-ground.csv"],
+    content = `Test proposition ${++_seq}`,
+    warrant = "Domain-general principle standing in for a real warrant",
+    attachments = [],
+    evidence = [],
+    rebuttals = [],
   } = opts;
 
-  const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({
-    source,
-    verification,
-    attachments,
-  });
-  const stmt = db.prepare(
-    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('statement', ?, ?, ?, ?)"
-  );
-  const result = stmt.run(content, data, now, now);
-  const id = result.lastInsertRowid as number;
-  return {
-    id,
-    type: "statement",
-    content,
-    source,
-    verification,
-    attachments,
-    createdAt: now,
-    updatedAt: now,
-  };
+  const row = repo.insertProposition(db, content, warrant === "" ? null : warrant);
+  if (attachments.length > 0) repo.addAttachments(db, row.id, attachments);
+  if (evidence.length > 0) repo.addEvidenceNodes(db, row.id, evidence);
+  if (rebuttals.length > 0) repo.addRebuttals(db, row.id, rebuttals);
+  return row.id;
 }
 
-/** 创建 Warrant 节点 */
-export function makeWarrant(
-  db: Database,
-  claimId: number,
-  groundIds: number[] = [],
-  content: string = "Test warrant"
-): WarrantNode {
-  const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({ claim_id: claimId });
-  const stmt = db.prepare(
-    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('warrant', ?, ?, ?, ?)"
-  );
-  const result = stmt.run(content, data, now, now);
-  const id = result.lastInsertRowid as number;
-  // warrant_grounds 是 ground 集合的唯一记录，节点 blob 里没有副本
-  for (const gid of groundIds) {
-    db.prepare("INSERT OR IGNORE INTO warrant_grounds (warrant_id, ground_id) VALUES (?, ?)").run(id, gid);
-  }
-  return {
-    id,
-    type: "warrant",
-    content,
-    claimId,
-    groundIds,
-    createdAt: now,
-    updatedAt: now,
-  };
+/** 把 a 的理由指向 b(模拟晋升的结果,不走 promote 的业务逻辑)。 */
+export function pointWarrantAt(db: Database, id: number, warrantNodeId: number): void {
+  repo.updatePropositionFields(db, id, { warrantText: null, warrantNodeId });
 }
 
 /**
- * 创建 Backing/Statement 节点。
+ * 设 qualifier **并落基线**——真实 `set_qualifier` 的最小等价物。
  *
- * source/verification 默认不写入 data —— 这是 0.4 之前 backing 节点的真实形状
- * （迁移不会替它们补一个），get_argument 对这种节点应当打 unknown 而不是猜。
- * 需要"这条 backing 已核实"的用例显式传值。
+ * 测试里必须走这一条而不是直接 UPDATE:R 族判据全靠基线,少写基线的夹具会让
+ * R 族在测试里永远静默,而那正是最需要被测的一族。
  */
-export function makeBacking(
-  db: Database,
-  warrantId: number,
-  content: string = "Test backing",
-  attachments: string[] = [],
-  source?: GroundSource,
-  verification?: VerificationStatus
-): StatementNode {
-  const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({ attachments, source, verification });
-  const stmt = db.prepare(
-    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('statement', ?, ?, ?, ?)"
+export function settle(db: Database, id: number, qualifier: Qualifier): void {
+  repo.writeQualifier(db, id, qualifier);
+  const state = loadNodeState(db, id);
+  if (!state) throw new Error(`settle: proposition ${id} not found`);
+  const refs = loadRefStates(db, state);
+  repo.writeBaseline(
+    db,
+    { nodeId: id, qualifier, selfFingerprint: selfFingerprintOf(state) },
+    refs.map((r) => ({
+      refId: r.id,
+      refRole: r.role,
+      contentHash: r.contentHash,
+      qualifier: r.qualifier,
+    }))
   );
-  const result = stmt.run(content, data, now, now);
-  const id = result.lastInsertRowid as number;
-  // Link as backing via relationship table
-  db.prepare("INSERT OR IGNORE INTO warrant_backings (warrant_id, statement_id) VALUES (?, ?)").run(warrantId, id);
-  return {
-    id,
-    type: "statement",
-    content,
-    source,
-    verification,
-    attachments,
-    createdAt: now,
-    updatedAt: now,
-  };
 }
 
-/**
- * 创建 Rebuttal/Statement 节点。
- *
- * 默认值和 makeGround 一致，理由也一样（见 makeGround 的注释）：
- * verification 默认 "verified"，是为了让 `makeRebuttal(db, claim.id)` 在用例里的
- * 字面意思——"有一条算数的反驳"——成立；A3/A4 只认已核实的反驳，所以想验证
- * "未核实的反驳挡不住门"的用例必须显式传 "pending"。
- * source 默认 "observed"，因为 0.5.0 起 source 是必填字段：不写的话这条反驳
- * 对 list_statements 的两个 source 过滤都不可见，既不算 observed 也不算 literature。
- */
-export function makeRebuttal(
-  db: Database,
-  targetId: number,
-  targetType: TargetType = "claim",
-  content: string = "Test rebuttal",
-  attachments: string[] = ["/evidence/test-rebuttal.csv"],
-  verification: VerificationStatus = "verified",
-  source: GroundSource = "observed"
-): StatementNode {
-  const now = new Date().toISOString().slice(0, 19);
-  const data = JSON.stringify({ source, attachments, verification });
-  const stmt = db.prepare(
-    "INSERT INTO nodes (type, content, data, created_at, updated_at) VALUES ('statement', ?, ?, ?, ?)"
-  );
-  const result = stmt.run(content, data, now, now);
-  const id = result.lastInsertRowid as number;
-  // Link as rebuttal via relationship table
-  db.prepare("INSERT OR IGNORE INTO rebuttal_targets (statement_id, target_id, target_type) VALUES (?, ?, ?)").run(id, targetId, targetType);
-  return {
-    id,
-    type: "statement",
-    content,
-    source,
-    verification,
-    attachments,
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-// =============================================================================
-// 种子数据 — 创建完整的论证结构
-// =============================================================================
-
-export interface SeedResult {
-  claim: ClaimNode;
-  ground1: StatementNode;
-  ground2: StatementNode;
-  warrant: WarrantNode;
-  backing: StatementNode;
-}
-
-/**
- * 创建一个完整的论证结构用于测试：
- * Claim(qualifier="仅在图像分类任务上验证") ← Warrant(ground1, ground2) ← Backing
- */
-export function seedBasicArgument(db: Database): SeedResult {
-  const claim = makeClaim(db, "核心主张：方法A优于方法B");
-  // Set qualifier on the claim via repo
-  const claimData = JSON.parse((db.prepare("SELECT data FROM nodes WHERE id = ?").get(claim.id) as { data: string }).data);
-  claimData.qualifier = "仅在图像分类任务上验证";
-  db.prepare("UPDATE nodes SET data = ? WHERE id = ?").run(JSON.stringify(claimData), claim.id);
-  const updatedClaim = { ...claim } as any;
-  const ground1 = makeGround(db, {
-    content: "实验数据：方法A准确率95%",
-    source: "observed",
-    verification: "verified",
-    attachments: ["/data/exp1.csv"],
+/** 驳回一条警告 / finding(事件流是"已阅"的唯一记录)。 */
+export function dismiss(db: Database, targetKey: string, reason = "checked, not a problem"): void {
+  repo.appendEvent(db, {
+    nodeId: null,
+    op: "dismiss",
+    actor: "tool",
+    payload: { reason },
+    targetKey,
   });
-  const ground2 = makeGround(db, {
-    content: "文献数据：方法B准确率85%",
-    source: "literature",
-    verification: "verified",
-    attachments: ["/papers/ref.pdf"],
-  });
-  const warrant = makeWarrant(
-    db,
-    claim.id,
-    [ground1.id, ground2.id],
-    "实验准确率差异10%以上 → 方法A显著优于方法B"
-  );
-  const backing = makeBacking(
-    db,
-    warrant.id,
-    "跨数据集一致性验证方法论",
-    ["/papers/methodology.pdf"]
-  );
-  return { claim: updatedClaim, ground1, ground2, warrant, backing };
-}
-
-// =============================================================================
-// Compile / 自动验证辅助
-// =============================================================================
-
-/**
- * 创建一个已 compiled 的 Claim（含 compile_state 记录）。
- * 可选提供 argumentHash，否则使用 null。
- */
-export function makeCompiledClaim(
-  db: Database,
-  content: string = "Compiled claim",
-  argumentHash?: string
-): ClaimNode {
-  const claim = makeClaim(db, content);
-  const now = new Date().toISOString().slice(0, 19);
-  // compile_state 是编译状态的唯一存储 —— 节点 data 里不再有副本。
-  db.prepare(
-    "INSERT OR REPLACE INTO compile_state (claim_id, verdict, summary, node_hashes, argument_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(claim.id, "passed", "Test compiled claim", "{}", argumentHash ?? null, now);
-  return { ...claim, status: "proposed" };
-}
-
-/**
- * 读取某个 Claim 的编译状态，没有记录时返回 null。
- * 测试里到处要断言这个值，集中在一处免得各文件各写一遍 SQL。
- */
-export function compileVerdictOf(db: Database, claimId: number): string | null {
-  const row = db
-    .prepare("SELECT verdict FROM compile_state WHERE claim_id = ?")
-    .get(claimId) as { verdict: string } | null;
-  return row?.verdict ?? null;
-}
-
-/**
- * 创建链式推理结构：parentClaim ← Warrant ← Claim(subClaimId) 直接挂入 warrant_grounds
- * 返回创建的 Warrant。
- */
-export function makeChainReasoning(
-  db: Database,
-  parentClaimId: number,
-  subClaimId: number,
-  warrantContent: string = "Chain reasoning warrant"
-): { warrant: WarrantNode } {
-  const warrant = makeWarrant(
-    db,
-    parentClaimId,
-    [subClaimId],
-    warrantContent
-  );
-  return { warrant };
 }

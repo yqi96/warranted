@@ -1,6 +1,6 @@
 ---
 name: overleaf-setup
-description: Use once when a LaTeX project needs Overleaf synchronization with Warranted citation enforcement. Installs/authenticates leaf, binds a local LaTeX directory to an Overleaf project, and writes the Stop hook that pushes staged source with statement_N citations expanded.
+description: Use once when a LaTeX project needs Overleaf synchronization with Warranted citation enforcement. Installs/authenticates leaf, binds a local LaTeX directory to an Overleaf project, and writes the Stop hook that pushes staged source with prop_N citations expanded.
 ---
 
 ## Goal
@@ -82,7 +82,7 @@ Merge the following into `.claude/settings.local.json`, preserving any existing 
     "Stop": [{
       "hooks": [{
         "type": "command",
-        "command": "uv run SKILL_DIR/scripts/overleaf-push.py --dir LATEX_DIR --db DB_PATH --require-statement-cites",
+        "command": "uv run SKILL_DIR/scripts/overleaf-push.py --dir LATEX_DIR --db DB_PATH --require-prop-cites",
         "timeout": 120,
         "statusMessage": "Checking citations and pushing to Overleaf..."
       }]
@@ -114,4 +114,5 @@ The skill is complete. Do not proceed further.
 | CSRF / 401 / 403 | Session expired — re-run Step 2 |
 | HTTP 422 | Re-run Step 4 |
 | `~/.olauth` missing | Not logged in — re-run Step 2 |
-| Statement IDs not in map | Statement has no attachment — attach paper file in Warranted before the next edit |
+| Proposition IDs not in map | The proposition has no PDF attached — attach the paper file in Warranted before the next edit |
+| `legacy citation key statement_N` | The key points into the archived Statement graph. Re-identify the finding it cited, create or reuse a proposition, and repoint the key — never map by number |

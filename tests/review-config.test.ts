@@ -74,7 +74,6 @@ describe("loadReviewConfig", () => {
     expect(config!.model).toBe("claude-3-haiku");
     expect(config!.maxTurns).toBe(10); // 默认值
     expect(config!.dbPath).toBe(`${dir}/test.db`);
-    expect(config!.reviewDir).toBe(`${dir}/reviews`);
   });
 
   test("仅 apiKey 时使用默认值", () => {

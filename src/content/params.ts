@@ -1,143 +1,91 @@
 /**
- * Warranted — MCP 工具参数描述文本
+ * Warranted — 工具参数的 .describe() 文本
  *
- * 所有工具参数的 .describe() 字符串。
- * 域模型参数（Claim/Statement/Warrant 字段）转发自 ELEMENTS；
- * 工具操作参数（过滤器、增量更新、标志位）在此直接定义。
+ * design.md §1.4 把旧"类型"承担的写作引导整个转移到了这里:一个 `content` 字段要
+ * 同时接住记录性命题与结论性命题,区分它们的不再是节点类型,而是这段文字。所以
+ * **description 短、params 长**是有意的分配,不是失衡。
+ *
+ * 域模型字段转发自 `ELEMENTS`,保持工具面与域模型同源;操作性参数(分页、过滤、id)
+ * 在本文件直接定义——它们与本体无关,只与调用方式有关。
  */
 
 import { ELEMENTS } from "./elements.ts";
 
 export const PARAMS = {
-  // ── 域模型参数（转发自 ELEMENTS，与工具的 Zod schema 保持同源）────────────
+  // ── 域模型(转发自 ELEMENTS)────────────────────────────────────────────────
 
-  // create_claim / update_node
-  claim_content: ELEMENTS.claim.content,
-  claim_qualifier: ELEMENTS.claim.qualifier,
-  /** update_node.status；create_claim 无 status 参数（由系统初始化为 proposed） */
-  claim_status: ELEMENTS.claim.status,
+  content: ELEMENTS.content,
+  warrant: ELEMENTS.warrant,
+  attachments: ELEMENTS.attachments,
+  evidence_nodes: ELEMENTS.evidenceNodes,
+  qualifier: ELEMENTS.qualifier,
+  attacks: ELEMENTS.attacks,
+  note: ELEMENTS.note,
+  dismiss_reason: ELEMENTS.dismissReason,
 
-  // create_statement / update_node
-  statement_content: ELEMENTS.statement.content,
-  statement_source: ELEMENTS.statement.source,
-  statement_verification: ELEMENTS.statement.verification,
-  statement_attachments: ELEMENTS.statement.attachments,
+  // ── 各工具的顶层入参 ───────────────────────────────────────────────────────
 
-  // create_warrant / update_node
-  warrant_content: ELEMENTS.warrant.content,
-  warrant_claim_id: ELEMENTS.warrant.claimId,
-  warrant_ground_ids: ELEMENTS.warrant.groundIds,
-  warrant_backing_ids: ELEMENTS.warrant.backingIds,
+  create_items:
+    "The propositions to create. There is no single-item form and no qualifier field: " +
+    "everything lands at 'unestablished', and credence is set only by set_qualifier.",
 
-  // create_statement.rebuttal_for 内嵌对象字段
-  rebuttal_target_id: ELEMENTS.rebuttal.targetId,
-  rebuttal_target_type: ELEMENTS.rebuttal.targetType,
+  update_evidence:
+    "Add or remove evidence members. Attachments and referenced propositions are always " +
+    "added and removed by name — there is no whole-slot replacement, because replacement " +
+    "drops members silently and silence is the thing this system exists to remove.",
 
-  // ── 列表过滤器 ──────────────────────────────────────────────────────────────
+  update_rebuttals:
+    "Add or remove rebuttal members by id. Same add/remove rule as evidence.",
 
-  // list_claims.status
-  claim_status_filter:
-    "Filter by status (comma-separated: proposed,supported,disputed,refuted)",
-  claim_compile_status_filter:
-    "Filter by compile_status (comma-separated: passed,stale,null). Omit to include all.",
-  // list_statements.source
-  statement_source_filter:
-    "Filter by source type (comma-separated: literature,observed). Omit to include all.",
-  // list_statements.verification
-  statement_verification_filter:
-    "Filter by verification status (comma-separated: verified,pending). Omit to include all.",
-  statement_role_filter:
-    "Filter by role: 'ground', 'backing', or 'rebuttal'. Intersects with relation tables.",
-  // list_statements.without_tag
-  tag_without_filter:
-    "Exclude nodes with this tag. Supports prefix wildcards: 'theme:*' matches all 'theme:' tags.",
-  // pagination
-  pagination_limit:
-    "Maximum number of items to return (default 50).",
-  pagination_offset:
-    "Number of items to skip (default 0). For self-consuming queues (filters that remove completed items), always re-query with offset=0.",
+  set_qualifier_updates:
+    "One entry per proposition being judged. Each carries its own id, its own band, and " +
+    "optionally its own note — batching saves round trips, not thinking.",
 
-  // list_tags
-  tag_prefix:
-    "Filter tags by namespace prefix. For example, 'theme:' lists only tags in the 'theme:' namespace.",
-  tag_min_count:
-    "Minimum node count to include. Use 0 to find tags that are registered but have no nodes attached (the work-queue signal).",
+  promote_own_warrant:
+    "The warrant of the promoted proposition itself — why its own evidence supports it. " +
+    "Not the text being promoted (that is already there). May be left empty.",
 
-  // ── 节点标识 ────────────────────────────────────────────────────────────────
+  promote_evidence:
+    "Optional backing for the promoted warrant: what substantiates this reasoning principle.",
 
-  any_node_id: "Any node ID",           // get_argument.node_id
-  node_id: "Node ID",                   // get_node.node_id
-  node_id_to_update: "Node ID to update", // update_node.node_id
-  node_id_to_delete: "Node ID to delete", // delete_node.node_id
+  dismiss_items:
+    "One entry per warning or finding being ruled out. Each needs its own id and its own reason; " +
+    "one reason cannot clear a whole proposition's worth of warnings.",
 
-  // ── 搜索 ────────────────────────────────────────────────────────────────────
+  // ── 节点标识 ───────────────────────────────────────────────────────────────
 
-  // search_nodes.keyword
-  search_keyword: "Search keyword",
-  // search_nodes.node_type
-  node_type_filter:
-    "Filter by node type. 'ground', 'backing', 'rebuttal' are virtual filters that query by relationship role; 'statement' returns all statements regardless of role.",
+  proposition_id: "Proposition id.",
+  target_id: "Id of the proposition being attacked.",
+  attack_slot:
+    "Which slot to attack: 'content' (the conclusion) or 'warrant' (the reasoning principle that licenses it).",
+  warning_or_finding_id:
+    "A structural-warning id or a finding id, exactly as it was reported. " +
+    "Warning ids are derived from the proposition's current state, so they change whenever it does.",
 
-  // ── update_node 专用字段 ────────────────────────────────────────────────────
+  // ── 读取参数 ───────────────────────────────────────────────────────────────
 
-  new_content: "New content",
-  new_attachments:
-    ELEMENTS.statement.attachments +
-    " Replaces the entire array — not additive. Include every path you want to keep, not just the ones you're adding.",
-  /** Warrant 的 ground_ids 增量更新；{ add?: number[], remove?: number[] } */
-  ground_ids_incremental:
-    "Incrementally update the node IDs used as grounds for this warrant. If the thing you rely on is a record (observed or read), it is a Statement; if it is itself a conclusion you argued, it is a Claim. Both are accepted.",
-  /** Warrant 的 backing 增量更新；{ add?: number[], remove?: number[] } */
-  backing_ids_incremental:
-    "Incrementally update the node IDs used as backing for this warrant. If the thing you rely on is a record (observed or read), it is a Statement; if it is itself a conclusion you argued, it is a Claim. Both are accepted. Each backing should substantiate the warrant's inference-licensing principle.",
-  /**
-   * Claim/Warrant 的 rebuttal 增量更新；{ add?: number[], remove?: number[] }。
-   * target_type 由被更新节点的类型推断，不需要显式传入。
-   */
-  rebuttal_ids_incremental:
-    "Incrementally update the node IDs used as rebuttals for this Claim or Warrant. If the thing you rely on is a record (observed or read), it is a Statement; if it is itself a conclusion you argued, it is a Claim. Both are accepted. Each rebuttal should name a genuine counter-condition, exception, or contradiction; target_type is inferred from the updated node's type.",
-  qualifier_update:
-    "Claim qualifier: degree of certainty ('probably', 'presumably', 'certainly')",
+  depth:
+    "How far to walk from this proposition. 1 (the default) gives its direct evidence, " +
+    "rebuttals and promoted warrant; 0 gives only the proposition itself.",
 
-  // ── delete_node ─────────────────────────────────────────────────────────────
+  find_query:
+    "Keyword search over proposition content. Needs at least 3 characters.",
 
-  cascade_delete: "Recursively delete child nodes (required for Claims)",
+  find_qualifier:
+    "Only return propositions in these bands. Omit to include all.",
 
-  // ── compile_arguments ───────────────────────────────────────────────────────
+  find_has_unresolved:
+    "Only return propositions carrying a pending finding or a pending structural warning. " +
+    "This is the work queue.",
 
-  claim_ids_to_compile: "Specific Claim IDs to compile. Omit to compile all Claims.",
+  history_id:
+    "Restrict the event stream to one proposition. Omit for the whole graph's recent events. " +
+    "Deleted propositions still have history — their tombstone event carries the full before-snapshot.",
 
-  // ── create_statement 专用 ───────────────────────────────────────────────────
+  // ── 分页 ───────────────────────────────────────────────────────────────────
 
-  /** create_statement.rebuttal_for（整个对象的 .describe()） */
-  rebuttal_for_stmt:
-    "If provided, this statement is recorded as a rebuttal for the target Claim or Warrant. Use this for counter-conditions, exceptions, or contradicting evidence, not ordinary observation notes.",
-
-  // ── 标签参数 ──────────────────────────────────────────────────────────────────
-
-  tag_name:
-    "Tag name in format <namespace>:<name>, e.g., 'theme:attention-mechanism'. Only lowercase letters, digits, hyphens, and underscores are allowed. " +
-    "Dots, slashes, and uppercase are not: lowercase the identifier and replace every other character with '-' " +
-    "(lr=0.001 -> 'exp:lr-0-001', llama-3.1 -> 'model:llama-3-1', n=1e-4 -> 'exp:lr-1e-4', one sweep -> 'sweep:2026-03-lr'). " +
-    "This is an encoding, not a structure: a tag is a flat string with no key=value, so range queries over the encoded value are not expressible.",
-  tag_description:
-    "Description of what this tag represents and what kind of nodes it should be applied to.",
-  tag_claim_id:
-    "Optional Claim ID that this tag points to — the claim that generalizes this category. Establishes a two-sided taxonomy.",
-  tag_namespace_cardinality:
-    "Cardinality class for this namespace: 'dense' (hundreds of members, e.g., paper:, run:) or 'bounded' (a dozen members, e.g., theme:, condition:). " +
-    "Will this namespace's members grow into the hundreds, or hold steady at a dozen? " +
-    "The undeclared default is to run the near-match check. 'paper:' is pre-declared as dense.",
-  tag_tags_array:
-    "Optional array of registered tag names to apply to this node. Tags must be registered first via create_tag.",
-  tag_tags_object:
-    "Incremental tag updates: { add?: string[], remove?: string[] }. Tags must be registered first via create_tag.",
-  tag_filter:
-    "Optional tag name to filter by. Only nodes with this tag are returned.",
-  tag_from:
-    "Current tag name to rename or merge from.",
-  tag_to:
-    "New tag name (for rename) or target tag name (for merge).",
-  tag_tags_array_input:
-    "Array of tag objects to register (max 200). Each object: { name, description, claim_id? }.",
+  limit: "Maximum number of items to return.",
+  offset:
+    "Number of items to skip (default 0). For self-consuming queues — filters that remove " +
+    "items as you handle them, such as has_unresolved — always re-query with offset=0.",
 } as const;

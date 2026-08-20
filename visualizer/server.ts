@@ -1,7 +1,7 @@
 /**
  * Warranted 可视化引擎 — HTTP 服务器
  *
- * 提供 JSON API 读取 argument.db，供前端 D3.js v7 渲染。
+ * 提供 JSON API 读取 graph.db，供前端 D3.js v7 渲染。
  *
  * 本体是"一个命题 + 五槽位"(docs/design.md §1.2)：图里只有一种节点，边全部由
  * 槽位成员关系派生。旧的 3 节点模型(claim / warrant / statement + compile_state)
@@ -15,7 +15,7 @@
  *   bun visualizer/server.ts [--db-path ./toulmin.db]
  */
 
-import { openDatabase } from "../src/db.ts";
+import { openDatabase, DEFAULT_DB_PATH } from "../src/db.ts";
 import { mkdirSync, existsSync, watch as fsWatch } from "fs";
 import { dirname, join, resolve } from "path";
 import type { Database } from "bun:sqlite";
@@ -39,8 +39,6 @@ import {
 // =============================================================================
 // CLI 参数解析
 // =============================================================================
-
-const DEFAULT_DB_PATH = ".toulmin/argument.db";
 
 const DEFAULT_PORT = 3456;
 
@@ -360,7 +358,7 @@ const server = Bun.serve({
         return Response.json({ ok: true }, { headers: corsHeaders });
       }
 
-      // API: 切换监控目录（接收 .toulmin 目录路径或 argument.db 文件路径）
+      // API: 切换监控目录（接收 .toulmin 目录路径或 graph.db 文件路径）
       if (path === "/viz/switch-db" && req.method === "POST") {
         let body: { dir?: string };
         try {
@@ -372,7 +370,7 @@ const server = Bun.serve({
         if (!dir) {
           return Response.json({ error: "Missing 'dir' field" }, { status: 400, headers: corsHeaders });
         }
-        const newDbPath = dir.endsWith("argument.db") ? dir : join(dir, "argument.db");
+        const newDbPath = dir.endsWith(".db") ? dir : join(dir, "graph.db");
         if (!existsSync(newDbPath)) {
           return Response.json({ error: `File not found: ${newDbPath}` }, { status: 404, headers: corsHeaders });
         }

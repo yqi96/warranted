@@ -16,16 +16,21 @@ Read the paper, figures, tables, methods, and supplements before executing anyth
 Build the graph at the depth required by the paper's argument. This two-level shape is common, not mandatory:
 
 ```text
+fresh artifacts A ── evidence ──► experimental-result proposition A ─┐
+                                                                     ├─ evidence ─► core claim
+fresh artifacts B ── evidence ──► experimental-result proposition B ─┘
+```
+
+A single proposition is enough when fresh artifacts directly support the core claim and no intermediate assertion needs a separate judgment:
+
+```text
 verified code + fresh execution logs + raw outputs
                          │ evidence
                          ▼
-              experimental-result proposition
-                         │ evidence
-                         ▼
-                   core claim
+                     core claim
 ```
 
-A single proposition is enough when fresh artifacts directly support the core claim and no intermediate assertion needs a separate judgment. Use additional layers when experimental results support sub-claims that in turn support broader conclusions:
+Use additional layers when experimental results support sub-claims that in turn support broader conclusions:
 
 ```text
 fresh artifacts A → result proposition A → sub-claim 1 ┐

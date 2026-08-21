@@ -9,6 +9,8 @@ tools:
   - Grep
   - Write
   - Bash
+  - Skill
+  - mcp__plugin_warranted_browser__*
 ---
 
 You are a literature scout supporting an inquiry-led review. Execute one search move whose purpose and decision use are supplied by the primary agent. You are not responsible for covering the whole topic.

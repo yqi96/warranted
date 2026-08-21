@@ -31,7 +31,7 @@ Usage:
     uv run overleaf-push.py --tex paper.tex
 
     # Override DB path:
-    uv run overleaf-push.py --dir LATEX_DIR --db /path/to/argument.db
+    uv run overleaf-push.py --dir LATEX_DIR --db /path/to/graph.db
 """
 
 import argparse
@@ -49,9 +49,10 @@ CITE_RE = re.compile(
 )
 PROP_KEY_RE = re.compile(r'prop_(\d+)')
 LEGACY_KEY_RE = re.compile(r'statement_(\d+)')
+BIB_ENTRY_RE = re.compile(r'@\w+\s*[({]\s*([^,\s]+)\s*,', re.IGNORECASE)
 
 
-def build_proposition_map(db_path: str, include_all: bool = False) -> dict[str, list[str]]:
+def build_proposition_map(db_path: str) -> dict[str, list[str]]:
     if not os.path.exists(db_path):
         return {}  # no DB → no map; citations left as-is
 
@@ -63,25 +64,111 @@ def build_proposition_map(db_path: str, include_all: bool = False) -> dict[str, 
     conn.close()
 
     prop_map: dict[str, list[str]] = {}
-    non_pdf_only: set[str] = set()
-
     for row in rows:
         pid = str(row["node_id"])
         path = Path(row["path"])
-        if include_all or path.suffix.lower() == ".pdf":
-            prop_map.setdefault(pid, []).append(path.stem)
-        else:
-            non_pdf_only.add(pid)
-
-    non_pdf_only -= prop_map.keys()
-    if non_pdf_only:
-        print(
-            f"Warning: {len(non_pdf_only)} proposition(s) have attachments but no PDF "
-            f"(IDs: {sorted(non_pdf_only, key=int)})",
-            file=sys.stderr,
-        )
+        if path.suffix.lower() == ".pdf":
+            keys = prop_map.setdefault(pid, [])
+            if path.stem not in keys:
+                keys.append(path.stem)
 
     return prop_map
+
+
+def cited_proposition_ids(tex: str) -> set[str]:
+    ids: set[str] = set()
+    for match in CITE_RE.finditer(tex):
+        for key in (item.strip() for item in match.group(2).split(',')):
+            prop = PROP_KEY_RE.fullmatch(key)
+            if prop:
+                ids.add(prop.group(1))
+    return ids
+
+
+def bib_keys_in_dir(source: Path) -> set[str]:
+    keys: set[str] = set()
+    for bib_path in source.rglob("*.bib"):
+        if bib_path.is_file():
+            keys.update(BIB_ENTRY_RE.findall(bib_path.read_text(encoding="utf-8")))
+    return keys
+
+
+def validate_citation_targets(source: Path, db_path: str) -> None:
+    """Fail before staging when a prop_N citation cannot expand to existing paper PDFs
+    whose filename stems are real keys in the LaTeX project's .bib files."""
+    cited: set[str] = set()
+    for tex_path in source.rglob("*.tex"):
+        if tex_path.is_file():
+            cited.update(cited_proposition_ids(tex_path.read_text(encoding="utf-8")))
+    if not cited:
+        return
+
+    errors: list[str] = []
+    if not os.path.exists(db_path):
+        fail_for_mapping_errors([
+            f"Warranted database not found: {db_path}. Pass the absolute path to .toulmin/graph.db."
+        ])
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    propositions = {
+        str(row["id"])
+        for row in conn.execute("SELECT id FROM propositions").fetchall()
+    }
+    rows = conn.execute(
+        "SELECT node_id, path FROM evidence_attachments ORDER BY node_id, path"
+    ).fetchall()
+    conn.close()
+
+    attachments: dict[str, list[str]] = {}
+    for row in rows:
+        attachments.setdefault(str(row["node_id"]), []).append(str(row["path"]))
+
+    bib_keys = bib_keys_in_dir(source)
+    db_root = Path(db_path).resolve().parent.parent
+
+    for pid in sorted(cited, key=int):
+        if pid not in propositions:
+            errors.append(
+                f"prop_{pid}: proposition #{pid} does not exist in {db_path}. "
+                "Repoint the citation to an existing proposition."
+            )
+            continue
+
+        paths = attachments.get(pid, [])
+        pdfs = [Path(path) for path in paths if Path(path).suffix.lower() == ".pdf"]
+        if not pdfs:
+            detail = "no attachments" if not paths else "only non-PDF attachments: " + ", ".join(paths)
+            errors.append(
+                f"prop_{pid}: {detail}. Attach the original paper PDF; notes and other files "
+                "cannot be expanded into bibliography citations."
+            )
+            continue
+
+        for pdf in pdfs:
+            resolved = pdf if pdf.is_absolute() else db_root / pdf
+            if not resolved.is_file():
+                errors.append(
+                    f"prop_{pid}: attached paper PDF is missing: {pdf} "
+                    f"(resolved to {resolved}). Restore it or update the proposition attachment."
+                )
+            if pdf.stem not in bib_keys:
+                errors.append(
+                    f"prop_{pid}: PDF '{pdf}' maps to BibTeX key '{pdf.stem}', but that key "
+                    "is absent from the LaTeX project's .bib files. Rename the PDF to an existing "
+                    "key or add the matching BibTeX entry."
+                )
+
+    fail_for_mapping_errors(errors)
+
+
+def fail_for_mapping_errors(errors: list[str]) -> None:
+    if not errors:
+        return
+    print("Error: proposition citation(s) cannot be expanded safely:", file=sys.stderr)
+    for error in errors:
+        print(f"  {error}", file=sys.stderr)
+    raise SystemExit(2)
 
 
 def replace_cites(tex: str, prop_map: dict[str, list[str]]) -> tuple[str, int]:
@@ -202,18 +289,16 @@ def main():
     target = ap.add_mutually_exclusive_group(required=True)
     target.add_argument("--dir", type=Path, help="LaTeX source directory (must contain leaf.toml)")
     target.add_argument("--tex", type=Path, help="Single .tex file — print replaced content to stdout")
-    ap.add_argument("--db", default=".toulmin/argument.db", help="Path to argument.db")
+    ap.add_argument("--db", default=".toulmin/graph.db", help="Path to Warranted graph.db")
     ap.add_argument("--stage", type=Path, default=None,
                     help="Persistent staging path for --dir; if omitted a temp dir is used and deleted after push")
     ap.add_argument("--no-push", action="store_true",
                     help="Stage only, do not call leaf push (useful with --stage for inspection)")
-    ap.add_argument("--all", action="store_true",
-                    help="Treat every attachment as a bib key, not only .pdf files")
     ap.add_argument("--require-prop-cites", action="store_true",
                     help="Fail if any citation key is not exactly prop_N")
     args = ap.parse_args()
 
-    prop_map = build_proposition_map(args.db, include_all=args.all)
+    prop_map = build_proposition_map(args.db)
 
     # ── Single-file mode ──────────────────────────────────────────────────────
     if args.tex:
@@ -223,6 +308,7 @@ def main():
         tex = args.tex.read_text(encoding="utf-8")
         if args.require_prop_cites:
             fail_for_citation_errors(find_bad_cites(tex, str(args.tex)))
+            validate_citation_targets(args.tex.parent, args.db)
         updated, count = replace_cites(tex, prop_map)
         if count == 0:
             print("No proposition citations found.", file=sys.stderr)
@@ -237,6 +323,7 @@ def main():
 
     if args.require_prop_cites:
         fail_for_citation_errors(find_bad_cites_in_dir(args.dir))
+        validate_citation_targets(args.dir, args.db)
 
     leaf_toml = args.dir / "leaf.toml"
     if not leaf_toml.exists() and not args.no_push:

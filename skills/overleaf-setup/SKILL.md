@@ -72,7 +72,7 @@ This writes `leaf.toml` into `LATEX_DIR`. The push script copies it into staging
 
 ## Step 5 — Write the hook
 
-Determine `SKILL_DIR` (absolute path to `${CLAUDE_PLUGIN_ROOT}/skills/overleaf-setup`) and `DB_PATH` (absolute path to `.toulmin/argument.db`).
+Determine `SKILL_DIR` (absolute path to `${CLAUDE_PLUGIN_ROOT}/skills/overleaf-setup`) and `DB_PATH` (absolute path to `.toulmin/graph.db`).
 
 Merge the following into `.claude/settings.local.json`, preserving any existing hooks:
 
@@ -115,4 +115,10 @@ The skill is complete. Do not proceed further.
 | HTTP 422 | Re-run Step 4 |
 | `~/.olauth` missing | Not logged in — re-run Step 2 |
 | Proposition IDs not in map | The proposition has no PDF attached — attach the paper file in Warranted before the next edit |
+| Proposition does not exist | Repoint `prop_N` to an existing proposition; never create a replacement merely to preserve an obsolete number |
+| Only non-PDF attachments | Attach the original paper PDF. Notes, tables, and extracted text may remain attached but cannot provide a bibliography key |
+| Attached PDF is missing | Restore the file at the reported project-relative path, or update the proposition attachment before retrying |
+| PDF stem absent from `.bib` | Rename the PDF so its stem equals the intended BibTeX key, or add the matching entry to the LaTeX project's `.bib` file |
+| Several PDF attachments | Supported: `\cite{prop_N}` expands to every distinct PDF stem. Every PDF must exist and every stem must appear in a project `.bib` file |
+| Several attachments including notes | Supported: non-PDF attachments remain audit evidence but are ignored for citation expansion; at least one valid original-paper PDF is still required |
 | `legacy citation key statement_N` | The key points into the archived Statement graph. Re-identify the finding it cited, create or reuse a proposition, and repoint the key — never map by number |

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { openDatabase } from "../src/db.ts";
 import { writeAuditRecord } from "../src/review-audit.ts";
 import type { ReviewConfig } from "../src/review-config.ts";
@@ -9,7 +9,19 @@ import { reviewCwd } from "../src/review-config.ts";
 import { buildInput } from "../src/review-run.ts";
 import * as service from "../src/service.ts";
 import { copyFixtureProject } from "../experiments/evaluation/common/graph-fixture.ts";
-import { sha256File, sha256Text } from "../experiments/evaluation/common/manifest.ts";
+import {
+  readJson,
+  sha256File,
+  sha256Text,
+  writeJson,
+  writeJsonl,
+} from "../experiments/evaluation/common/manifest.ts";
+import {
+  requireSelectedVoteBlindness,
+  validateSolUltraInputProvenance,
+} from "../experiments/evaluation/scifact/adjudication-provenance.ts";
+import { validateAdjudicationBundle } from "../experiments/evaluation/scifact/adjudication-bundle.ts";
+import { applyAdjudicationBundle } from "../experiments/evaluation/scifact/audit-labels.ts";
 import {
   Q1_WARRANT,
   buildFixtureCase,
@@ -18,20 +30,31 @@ import {
   selectCandidates,
 } from "../experiments/evaluation/scifact/build-fixtures.ts";
 import {
+  buildProvisionalGraphVerdictOverlay,
+  deriveMechanicalGraphVerdict,
+} from "../experiments/evaluation/scifact/graph-verdict.ts";
+import {
   executeCase,
   validateFixtureFiles,
 } from "../experiments/evaluation/scifact/run-reviews.ts";
 import {
   assessQuote,
   scoreReviewCases,
+  validateGraphVerdictOverlay,
   validateFixtureManifest,
+  writeScoreArtifacts,
 } from "../experiments/evaluation/scifact/score-reviews.ts";
 import type {
   CandidatePair,
   FailedReviewCaseResult,
   FixtureCase,
   FixtureManifest,
+  GraphExpectedVerdict,
+  GraphVerdictAdjudicationBundle,
+  GraphVerdictOverlay,
   ReviewCaseResult,
+  ScoreManifest,
+  ScoreSummary,
   SciFactClaim,
   SciFactDocument,
   SuccessfulReviewCaseResult,
@@ -105,6 +128,12 @@ const claims: SciFactClaim[] = [
     evidence: {},
     cited_doc_ids: [11, 14],
   },
+  {
+    id: 4,
+    claim: "A second trial found that the treatment reduces disease incidence.",
+    evidence: { "13": [{ label: "SUPPORT", sentences: [0] }] },
+    cited_doc_ids: [13],
+  },
 ];
 
 function pairs(): CandidatePair[] {
@@ -175,6 +204,97 @@ function fixtureManifest(cases: FixtureCase[]): FixtureManifest {
   };
 }
 
+function testLabeling(): ScoreSummary["labeling"] {
+  return {
+    sourceGoldLabel: "fixture.goldLabel",
+    graphExpectedVerdict: "adjudicated-overlay",
+    fixtureManifestSha256: "a".repeat(64),
+    graphVerdictOverlaySha256: "b".repeat(64),
+    adjudicationMethod: "test semantic adjudication",
+    adjudicationBundleSha256: "c".repeat(64),
+    adjudicationsSha256: "d".repeat(64),
+    consensusSha256: "e".repeat(64),
+    mechanicalPolicyVersion: "scifact-materialized-graph-mechanical/v1",
+    allCasesAdjudicated: true,
+  };
+}
+
+function mechanicalVerdicts(cases: FixtureCase[]): Map<string, GraphExpectedVerdict> {
+  return new Map(
+    cases.map((fixture) => [fixture.caseId, deriveMechanicalGraphVerdict(fixture).verdict]),
+  );
+}
+
+let chainSequence = 0;
+
+function fullyAdjudicatedOverlay(
+  manifest: FixtureManifest,
+  manifestSha256 = "a".repeat(64),
+  verdictOverrides: ReadonlyMap<string, GraphExpectedVerdict> = new Map(),
+): {
+  overlay: GraphVerdictOverlay;
+  overlayPath: string;
+  bundlePath: string;
+  adjudicationsPath: string;
+  consensusPath: string;
+} {
+  const chainDir = join(root, `label-chain-${++chainSequence}`);
+  mkdirSync(chainDir, { recursive: true });
+  const overlay = buildProvisionalGraphVerdictOverlay(
+    manifest,
+    manifestSha256,
+    new Date(0).toISOString(),
+  );
+  const reason = "The test attachment text was semantically checked against the claim.";
+  const rows = overlay.cases.map((item) => ({
+    caseId: item.caseId,
+    graphExpectedVerdict: verdictOverrides.get(item.caseId) ?? item.mechanicalGraphVerdict,
+    adjudicationReason: reason,
+  }));
+  const adjudicationsPath = join(chainDir, "adjudications.jsonl");
+  writeJsonl(adjudicationsPath, rows);
+  const pass = rows.filter((item) => item.graphExpectedVerdict === "pass").length;
+  const consensusPath = join(chainDir, "consensus.json");
+  writeJson(consensusPath, {
+    schemaVersion: 2,
+    method: "test semantic adjudication",
+    frozenArtifacts: { fixtureManifest: { sha256: manifestSha256 } },
+    counts: { total: rows.length, finalVerdict: { pass, fail: rows.length - pass } },
+    cases: rows.map((row) => ({
+      caseId: row.caseId,
+      final: { verdict: row.graphExpectedVerdict, reason: row.adjudicationReason },
+    })),
+  });
+  const bundlePath = join(chainDir, "bundle.json");
+  const bundle: GraphVerdictAdjudicationBundle = {
+    schemaVersion: 1,
+    createdAt: new Date(0).toISOString(),
+    fixtureManifestSha256: manifestSha256,
+    policy: { ...overlay.policy },
+    adjudications: {
+      path: basename(adjudicationsPath),
+      sha256: sha256File(adjudicationsPath),
+      cases: rows.length,
+    },
+    consensus: {
+      path: basename(consensusPath),
+      sha256: sha256File(consensusPath),
+      cases: rows.length,
+      method: "test semantic adjudication",
+    },
+  };
+  writeJson(bundlePath, bundle);
+  const validated = validateAdjudicationBundle(
+    bundlePath,
+    manifestSha256,
+    manifest.cases.map((fixture) => fixture.caseId),
+  );
+  applyAdjudicationBundle(overlay, validated, basename(bundlePath));
+  const overlayPath = join(chainDir, "overlay.json");
+  writeJson(overlayPath, overlay);
+  return { overlay, overlayPath, bundlePath, adjudicationsPath, consensusPath };
+}
+
 describe("SciFact adapter", () => {
   test("enumerates unique labeled and cited-document NOINFO pairs", () => {
     expect(pairs().map((item) => [item.claimId, item.docId, item.label])).toEqual([
@@ -184,6 +304,7 @@ describe("SciFact adapter", () => {
       [2, 12, "CONTRADICT"],
       [3, 11, "NOINFO"],
       [3, 14, "NOINFO"],
+      [4, 13, "SUPPORT"],
     ]);
   });
 
@@ -192,6 +313,7 @@ describe("SciFact adapter", () => {
       [1, "SUPPORT"],
       [2, "CONTRADICT"],
       [3, "NOINFO"],
+      [4, "SUPPORT"],
     ]);
     const selected = selectCandidates(pairs(), ["primary", "q2-oracle"], null, 7);
     const primary = selected.filter((item) => item.mode === "primary");
@@ -200,13 +322,15 @@ describe("SciFact adapter", () => {
       "CONTRADICT",
       "NOINFO",
       "SUPPORT",
+      "SUPPORT",
     ]);
-    expect(new Set(primary.map((item) => item.claim.claimId)).size).toBe(3);
+    expect(new Set(primary.map((item) => item.claim.claimId)).size).toBe(4);
     expect(q2.map((item) => [item.pair!.docId, item.rationaleSetIndex])).toEqual([
       [10, 0],
       [10, 1],
       [13, 0],
       [12, 0],
+      [13, 0],
     ]);
   });
 });
@@ -253,6 +377,11 @@ describe("graph fixtures and runner", () => {
       "NOINFO",
       "SUPPORT",
     ]);
+    expect(primary.goldLabel).toBe("SUPPORT");
+    expect(primary.expected.verdict).toBe("pass");
+    expect(deriveMechanicalGraphVerdict(primary).reasonCode).toBe(
+      "target-has-non-supporting-attachment",
+    );
     const firstAttachment = primary.attachments[0]!;
     const attachment = join(root, primary.projectDir, firstAttachment.path);
     const visible = readFileSync(attachment, "utf8");
@@ -501,6 +630,194 @@ describe("scoring", () => {
     );
   }
 
+  test("requires a complete semantic overlay and keeps source and graph labels separate", () => {
+    const fixtures = primaryFixtures();
+    const manifest = fixtureManifest(fixtures);
+    const manifestSha256 = "a".repeat(64);
+    const provisional = buildProvisionalGraphVerdictOverlay(
+      manifest,
+      manifestSha256,
+      new Date(0).toISOString(),
+    );
+    expect(provisional.counts.mechanicalGraphVerdict).toEqual({ pass: 1, fail: 3 });
+    const mixedSupport = provisional.cases.find((item) => item.claimId === 1)!;
+    expect(mixedSupport.sourceGoldLabel).toBe("SUPPORT");
+    expect(mixedSupport.mechanicalGraphVerdict).toBe("fail");
+    expect(mixedSupport.graphExpectedVerdict).toBeNull();
+    expect(() =>
+      validateGraphVerdictOverlay(
+        manifest,
+        provisional,
+        manifestSha256,
+        join(root, "provisional-overlay.json"),
+      ),
+    ).toThrow("invalid adjudication provenance");
+
+    const adjudicated = fullyAdjudicatedOverlay(manifest, manifestSha256);
+    const validated = validateGraphVerdictOverlay(
+      manifest,
+      adjudicated.overlay,
+      manifestSha256,
+      adjudicated.overlayPath,
+    );
+    expect(validated.verdicts.get(mixedSupport.caseId)).toBe("fail");
+
+    adjudicated.overlay.cases[0]!.sourceGoldLabel = "NOINFO";
+    expect(() =>
+      validateGraphVerdictOverlay(
+        manifest,
+        adjudicated.overlay,
+        manifestSha256,
+        adjudicated.overlayPath,
+      ),
+    ).toThrow("mechanical audit disagrees");
+  });
+
+  test("binds an adjudication bundle to fixture, policy, JSONL, and consensus hashes", () => {
+    const fixtures = primaryFixtures();
+    const manifest = fixtureManifest(fixtures);
+    const manifestSha256 = "a".repeat(64);
+    const valid = fullyAdjudicatedOverlay(manifest, manifestSha256);
+    expect(
+      validateAdjudicationBundle(
+        valid.bundlePath,
+        manifestSha256,
+        fixtures.map((fixture) => fixture.caseId),
+      ).rows,
+    ).toHaveLength(fixtures.length);
+    expect(() =>
+      validateAdjudicationBundle(
+        valid.bundlePath,
+        "f".repeat(64),
+        fixtures.map((fixture) => fixture.caseId),
+      ),
+    ).toThrow("does not lock the selected fixture manifest");
+
+    const tamperedJsonl = fullyAdjudicatedOverlay(manifest, manifestSha256);
+    writeFileSync(tamperedJsonl.adjudicationsPath, "{}\n", "utf8");
+    expect(() =>
+      validateAdjudicationBundle(
+        tamperedJsonl.bundlePath,
+        manifestSha256,
+        fixtures.map((fixture) => fixture.caseId),
+      ),
+    ).toThrow("Adjudications file hash");
+
+    const tamperedConsensus = fullyAdjudicatedOverlay(manifest, manifestSha256);
+    writeFileSync(tamperedConsensus.consensusPath, "{}\n", "utf8");
+    expect(() =>
+      validateAdjudicationBundle(
+        tamperedConsensus.bundlePath,
+        manifestSha256,
+        fixtures.map((fixture) => fixture.caseId),
+      ),
+    ).toThrow("Consensus file hash");
+
+    const tamperedPolicy = fullyAdjudicatedOverlay(manifest, manifestSha256);
+    const bundle = readJson<GraphVerdictAdjudicationBundle>(tamperedPolicy.bundlePath);
+    bundle.policy.adjudicationRule = "different policy";
+    writeJson(tamperedPolicy.bundlePath, bundle);
+    expect(() =>
+      validateAdjudicationBundle(
+        tamperedPolicy.bundlePath,
+        manifestSha256,
+        fixtures.map((fixture) => fixture.caseId),
+      ),
+    ).toThrow("unsupported labeling policy");
+  });
+
+  test("rejects overlay omissions, order changes, duplicates, bad counts, and provenance", () => {
+    const fixtures = primaryFixtures();
+    const manifest = fixtureManifest(fixtures);
+    const manifestSha256 = "a".repeat(64);
+    const chain = fullyAdjudicatedOverlay(manifest, manifestSha256);
+    const validate = (overlay: GraphVerdictOverlay) =>
+      validateGraphVerdictOverlay(manifest, overlay, manifestSha256, chain.overlayPath);
+
+    const missing = structuredClone(chain.overlay);
+    missing.cases.pop();
+    expect(() => validate(missing)).toThrow("every fixture exactly once in manifest order");
+
+    const disordered = structuredClone(chain.overlay);
+    [disordered.cases[0], disordered.cases[1]] = [
+      disordered.cases[1]!,
+      disordered.cases[0]!,
+    ];
+    expect(() => validate(disordered)).toThrow("every fixture exactly once in manifest order");
+
+    const duplicate = structuredClone(chain.overlay);
+    duplicate.cases[1]!.caseId = duplicate.cases[0]!.caseId;
+    expect(() => validate(duplicate)).toThrow("Duplicate overlay case id");
+
+    const badCounts = structuredClone(chain.overlay);
+    badCounts.counts.total++;
+    expect(() => validate(badCounts)).toThrow("counts do not match");
+
+    const badProvenance = structuredClone(chain.overlay);
+    badProvenance.adjudication.bundleSha256 = "0".repeat(64);
+    expect(() => validate(badProvenance)).toThrow("does not match its adjudication bundle");
+
+    const escapingBundle = structuredClone(chain.overlay);
+    escapingBundle.adjudication.bundlePath = "../bundle.json";
+    expect(() => validate(escapingBundle)).toThrow("must stay inside its directory");
+  });
+
+  test("scores the adjudicated graph verdict, not the SciFact source label", () => {
+    const cleanSupport = primaryFixtures().find((fixture) => fixture.claimId === 4)!;
+    expect(cleanSupport.goldLabel).toBe("SUPPORT");
+    expect(cleanSupport.expected.verdict).toBe("pass");
+    const summary = scoreReviewCases(
+      fixtureManifest([cleanSupport]),
+      [ok(cleanSupport.caseId, "fail", "pass")],
+      documents,
+      new Map<string, GraphExpectedVerdict>([[cleanSupport.caseId, "fail"]]),
+      testLabeling(),
+      root,
+    );
+    expect(summary.schemaVersion).toBe(3);
+    expect(summary.cases[0]!.sourceGoldLabel).toBe("SUPPORT");
+    expect(summary.cases[0]!.graphExpectedVerdict).toBe("fail");
+    expect(summary.cases[0]!.correct).toBe(true);
+    expect(summary.byMode.primary.positiveCases).toBe(0);
+    expect(summary.byMode.primary.negativeCases).toBe(1);
+    expect(summary.byModeAndSourceGoldLabel.primary.SUPPORT.accuracy).toBe(1);
+  });
+
+  test("uses a q2 overlay graph pass for a negative source label without source fallback", () => {
+    const candidate = selectCandidates(pairs(), ["q2-oracle"], null, 7).find(
+      (item) => item.mode === "q2-oracle" && item.claim.label === "CONTRADICT",
+    )!;
+    const fixture = buildFixtureCase(root, candidate, "q2-oracle-000001");
+    expect(fixture.goldLabel).toBe("CONTRADICT");
+    expect(fixture.expected.verdict).toBe("fail");
+    const manifest = fixtureManifest([fixture]);
+    const manifestSha256 = "a".repeat(64);
+    const chain = fullyAdjudicatedOverlay(
+      manifest,
+      manifestSha256,
+      new Map([[fixture.caseId, "pass"]]),
+    );
+    const validated = validateGraphVerdictOverlay(
+      manifest,
+      chain.overlay,
+      manifestSha256,
+      chain.overlayPath,
+    );
+    const summary = scoreReviewCases(
+      manifest,
+      [ok(fixture.caseId, "n/a", "pass")],
+      documents,
+      validated.verdicts,
+      testLabeling(),
+      root,
+    );
+    expect(summary.cases[0]!.sourceGoldLabel).toBe("CONTRADICT");
+    expect(summary.cases[0]!.graphExpectedVerdict).toBe("pass");
+    expect(summary.cases[0]!.correct).toBe(true);
+    expect(summary.byMode["q2-oracle"].positiveCases).toBe(1);
+    expect(summary.byMode["q2-oracle"].contradictGraphFailRecall).toBeNull();
+  });
+
   test("uses the combined endpoint and checks numbered quotes against the real attachment", () => {
     const fixtures = primaryFixtures();
     const byLabel = new Map(fixtures.map((fixture) => [fixture.goldLabel, fixture]));
@@ -538,13 +855,20 @@ describe("scoring", () => {
         },
       ]),
     ];
-    const summary = scoreReviewCases(fixtureManifest(fixtures), results, documents, root);
+    const summary = scoreReviewCases(
+      fixtureManifest(fixtures),
+      results,
+      documents,
+      mechanicalVerdicts(fixtures),
+      testLabeling(),
+      root,
+    );
     expect(summary.byMode.primary.accuracy).toBe(1);
     expect(summary.byMode.primary.macroF1).toBe(1);
     expect(summary.byMode.primary.falsePasses).toBe(0);
-    expect(summary.byMode.primary.negativeRecall).toBe(1);
-    expect(summary.byMode.primary.contradictRecall).toBe(1);
-    expect(summary.byMode.primary.noInfoRecall).toBe(1);
+    expect(summary.byMode.primary.graphFailRecall).toBe(1);
+    expect(summary.byMode.primary.contradictGraphFailRecall).toBe(1);
+    expect(summary.byMode.primary.noInfoGraphFailRecall).toBe(1);
     expect(summary.q1CitationChecks.verbatimRate).toBe(1);
     expect(summary.q1CitationChecks.validCitationRate).toBe(1);
     expect(summary.q1CitationChecks.contradictRationaleHitRate).toBe(1);
@@ -568,6 +892,8 @@ describe("scoring", () => {
         ok(noInfo.caseId, "fail", "pass"),
       ],
       documents,
+      mechanicalVerdicts(fixtures),
+      testLabeling(),
       root,
     );
     expect(summary.cases.find((item) => item.caseId === support.caseId)?.actual).toBe("fail");
@@ -595,6 +921,8 @@ describe("scoring", () => {
       fixtureManifest([support]),
       [ok(support.caseId, "fail", "pass", [correctFinding])],
       documents,
+      mechanicalVerdicts([support]),
+      testLabeling(),
       root,
     );
     expect(correct.q1CitationChecks.validCitationRate).toBe(1);
@@ -609,6 +937,8 @@ describe("scoring", () => {
         ]),
       ],
       documents,
+      mechanicalVerdicts([support]),
+      testLabeling(),
       root,
     );
     expect(misrouted.q1CitationChecks.validCitationRate).toBe(0);
@@ -622,6 +952,8 @@ describe("scoring", () => {
         ]),
       ],
       documents,
+      mechanicalVerdicts([support]),
+      testLabeling(),
       root,
     );
     expect(wrongLocator.q1CitationChecks.verbatimRate).toBe(1);
@@ -643,11 +975,13 @@ describe("scoring", () => {
         ok(noInfo.caseId, "pass", "pass"),
       ],
       documents,
+      mechanicalVerdicts(fixtures),
+      testLabeling(),
       root,
     );
-    expect(summary.byMode.primary.contradictRecall).toBe(1);
-    expect(summary.byMode.primary.noInfoRecall).toBe(0);
-    expect(summary.byMode.primary.negativeRecall).toBe(0.5);
+    expect(summary.byMode.primary.contradictGraphFailRecall).toBe(1);
+    expect(summary.byMode.primary.noInfoGraphFailRecall).toBe(0);
+    expect(summary.byMode.primary.graphFailRecall).toBe(0.5);
     expect(summary.byMode.primary.falsePassRate).toBe(0.5);
   });
 
@@ -665,6 +999,8 @@ describe("scoring", () => {
         ok(noInfo.caseId, "fail", "pass"),
       ],
       documents,
+      mechanicalVerdicts(fixtures),
+      testLabeling(),
       root,
     );
     expect(summary.byMode.primary.accuracy).toBe(1);
@@ -674,11 +1010,83 @@ describe("scoring", () => {
     expect(summary.primaryClaimClusterBootstrap).toBeNull();
   });
 
+  test("writes summary, dual-label CSV, and a fully locked score manifest", () => {
+    const fixture = primaryFixtures().find((item) => item.claimId === 4)!;
+    const manifest = fixtureManifest([fixture]);
+    const chain = fullyAdjudicatedOverlay(manifest);
+    const labeling: ScoreSummary["labeling"] = {
+      ...testLabeling(),
+      graphVerdictOverlaySha256: sha256File(chain.overlayPath),
+      adjudicationBundleSha256: sha256File(chain.bundlePath),
+      adjudicationsSha256: sha256File(chain.adjudicationsPath),
+      consensusSha256: sha256File(chain.consensusPath),
+    };
+    const summary = scoreReviewCases(
+      manifest,
+      [ok(fixture.caseId, "pass", "pass")],
+      documents,
+      new Map([[fixture.caseId, "pass"]]),
+      labeling,
+      root,
+    );
+    const sourceDir = join(root, "score-sources");
+    mkdirSync(sourceDir, { recursive: true });
+    const runManifestPath = join(sourceDir, "run-manifest.json");
+    const resultsPath = join(sourceDir, "results.jsonl");
+    const recoveryPath = join(sourceDir, "recovery-provenance.json");
+    const fixturePath = join(sourceDir, "fixture-manifest.json");
+    writeJson(runManifestPath, { frozen: true });
+    writeFileSync(resultsPath, "{}\n", "utf8");
+    writeJson(recoveryPath, { recovered: true });
+    writeJson(fixturePath, manifest);
+    const outputDir = join(root, "score-release");
+    const written = writeScoreArtifacts({
+      outputDir,
+      summary,
+      runManifestPath,
+      resultsPath,
+      recoveryProvenancePath: recoveryPath,
+      fixtureManifestPath: fixturePath,
+      graphVerdictOverlayPath: chain.overlayPath,
+      adjudicationBundlePath: chain.bundlePath,
+    });
+    const scoreManifest = readJson<ScoreManifest>(join(outputDir, "score-manifest.json"));
+    expect(scoreManifest).toEqual(written);
+    expect(scoreManifest.artifacts.summary.sha256).toBe(
+      sha256File(join(outputDir, "summary.json")),
+    );
+    expect(scoreManifest.artifacts.casesCsv.sha256).toBe(
+      sha256File(join(outputDir, "cases.csv")),
+    );
+    expect(scoreManifest.artifacts.recoveryProvenance?.sha256).toBe(
+      sha256File(recoveryPath),
+    );
+    for (const artifact of Object.values(scoreManifest.artifacts)) {
+      if (artifact !== null) expect(artifact.sha256).toBe(sha256File(artifact.path));
+    }
+    const csvHeader = readFileSync(join(outputDir, "cases.csv"), "utf8").split("\n")[0]!;
+    expect(csvHeader).toContain("sourceGoldLabel");
+    expect(csvHeader).toContain("graphExpectedVerdict");
+    const persistedSummary = readJson<ScoreSummary>(join(outputDir, "summary.json"));
+    expect(persistedSummary.labeling.adjudicationBundleSha256).toBe(
+      sha256File(chain.bundlePath),
+    );
+    expect(persistedSummary.schemaVersion).toBe(3);
+  });
+
   test("rejects invalid primary manifests and fabricated quote suffixes", () => {
     const fixtures = primaryFixtures();
-    const invalid = fixtureManifest(fixtures);
+    const invalid = fixtureManifest(structuredClone(fixtures));
     invalid.cases[0]!.expected.question = "Q2";
     expect(() => validateFixtureManifest(invalid)).toThrow("combined Q1/Q2 endpoint");
+
+    const invalidLegacyExpected = fixtureManifest(structuredClone(fixtures));
+    invalidLegacyExpected.cases.find(
+      (fixture) => fixture.goldLabel === "CONTRADICT",
+    )!.expected.verdict = "pass";
+    expect(() => validateFixtureManifest(invalidLegacyExpected)).toThrow(
+      "legacy v2 source-label expected verdict mapping",
+    );
 
     const assessment = assessQuote(
       "The treatment increases disease incidence. fabricated suffix",
@@ -687,5 +1095,47 @@ describe("scoring", () => {
     );
     expect(assessment.inSource).toBe(false);
     expect(assessment.hitsGoldRationale).toBe(false);
+  });
+});
+
+describe("Sol Ultra adjudication provenance", () => {
+  test("requires exact top-level model and ultra effort", () => {
+    expect(
+      validateSolUltraInputProvenance(
+        { model: "gpt-5.6-sol", reasoningEffort: "ultra" },
+        "input.json",
+      ),
+    ).toEqual({ model: "gpt-5.6-sol", reasoningEffort: "ultra" });
+    expect(() =>
+      validateSolUltraInputProvenance(
+        { model: null, reasoningEffort: "ultra" },
+        "input.json",
+      ),
+    ).toThrow("model=gpt-5.6-sol");
+    expect(() =>
+      validateSolUltraInputProvenance(
+        { model: "gpt-5.6-sol", reasoningEffort: null },
+        "input.json",
+      ),
+    ).toThrow("reasoningEffort=ultra");
+    expect(() =>
+      validateSolUltraInputProvenance(
+        { model: "gpt-5.6-terra", reasoningEffort: "ultra" },
+        "input.json",
+      ),
+    ).toThrow("model=gpt-5.6-sol");
+  });
+
+  test("rejects null or false selected-vote blindness", () => {
+    expect(() => requireSelectedVoteBlindness(null, true, "vote")).toThrow(
+      "blindedToRunResults=true",
+    );
+    expect(() => requireSelectedVoteBlindness(true, null, "vote")).toThrow(
+      "blindedToPriorAdjudication=true",
+    );
+    expect(() => requireSelectedVoteBlindness(true, false, "vote")).toThrow(
+      "blindedToPriorAdjudication=true",
+    );
+    expect(() => requireSelectedVoteBlindness(true, true, "vote")).not.toThrow();
   });
 });

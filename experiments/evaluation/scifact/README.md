@@ -21,10 +21,18 @@ target.qualifier            = unestablished
 ```
 
 The dev split contains 300 claim-level cases: 124 SUPPORT, 64 CONTRADICT, and
-112 NOINFO. The manifest retains the original three labels for audit and
-subgroup reporting. Binary scoring treats SUPPORT as positive and combines
-CONTRADICT and NOINFO as negative; the reviewer is not required to distinguish
-the two reasons for a negative verdict.
+112 NOINFO. `goldLabel` in the frozen fixture manifest is the original SciFact
+claim label and is retained only for provenance and subgroup reporting. It is
+not the pass/fail label of the materialized graph: a source-SUPPORT claim can
+still have an unrelated cited abstract attached as an asserted evidence edge.
+
+The scoring label is therefore a separate `graphExpectedVerdict`. Every
+materialized attachment is treated as an asserted evidence edge. Every
+attachment must be relevant, and the attachment set must actually support the
+claim's direction, entities or population, intervention or exposure, outcome,
+quantity, and scope. Explicit contradiction, a truly unrelated attachment, or
+a key unsupported detail makes the graph fail. Multiple attachments may jointly
+supply the support.
 
 One production `review` call produces both component verdicts. The benchmark
 adapter maps them to one binary prediction:
@@ -97,6 +105,35 @@ bun run eval:scifact:build -- \
 
 Output directories are never overwritten.
 
+Fixture schema v2 keeps a legacy `expected.verdict` for compatibility. It maps
+the SciFact source label mechanically (`SUPPORT -> pass`, otherwise `fail`) and
+is not graph gold. The validator enforces this legacy mapping. A future builder
+contract may change only under a new fixture schema version.
+
+The audit layer independently derives a metadata-only `mechanicalGraphVerdict`
+and records it alongside the semantic decision. That diagnostic is never used
+as final gold. A release must first produce:
+
+- a complete adjudications JSONL in fixture-manifest order;
+- a consensus document that records the votes and final rule for every case;
+- an adjudication bundle that hash-locks the fixture manifest, the exact
+  mechanical and semantic policies, the adjudications JSONL, and the consensus.
+
+Create the final overlay without changing the frozen fixture or graph:
+
+```bash
+bun run eval:scifact:audit-labels -- \
+  --fixtures <fixture-manifest.json> \
+  --bundle <adjudication-bundle.json> \
+  --out <adjudicated-overlay.json>
+```
+
+`audit-labels` verifies every bundle hash, count, case ID, order, consensus
+decision, and policy before writing. The overlay records the bundle,
+adjudications, consensus, fixture, and policy provenance. The scorer repeats
+the complete validation and rejects provisional, partial, reordered, or
+unbundled overlays.
+
 ## Dry-run and live review
 
 The runner is dry-run by default. It validates all fixture hashes but does not
@@ -129,10 +166,13 @@ record, and agreement between the return value, event payload, and archived DB.
 
 ## Score
 
-Scoring never calls a model and requires an explicit run directory:
+Scoring never calls a model and requires an explicit run directory plus the
+fully adjudicated overlay:
 
 ```bash
-bun run eval:scifact:score -- --run-dir <run-directory>
+bun run eval:scifact:score -- \
+  --run-dir <run-directory> \
+  --label-overlay <adjudicated-overlay.json>
 ```
 
 Interrupted runs, missing cases, or reviewer errors are rejected by default.
@@ -141,14 +181,22 @@ and reports coverage separately; completed-only accuracy is labeled as such.
 
 Outputs include:
 
-- binary Accuracy, Macro-F1, support recall, combined-negative recall, and
-  false-supported rate, plus separate CONTRADICT and NOINFO rejection recall;
+- binary Accuracy, Macro-F1, graph-pass recall, graph-fail recall, and
+  false-supported rate;
+- `contradictGraphFailRecall` and `noInfoGraphFailRecall`: within each SciFact
+  source subgroup, recall restricted to cases whose adjudicated
+  `graphExpectedVerdict=fail`; source-negative cases adjudicated as graph pass
+  belong to graph-pass recall instead and are excluded from these denominators;
 - claim bootstrap 95% intervals for the primary suite;
 - end-to-end accuracy, coverage, reviewer failure rate, and latency summaries;
 - accepted/rejected finding protocol rates;
 - independent attachment/verbatim/locator checks and gold-rationale quote hits;
   the latter excludes NOINFO and any other case without a gold rationale;
-- per-case CSV with claim, document IDs, Q1/Q2, combined verdict, and audit flags.
+- per-case CSV with both source and graph labels, document IDs, Q1/Q2, combined
+  verdict, and audit flags;
+- `score-manifest.json`, which hash-locks the run manifest, results, optional
+  recovery provenance, fixture manifest, overlay, adjudication bundle, summary,
+  and per-case CSV.
 
 The current Agent SDK audit does not expose token usage, so the scorer marks it
 unavailable rather than estimating it. The matched direct-reviewer control from

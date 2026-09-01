@@ -3,6 +3,15 @@ import type { Finding, RejectedFinding } from "../../../src/types.ts";
 export const SCIFACT_LABELS = ["SUPPORT", "CONTRADICT", "NOINFO"] as const;
 export type SciFactLabel = (typeof SCIFACT_LABELS)[number];
 export type ReviewMode = "primary" | "q2-oracle";
+export type GraphExpectedVerdict = "pass" | "fail";
+
+export const MECHANICAL_GRAPH_VERDICT_POLICY_VERSION =
+  "scifact-materialized-graph-mechanical/v1" as const;
+export type MechanicalGraphVerdictReasonCode =
+  | "all-target-attachments-support-with-rationale"
+  | "target-has-non-supporting-attachment"
+  | "q2-support-rationale"
+  | "q2-non-support-rationale";
 
 export interface SciFactRationale {
   label: "SUPPORT" | "CONTRADICT";
@@ -46,7 +55,7 @@ export interface FixtureAttachment {
   /** Relative to the fixture project. */
   path: string;
   sha256: string;
-  /** Relation between this one abstract and the claim. */
+  /** SciFact source relation between this one abstract and the claim. */
   goldLabel: SciFactLabel;
   /** Empty only when this cited abstract has no gold evidence relation. */
   goldRationaleSets: number[][];
@@ -60,6 +69,7 @@ export interface FixtureCase {
   claimId: number;
   /** All abstracts materialized in this fixture. Primary cases may contain several. */
   docIds: number[];
+  /** SciFact's claim-level source label. This is not the expected graph verdict. */
   goldLabel: SciFactLabel;
   /** Q2 has one fixture per alternative gold rationale set. */
   goldRationaleSetIndex: number | null;
@@ -71,7 +81,89 @@ export interface FixtureCase {
   attachments: FixtureAttachment[];
   graphSha256: string;
   targetId: number;
-  expected: { question: "COMBINED" | "Q2"; verdict: "pass" | "fail" };
+  /**
+   * Legacy v2 source-label mapping stored by the deterministic builder: SUPPORT -> pass,
+   * CONTRADICT/NOINFO -> fail. This field is not graph gold. Scoring must use an independently
+   * adjudicated graphExpectedVerdict overlay; changing builder semantics is reserved for v3.
+   */
+  expected: { question: "COMBINED" | "Q2"; verdict: GraphExpectedVerdict };
+}
+
+export interface GraphVerdictAttachmentAudit {
+  docId: number;
+  sourceGoldLabel: SciFactLabel;
+  rationaleSetCount: number;
+  allRationaleSetsNonEmpty: boolean;
+  passesMechanicalSupportCheck: boolean;
+}
+
+export interface GraphVerdictOverlayCase {
+  caseId: string;
+  mode: ReviewMode;
+  claimId: number;
+  sourceGoldLabel: SciFactLabel;
+  manifestExpectedVerdict: GraphExpectedVerdict;
+  mechanicalGraphVerdict: GraphExpectedVerdict;
+  mechanicalChangedFromManifest: boolean;
+  mechanicalReasonCode: MechanicalGraphVerdictReasonCode;
+  mechanicalReason: string;
+  attachments: GraphVerdictAttachmentAudit[];
+  decisionStatus: "provisional" | "adjudicated";
+  graphExpectedVerdict: GraphExpectedVerdict | null;
+  changedFromManifest: boolean | null;
+  adjudicationReason: string | null;
+}
+
+export interface GraphVerdictOverlay {
+  schemaVersion: 2;
+  createdAt: string;
+  fixtureManifestSha256: string;
+  policy: {
+    mechanicalVersion: typeof MECHANICAL_GRAPH_VERDICT_POLICY_VERSION;
+    mechanicalRule: string;
+    adjudicationRule: string;
+  };
+  adjudication: {
+    method: string | null;
+    bundlePath: string | null;
+    bundleSha256: string | null;
+    adjudicationsSha256: string | null;
+    consensusSha256: string | null;
+  };
+  counts: {
+    total: number;
+    sourceGoldLabel: Record<SciFactLabel, number>;
+    mechanicalGraphVerdict: Record<GraphExpectedVerdict, number>;
+    mechanicalChangedFromManifest: number;
+    adjudicated: number;
+    graphExpectedVerdict: Record<GraphExpectedVerdict, number>;
+    changedFromManifest: number;
+  };
+  cases: GraphVerdictOverlayCase[];
+}
+
+export interface GraphVerdictAdjudicationBundle {
+  schemaVersion: 1;
+  createdAt: string;
+  fixtureManifestSha256: string;
+  policy: {
+    mechanicalVersion: typeof MECHANICAL_GRAPH_VERDICT_POLICY_VERSION;
+    mechanicalRule: string;
+    adjudicationRule: string;
+  };
+  adjudications: {
+    /** Path relative to the bundle file. */
+    path: string;
+    sha256: string;
+    cases: number;
+  };
+  consensus: {
+    /** Path relative to the bundle file. */
+    path: string;
+    sha256: string;
+    cases: number;
+    method: string;
+  };
 }
 
 export type SelectedCandidate =
@@ -192,8 +284,10 @@ export interface CaseScore {
   mode: ReviewMode;
   claimId: number;
   docIds: number[];
-  goldLabel: SciFactLabel;
-  expected: "pass" | "fail";
+  /** SciFact source label, retained only for provenance and subgroup reporting. */
+  sourceGoldLabel: SciFactLabel;
+  /** Gold verdict for the graph exactly as materialized. */
+  graphExpectedVerdict: GraphExpectedVerdict;
   actual: "pass" | "fail" | "n/a" | "error";
   Q1: "pass" | "fail" | "n/a" | null;
   Q2: "pass" | "fail" | null;
@@ -219,10 +313,12 @@ export interface ModeScore {
   endToEndAccuracy: number | null;
   precision: number | null;
   recall: number | null;
-  supportRecall: number | null;
-  negativeRecall: number | null;
-  contradictRecall: number | null;
-  noInfoRecall: number | null;
+  graphPassRecall: number | null;
+  graphFailRecall: number | null;
+  /** Recall of graph fails inside the source CONTRADICT subgroup. */
+  contradictGraphFailRecall: number | null;
+  /** Recall of graph fails inside the source NOINFO subgroup. */
+  noInfoGraphFailRecall: number | null;
   f1: number | null;
   macroF1: number | null;
   negativeCases: number;
@@ -263,20 +359,32 @@ export interface ClusterBootstrapSummary {
   accuracy: ConfidenceInterval;
   macroF1: ConfidenceInterval | null;
   falseSupportedRate: ConfidenceInterval | null;
-  supportRecall: ConfidenceInterval | null;
-  negativeRecall: ConfidenceInterval | null;
-  contradictRecall: ConfidenceInterval | null;
-  noInfoRecall: ConfidenceInterval | null;
+  graphPassRecall: ConfidenceInterval | null;
+  graphFailRecall: ConfidenceInterval | null;
+  contradictGraphFailRecall: ConfidenceInterval | null;
+  noInfoGraphFailRecall: ConfidenceInterval | null;
 }
 
 export interface ScoreSummary {
-  schemaVersion: 1;
+  schemaVersion: 3;
   generatedAt: string;
+  labeling: {
+    sourceGoldLabel: "fixture.goldLabel";
+    graphExpectedVerdict: "adjudicated-overlay";
+    fixtureManifestSha256: string;
+    graphVerdictOverlaySha256: string;
+    adjudicationMethod: string;
+    adjudicationBundleSha256: string;
+    adjudicationsSha256: string;
+    consensusSha256: string;
+    mechanicalPolicyVersion: typeof MECHANICAL_GRAPH_VERDICT_POLICY_VERSION;
+    allCasesAdjudicated: true;
+  };
   totalCases: number;
   completedCases: number;
   errorCases: number;
   byMode: Record<ReviewMode, ModeScore>;
-  byModeAndGoldLabel: Record<ReviewMode, Record<SciFactLabel, LabelScore>>;
+  byModeAndSourceGoldLabel: Record<ReviewMode, Record<SciFactLabel, LabelScore>>;
   q1CitationChecks: {
     quotes: number;
     verbatimQuotes: number;
@@ -315,4 +423,25 @@ export interface ScoreSummary {
   };
   primaryClaimClusterBootstrap: ClusterBootstrapSummary | null;
   cases: CaseScore[];
+}
+
+export interface ScoreArtifactLock {
+  path: string;
+  sha256: string;
+}
+
+export interface ScoreManifest {
+  schemaVersion: 1;
+  generatedAt: string;
+  scoreSummarySchemaVersion: 3;
+  artifacts: {
+    runManifest: ScoreArtifactLock;
+    results: ScoreArtifactLock;
+    recoveryProvenance: ScoreArtifactLock | null;
+    fixtureManifest: ScoreArtifactLock;
+    graphVerdictOverlay: ScoreArtifactLock;
+    adjudicationBundle: ScoreArtifactLock;
+    summary: ScoreArtifactLock;
+    casesCsv: ScoreArtifactLock;
+  };
 }

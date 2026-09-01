@@ -8,6 +8,7 @@
     "test": "bun test",
     "agent-eval": "bun tests/agent-eval/run.ts",
     "eval:scifact:build": "bun experiments/evaluation/scifact/build-fixtures.ts",
+    "eval:scifact:audit-labels": "bun experiments/evaluation/scifact/audit-labels.ts",
     "eval:scifact:run": "bun experiments/evaluation/scifact/run-reviews.ts",
     "eval:scifact:score": "bun experiments/evaluation/scifact/score-reviews.ts",
     "viz": "bun visualizer/server.ts",

@@ -7,23 +7,36 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { readJson, readJsonl, sha256File, sha256Text, writeJson } from "../common/manifest.ts";
+import {
+  type ValidatedAdjudicationBundle,
+  validateAdjudicationBundle,
+} from "./adjudication-bundle.ts";
+import {
+  GRAPH_VERDICT_ADJUDICATION_RULE,
+  MECHANICAL_GRAPH_VERDICT_RULE,
+  buildProvisionalGraphVerdictOverlay,
+} from "./graph-verdict.ts";
 import type {
   CaseScore,
   ClusterBootstrapSummary,
   FixtureCase,
   FixtureManifest,
+  GraphExpectedVerdict,
+  GraphVerdictOverlay,
   LabelScore,
   ModeScore,
   ReviewCaseResult,
   ReviewMode,
   ReviewRunManifest,
+  ScoreManifest,
   SciFactDocument,
   ScoreSummary,
 } from "./types.ts";
@@ -37,6 +50,7 @@ Usage:
 Options:
   --run-dir <path>          Directory containing run-manifest.json
   --fixtures <path>         Override the fixture manifest locked by the run
+  --label-overlay <path>    Fully adjudicated graph-verdict overlay (required)
   --out-dir <path>          New score output directory (default: <run-dir>/scores)
   --allow-incomplete        Score successful cases while reporting failures separately
   --help                    Show this help
@@ -122,9 +136,12 @@ export function validateFixtureManifest(manifest: FixtureManifest): void {
         throw new Error(`Fixture ${fixture.caseId} has an empty gold rationale set`);
       }
     }
-    const expected = fixture.goldLabel === "SUPPORT" ? "pass" : "fail";
-    if (fixture.expected.verdict !== expected) {
-      throw new Error(`Fixture ${fixture.caseId} has an invalid gold verdict mapping`);
+    const legacyExpectedVerdict: GraphExpectedVerdict =
+      fixture.goldLabel === "SUPPORT" ? "pass" : "fail";
+    if (fixture.expected.verdict !== legacyExpectedVerdict) {
+      throw new Error(
+        `Fixture ${fixture.caseId} violates the legacy v2 source-label expected verdict mapping`,
+      );
     }
     if (fixture.mode === "primary" && fixture.expected.question !== "COMBINED") {
       throw new Error(`Primary fixture ${fixture.caseId} must use the combined Q1/Q2 endpoint`);
@@ -168,6 +185,169 @@ export function validateFixtureManifest(manifest: FixtureManifest): void {
       }
     }
   }
+}
+
+/**
+ * Validate the immutable link to the fixture plus every mechanical and adjudicated label field.
+ * A provisional overlay is useful as an audit worksheet, but is intentionally not scoreable.
+ */
+export function validateGraphVerdictOverlay(
+  manifest: FixtureManifest,
+  overlay: GraphVerdictOverlay,
+  fixtureManifestSha256: string,
+  overlayFile: string,
+): {
+  verdicts: Map<string, GraphExpectedVerdict>;
+  adjudicationBundle: ValidatedAdjudicationBundle;
+} {
+  if (overlay.schemaVersion !== 2) {
+    throw new Error(`Unsupported graph-verdict overlay schema: ${overlay.schemaVersion}`);
+  }
+  if (overlay.fixtureManifestSha256 !== fixtureManifestSha256) {
+    throw new Error("Graph-verdict overlay does not lock the selected fixture manifest");
+  }
+  if (
+    overlay.policy.mechanicalVersion !== "scifact-materialized-graph-mechanical/v1" ||
+    overlay.policy.mechanicalRule !== MECHANICAL_GRAPH_VERDICT_RULE ||
+    overlay.policy.adjudicationRule !== GRAPH_VERDICT_ADJUDICATION_RULE
+  ) {
+    throw new Error("Graph-verdict overlay uses an unsupported labeling policy");
+  }
+  const provenance = overlay.adjudication;
+  if (
+    typeof provenance.method !== "string" ||
+    provenance.method.trim() === "" ||
+    typeof provenance.bundlePath !== "string" ||
+    provenance.bundlePath.trim() === "" ||
+    typeof provenance.bundleSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(provenance.bundleSha256) ||
+    typeof provenance.adjudicationsSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(provenance.adjudicationsSha256) ||
+    typeof provenance.consensusSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(provenance.consensusSha256)
+  ) {
+    throw new Error("Graph-verdict overlay has invalid adjudication provenance");
+  }
+  assertUnique(overlay.cases.map((item) => item.caseId), "overlay case id");
+  const fixtureIds = manifest.cases.map((fixture) => fixture.caseId);
+  const overlayIds = overlay.cases.map((item) => item.caseId);
+  if (JSON.stringify(overlayIds) !== JSON.stringify(fixtureIds)) {
+    throw new Error("Graph-verdict overlay must cover every fixture exactly once in manifest order");
+  }
+  const overlayDir = dirname(resolve(overlayFile));
+  const resolvedBundlePath = resolve(overlayDir, provenance.bundlePath);
+  if (isAbsolute(provenance.bundlePath) || !isInside(overlayDir, resolvedBundlePath)) {
+    throw new Error("Graph-verdict overlay bundle path must stay inside its directory");
+  }
+  const adjudicationBundle = validateAdjudicationBundle(
+    resolvedBundlePath,
+    fixtureManifestSha256,
+    fixtureIds,
+  );
+  if (
+    provenance.bundleSha256 !== adjudicationBundle.bundleSha256 ||
+    provenance.adjudicationsSha256 !== adjudicationBundle.bundle.adjudications.sha256 ||
+    provenance.consensusSha256 !== adjudicationBundle.bundle.consensus.sha256 ||
+    provenance.method !== adjudicationBundle.bundle.consensus.method
+  ) {
+    throw new Error("Graph-verdict overlay provenance does not match its adjudication bundle");
+  }
+
+  const provisional = buildProvisionalGraphVerdictOverlay(
+    manifest,
+    fixtureManifestSha256,
+    overlay.createdAt,
+  );
+  const verdicts = new Map<string, GraphExpectedVerdict>();
+  let adjudicated = 0;
+  let changedFromManifest = 0;
+  const graphExpectedVerdict: Record<GraphExpectedVerdict, number> = { pass: 0, fail: 0 };
+  for (let index = 0; index < overlay.cases.length; index++) {
+    const actual = overlay.cases[index]!;
+    const mechanical = provisional.cases[index]!;
+    const mechanicalFields = {
+      caseId: actual.caseId,
+      mode: actual.mode,
+      claimId: actual.claimId,
+      sourceGoldLabel: actual.sourceGoldLabel,
+      manifestExpectedVerdict: actual.manifestExpectedVerdict,
+      mechanicalGraphVerdict: actual.mechanicalGraphVerdict,
+      mechanicalChangedFromManifest: actual.mechanicalChangedFromManifest,
+      mechanicalReasonCode: actual.mechanicalReasonCode,
+      mechanicalReason: actual.mechanicalReason,
+      attachments: actual.attachments,
+    };
+    const expectedMechanicalFields = {
+      caseId: mechanical.caseId,
+      mode: mechanical.mode,
+      claimId: mechanical.claimId,
+      sourceGoldLabel: mechanical.sourceGoldLabel,
+      manifestExpectedVerdict: mechanical.manifestExpectedVerdict,
+      mechanicalGraphVerdict: mechanical.mechanicalGraphVerdict,
+      mechanicalChangedFromManifest: mechanical.mechanicalChangedFromManifest,
+      mechanicalReasonCode: mechanical.mechanicalReasonCode,
+      mechanicalReason: mechanical.mechanicalReason,
+      attachments: mechanical.attachments,
+    };
+    if (JSON.stringify(mechanicalFields) !== JSON.stringify(expectedMechanicalFields)) {
+      throw new Error(`Overlay mechanical audit disagrees with fixture ${actual.caseId}`);
+    }
+
+    if (actual.decisionStatus !== "adjudicated") {
+      if (
+        actual.decisionStatus !== "provisional" ||
+        actual.graphExpectedVerdict !== null ||
+        actual.changedFromManifest !== null ||
+        actual.adjudicationReason !== null
+      ) {
+        throw new Error(`Overlay ${actual.caseId} has an invalid provisional decision`);
+      }
+      continue;
+    }
+    if (
+      (actual.graphExpectedVerdict !== "pass" && actual.graphExpectedVerdict !== "fail") ||
+      typeof actual.adjudicationReason !== "string" ||
+      actual.adjudicationReason.trim() === ""
+    ) {
+      throw new Error(`Overlay ${actual.caseId} has an incomplete adjudication`);
+    }
+    const changed = actual.manifestExpectedVerdict !== actual.graphExpectedVerdict;
+    if (actual.changedFromManifest !== changed) {
+      throw new Error(`Overlay ${actual.caseId} changedFromManifest is inconsistent`);
+    }
+    const bundled = adjudicationBundle.rows[index]!;
+    if (
+      bundled.caseId !== actual.caseId ||
+      bundled.graphExpectedVerdict !== actual.graphExpectedVerdict ||
+      bundled.adjudicationReason !== actual.adjudicationReason
+    ) {
+      throw new Error(`Overlay ${actual.caseId} disagrees with its adjudication bundle`);
+    }
+    adjudicated++;
+    if (changed) changedFromManifest++;
+    graphExpectedVerdict[actual.graphExpectedVerdict]++;
+    verdicts.set(actual.caseId, actual.graphExpectedVerdict);
+  }
+
+  const expectedCounts = {
+    total: provisional.counts.total,
+    sourceGoldLabel: provisional.counts.sourceGoldLabel,
+    mechanicalGraphVerdict: provisional.counts.mechanicalGraphVerdict,
+    mechanicalChangedFromManifest: provisional.counts.mechanicalChangedFromManifest,
+    adjudicated,
+    graphExpectedVerdict,
+    changedFromManifest,
+  };
+  if (JSON.stringify(overlay.counts) !== JSON.stringify(expectedCounts)) {
+    throw new Error("Graph-verdict overlay counts do not match its cases");
+  }
+  if (adjudicated !== manifest.cases.length) {
+    throw new Error(
+      `Graph-verdict overlay is provisional: ${manifest.cases.length - adjudicated} case(s) ` +
+        "still need semantic adjudication",
+    );
+  }
+  return { verdicts, adjudicationBundle };
 }
 
 interface QuoteAssessment {
@@ -230,17 +410,32 @@ function locatorMatchesSentence(locator: string, sentenceIds: number[]): boolean
 function scoreMode(cases: CaseScore[], mode: ReviewMode): ModeScore {
   const selected = cases.filter((item) => item.mode === mode);
   const completed = selected.filter((item) => item.actual !== "error");
-  const tp = completed.filter((item) => item.expected === "pass" && item.actual === "pass").length;
-  const tn = completed.filter((item) => item.expected === "fail" && item.actual === "fail").length;
-  const fp = completed.filter((item) => item.expected === "fail" && item.actual === "pass").length;
-  const positiveCases = completed.filter((item) => item.expected === "pass").length;
-  const negativeCases = completed.filter((item) => item.expected === "fail").length;
-  const contradictCases = completed.filter((item) => item.goldLabel === "CONTRADICT");
-  const noInfoCases = completed.filter((item) => item.goldLabel === "NOINFO");
+  const tp = completed.filter(
+    (item) => item.graphExpectedVerdict === "pass" && item.actual === "pass",
+  ).length;
+  const tn = completed.filter(
+    (item) => item.graphExpectedVerdict === "fail" && item.actual === "fail",
+  ).length;
+  const fp = completed.filter(
+    (item) => item.graphExpectedVerdict === "fail" && item.actual === "pass",
+  ).length;
+  const positiveCases = completed.filter(
+    (item) => item.graphExpectedVerdict === "pass",
+  ).length;
+  const negativeCases = completed.filter(
+    (item) => item.graphExpectedVerdict === "fail",
+  ).length;
+  const contradictGraphFailCases = completed.filter(
+    (item) =>
+      item.sourceGoldLabel === "CONTRADICT" && item.graphExpectedVerdict === "fail",
+  );
+  const noInfoGraphFailCases = completed.filter(
+    (item) => item.sourceGoldLabel === "NOINFO" && item.graphExpectedVerdict === "fail",
+  );
   const positiveMisses = positiveCases - tp;
   const negativeMisses = negativeCases - tn;
   const positivePredictedFail = completed.filter(
-    (item) => item.expected === "pass" && item.actual === "fail",
+    (item) => item.graphExpectedVerdict === "pass" && item.actual === "fail",
   ).length;
   const positiveF1 = ratio(2 * tp, 2 * tp + fp + positiveMisses);
   const negativeF1 = ratio(2 * tn, 2 * tn + positivePredictedFail + negativeMisses);
@@ -261,15 +456,15 @@ function scoreMode(cases: CaseScore[], mode: ReviewMode): ModeScore {
     endToEndAccuracy: ratio(correct, selected.length),
     precision: ratio(tp, tp + fp),
     recall: ratio(tp, positiveCases),
-    supportRecall: ratio(tp, positiveCases),
-    negativeRecall: ratio(tn, negativeCases),
-    contradictRecall: ratio(
-      contradictCases.filter((item) => item.actual === "fail").length,
-      contradictCases.length,
+    graphPassRecall: ratio(tp, positiveCases),
+    graphFailRecall: ratio(tn, negativeCases),
+    contradictGraphFailRecall: ratio(
+      contradictGraphFailCases.filter((item) => item.actual === "fail").length,
+      contradictGraphFailCases.length,
     ),
-    noInfoRecall: ratio(
-      noInfoCases.filter((item) => item.actual === "fail").length,
-      noInfoCases.length,
+    noInfoGraphFailRecall: ratio(
+      noInfoGraphFailCases.filter((item) => item.actual === "fail").length,
+      noInfoGraphFailCases.length,
     ),
     f1: positiveF1,
     macroF1:
@@ -286,8 +481,14 @@ function scoreMode(cases: CaseScore[], mode: ReviewMode): ModeScore {
   };
 }
 
-function scoreLabel(cases: CaseScore[], mode: ReviewMode, label: CaseScore["goldLabel"]): LabelScore {
-  const selected = cases.filter((item) => item.mode === mode && item.goldLabel === label);
+function scoreLabel(
+  cases: CaseScore[],
+  mode: ReviewMode,
+  label: CaseScore["sourceGoldLabel"],
+): LabelScore {
+  const selected = cases.filter(
+    (item) => item.mode === mode && item.sourceGoldLabel === label,
+  );
   const completed = selected.filter((item) => item.actual !== "error");
   const correct = completed.filter((item) => item.correct).length;
   return {
@@ -327,33 +528,46 @@ function binaryMetrics(cases: CaseScore[]): {
   accuracy: number;
   macroF1: number | null;
   falseSupportedRate: number | null;
-  supportRecall: number | null;
-  negativeRecall: number | null;
-  contradictRecall: number | null;
-  noInfoRecall: number | null;
+  graphPassRecall: number | null;
+  graphFailRecall: number | null;
+  contradictGraphFailRecall: number | null;
+  noInfoGraphFailRecall: number | null;
 } {
-  const tp = cases.filter((item) => item.expected === "pass" && item.actual === "pass").length;
-  const tn = cases.filter((item) => item.expected === "fail" && item.actual === "fail").length;
-  const fp = cases.filter((item) => item.expected === "fail" && item.actual === "pass").length;
-  const fn = cases.filter((item) => item.expected === "pass" && item.actual === "fail").length;
+  const tp = cases.filter(
+    (item) => item.graphExpectedVerdict === "pass" && item.actual === "pass",
+  ).length;
+  const tn = cases.filter(
+    (item) => item.graphExpectedVerdict === "fail" && item.actual === "fail",
+  ).length;
+  const fp = cases.filter(
+    (item) => item.graphExpectedVerdict === "fail" && item.actual === "pass",
+  ).length;
+  const fn = cases.filter(
+    (item) => item.graphExpectedVerdict === "pass" && item.actual === "fail",
+  ).length;
   const positiveF1 = ratio(2 * tp, 2 * tp + fp + fn);
   const negativeF1 = ratio(2 * tn, 2 * tn + fp + fn);
-  const contradictCases = cases.filter((item) => item.goldLabel === "CONTRADICT");
-  const noInfoCases = cases.filter((item) => item.goldLabel === "NOINFO");
+  const contradictGraphFailCases = cases.filter(
+    (item) =>
+      item.sourceGoldLabel === "CONTRADICT" && item.graphExpectedVerdict === "fail",
+  );
+  const noInfoGraphFailCases = cases.filter(
+    (item) => item.sourceGoldLabel === "NOINFO" && item.graphExpectedVerdict === "fail",
+  );
   return {
     accuracy: (tp + tn) / cases.length,
     macroF1:
       positiveF1 === null || negativeF1 === null ? null : (positiveF1 + negativeF1) / 2,
     falseSupportedRate: ratio(fp, tn + fp),
-    supportRecall: ratio(tp, tp + fn),
-    negativeRecall: ratio(tn, tn + fp),
-    contradictRecall: ratio(
-      contradictCases.filter((item) => item.actual === "fail").length,
-      contradictCases.length,
+    graphPassRecall: ratio(tp, tp + fn),
+    graphFailRecall: ratio(tn, tn + fp),
+    contradictGraphFailRecall: ratio(
+      contradictGraphFailCases.filter((item) => item.actual === "fail").length,
+      contradictGraphFailCases.length,
     ),
-    noInfoRecall: ratio(
-      noInfoCases.filter((item) => item.actual === "fail").length,
-      noInfoCases.length,
+    noInfoGraphFailRecall: ratio(
+      noInfoGraphFailCases.filter((item) => item.actual === "fail").length,
+      noInfoGraphFailCases.length,
     ),
   };
 }
@@ -381,10 +595,10 @@ export function claimClusterBootstrap(
   const accuracy: number[] = [];
   const macroF1: number[] = [];
   const falseSupportedRate: number[] = [];
-  const supportRecall: number[] = [];
-  const negativeRecall: number[] = [];
-  const contradictRecall: number[] = [];
-  const noInfoRecall: number[] = [];
+  const graphPassRecall: number[] = [];
+  const graphFailRecall: number[] = [];
+  const contradictGraphFailRecall: number[] = [];
+  const noInfoGraphFailRecall: number[] = [];
   for (let iteration = 0; iteration < iterations; iteration++) {
     const sample: CaseScore[] = [];
     for (let index = 0; index < clusterCases.length; index++) {
@@ -394,18 +608,22 @@ export function claimClusterBootstrap(
     accuracy.push(metrics.accuracy);
     if (metrics.macroF1 !== null) macroF1.push(metrics.macroF1);
     if (metrics.falseSupportedRate !== null) falseSupportedRate.push(metrics.falseSupportedRate);
-    if (metrics.supportRecall !== null) supportRecall.push(metrics.supportRecall);
-    if (metrics.negativeRecall !== null) negativeRecall.push(metrics.negativeRecall);
-    if (metrics.contradictRecall !== null) contradictRecall.push(metrics.contradictRecall);
-    if (metrics.noInfoRecall !== null) noInfoRecall.push(metrics.noInfoRecall);
+    if (metrics.graphPassRecall !== null) graphPassRecall.push(metrics.graphPassRecall);
+    if (metrics.graphFailRecall !== null) graphFailRecall.push(metrics.graphFailRecall);
+    if (metrics.contradictGraphFailRecall !== null) {
+      contradictGraphFailRecall.push(metrics.contradictGraphFailRecall);
+    }
+    if (metrics.noInfoGraphFailRecall !== null) {
+      noInfoGraphFailRecall.push(metrics.noInfoGraphFailRecall);
+    }
   }
   accuracy.sort((a, b) => a - b);
   macroF1.sort((a, b) => a - b);
   falseSupportedRate.sort((a, b) => a - b);
-  supportRecall.sort((a, b) => a - b);
-  negativeRecall.sort((a, b) => a - b);
-  contradictRecall.sort((a, b) => a - b);
-  noInfoRecall.sort((a, b) => a - b);
+  graphPassRecall.sort((a, b) => a - b);
+  graphFailRecall.sort((a, b) => a - b);
+  contradictGraphFailRecall.sort((a, b) => a - b);
+  noInfoGraphFailRecall.sort((a, b) => a - b);
   const estimate = binaryMetrics(selected);
   const interval = (values: number[], point: number) => ({
     estimate: point,
@@ -428,22 +646,22 @@ export function claimClusterBootstrap(
       estimate.falseSupportedRate === null || falseSupportedRate.length === 0
         ? null
         : interval(falseSupportedRate, estimate.falseSupportedRate),
-    supportRecall:
-      estimate.supportRecall === null || supportRecall.length === 0
+    graphPassRecall:
+      estimate.graphPassRecall === null || graphPassRecall.length === 0
         ? null
-        : interval(supportRecall, estimate.supportRecall),
-    negativeRecall:
-      estimate.negativeRecall === null || negativeRecall.length === 0
+        : interval(graphPassRecall, estimate.graphPassRecall),
+    graphFailRecall:
+      estimate.graphFailRecall === null || graphFailRecall.length === 0
         ? null
-        : interval(negativeRecall, estimate.negativeRecall),
-    contradictRecall:
-      estimate.contradictRecall === null || contradictRecall.length === 0
+        : interval(graphFailRecall, estimate.graphFailRecall),
+    contradictGraphFailRecall:
+      estimate.contradictGraphFailRecall === null || contradictGraphFailRecall.length === 0
         ? null
-        : interval(contradictRecall, estimate.contradictRecall),
-    noInfoRecall:
-      estimate.noInfoRecall === null || noInfoRecall.length === 0
+        : interval(contradictGraphFailRecall, estimate.contradictGraphFailRecall),
+    noInfoGraphFailRecall:
+      estimate.noInfoGraphFailRecall === null || noInfoGraphFailRecall.length === 0
         ? null
-        : interval(noInfoRecall, estimate.noInfoRecall),
+        : interval(noInfoGraphFailRecall, estimate.noInfoGraphFailRecall),
   };
 }
 
@@ -451,11 +669,22 @@ export function scoreReviewCases(
   manifest: FixtureManifest,
   results: ReviewCaseResult[],
   documents: SciFactDocument[],
+  graphExpectedVerdicts: ReadonlyMap<string, GraphExpectedVerdict>,
+  labeling: ScoreSummary["labeling"],
   fixtureManifestDir?: string,
 ): ScoreSummary {
   validateFixtureManifest(manifest);
   assertUnique(results.map((result) => result.caseId), "result case id");
   const fixtures = new Map(manifest.cases.map((fixture) => [fixture.caseId, fixture]));
+  if (
+    graphExpectedVerdicts.size !== manifest.cases.length ||
+    manifest.cases.some((fixture) => !graphExpectedVerdicts.has(fixture.caseId))
+  ) {
+    throw new Error("Adjudicated graph verdicts must cover every fixture exactly once");
+  }
+  for (const caseId of graphExpectedVerdicts.keys()) {
+    if (!fixtures.has(caseId)) throw new Error(`Graph verdict refers to unknown fixture ${caseId}`);
+  }
   const corpus = documentMap(documents);
   const caseScores: CaseScore[] = [];
   let acceptedFindings = 0;
@@ -477,14 +706,16 @@ export function scoreReviewCases(
   for (const result of results) {
     const fixture = fixtures.get(result.caseId);
     if (!fixture) throw new Error(`Result refers to unknown fixture ${result.caseId}`);
+    const graphExpectedVerdict = graphExpectedVerdicts.get(result.caseId)!;
+    const expectedQuestion = fixture.mode === "primary" ? "COMBINED" : "Q2";
     if (result.status === "error") {
       caseScores.push({
         caseId: result.caseId,
         mode: fixture.mode,
         claimId: fixture.claimId,
         docIds: fixture.docIds,
-        goldLabel: fixture.goldLabel,
-        expected: fixture.expected.verdict,
+        sourceGoldLabel: fixture.goldLabel,
+        graphExpectedVerdict,
         actual: "error",
         Q1: null,
         Q2: null,
@@ -503,13 +734,13 @@ export function scoreReviewCases(
     acceptedFindings += result.findings.length;
     rejectedFindings += result.rejected.length;
     const actual =
-      fixture.expected.question === "COMBINED"
+      expectedQuestion === "COMBINED"
         ? result.Q1 === "pass" && result.Q2 === "pass"
           ? "pass"
           : "fail"
         : result.Q2;
     const failedQuestions: Array<"Q1" | "Q2"> =
-      fixture.expected.question === "COMBINED"
+      expectedQuestion === "COMBINED"
         ? [
             ...(result.Q1 === "pass" ? [] : (["Q1"] as const)),
             ...(result.Q2 === "pass" ? [] : (["Q2"] as const)),
@@ -607,13 +838,13 @@ export function scoreReviewCases(
       mode: fixture.mode,
       claimId: fixture.claimId,
       docIds: fixture.docIds,
-      goldLabel: fixture.goldLabel,
-      expected: fixture.expected.verdict,
+      sourceGoldLabel: fixture.goldLabel,
+      graphExpectedVerdict,
       actual,
       Q1: result.Q1,
       Q2: result.Q2,
       invalidVerdict: fixture.mode === "primary" && result.Q1 === "n/a",
-      correct: actual === fixture.expected.verdict,
+      correct: actual === graphExpectedVerdict,
       hasRequiredFinding,
       q1Quotes: caseQuotes,
       q1VerbatimQuotes: caseVerbatim,
@@ -633,8 +864,9 @@ export function scoreReviewCases(
   const bootstrap = claimClusterBootstrap(caseScores);
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 3,
     generatedAt: new Date().toISOString(),
+    labeling,
     totalCases: caseScores.length,
     completedCases: results.filter((result) => result.status === "ok").length,
     errorCases: results.filter((result) => result.status === "error").length,
@@ -642,7 +874,7 @@ export function scoreReviewCases(
       primary: scoreMode(caseScores, "primary"),
       "q2-oracle": scoreMode(caseScores, "q2-oracle"),
     },
-    byModeAndGoldLabel: {
+    byModeAndSourceGoldLabel: {
       primary: {
         SUPPORT: scoreLabel(caseScores, "primary", "SUPPORT"),
         CONTRADICT: scoreLabel(caseScores, "primary", "CONTRADICT"),
@@ -823,14 +1055,14 @@ function verifyRunCaseArtifacts(
   }
 }
 
-function writeCaseCsv(path: string, cases: CaseScore[]): void {
+export function writeCaseCsv(path: string, cases: CaseScore[]): void {
   const keys: Array<keyof CaseScore> = [
     "caseId",
     "mode",
     "claimId",
     "docIds",
-    "goldLabel",
-    "expected",
+    "sourceGoldLabel",
+    "graphExpectedVerdict",
     "actual",
     "Q1",
     "Q2",
@@ -850,6 +1082,67 @@ function writeCaseCsv(path: string, cases: CaseScore[]): void {
   writeFileSync(path, `${lines.join("\n")}\n`, "utf8");
 }
 
+function scoreArtifactLock(
+  path: string,
+  recordedPath = path,
+): { path: string; sha256: string } {
+  return { path: resolve(recordedPath), sha256: sha256File(resolve(path)) };
+}
+
+export interface WriteScoreArtifactsOptions {
+  outputDir: string;
+  summary: ScoreSummary;
+  runManifestPath: string;
+  resultsPath: string;
+  recoveryProvenancePath: string | null;
+  fixtureManifestPath: string;
+  graphVerdictOverlayPath: string;
+  adjudicationBundlePath: string;
+}
+
+/** Write an immutable score release and its complete source/output hash manifest. */
+export function writeScoreArtifacts(options: WriteScoreArtifactsOptions): ScoreManifest {
+  const outputDir = resolve(options.outputDir);
+  if (existsSync(outputDir)) throw new Error(`Score output directory already exists: ${outputDir}`);
+  const sourceLocks = {
+    runManifest: scoreArtifactLock(options.runManifestPath),
+    results: scoreArtifactLock(options.resultsPath),
+    recoveryProvenance:
+      options.recoveryProvenancePath === null
+        ? null
+        : scoreArtifactLock(options.recoveryProvenancePath),
+    fixtureManifest: scoreArtifactLock(options.fixtureManifestPath),
+    graphVerdictOverlay: scoreArtifactLock(options.graphVerdictOverlayPath),
+    adjudicationBundle: scoreArtifactLock(options.adjudicationBundlePath),
+  };
+  mkdirSync(dirname(outputDir), { recursive: true });
+  const stagingDir = mkdtempSync(join(dirname(outputDir), `.${basename(outputDir)}-`));
+  const summaryPath = join(stagingDir, "summary.json");
+  const casesCsvPath = join(stagingDir, "cases.csv");
+  const finalSummaryPath = join(outputDir, "summary.json");
+  const finalCasesCsvPath = join(outputDir, "cases.csv");
+  try {
+    writeJson(summaryPath, options.summary);
+    writeCaseCsv(casesCsvPath, options.summary.cases);
+    const scoreManifest: ScoreManifest = {
+      schemaVersion: 1,
+      generatedAt: new Date().toISOString(),
+      scoreSummarySchemaVersion: 3,
+      artifacts: {
+        ...sourceLocks,
+        summary: scoreArtifactLock(summaryPath, finalSummaryPath),
+        casesCsv: scoreArtifactLock(casesCsvPath, finalCasesCsvPath),
+      },
+    };
+    writeJson(join(stagingDir, "score-manifest.json"), scoreManifest);
+    renameSync(stagingDir, outputDir);
+    return scoreManifest;
+  } catch (error) {
+    rmSync(stagingDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 async function main(): Promise<void> {
   const { values } = parseArgs({
     args: Bun.argv.slice(2),
@@ -858,6 +1151,7 @@ async function main(): Promise<void> {
     options: {
       "run-dir": { type: "string" },
       fixtures: { type: "string" },
+      "label-overlay": { type: "string" },
       "out-dir": { type: "string" },
       "allow-incomplete": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
@@ -868,6 +1162,9 @@ async function main(): Promise<void> {
     return;
   }
   if (!values["run-dir"]) throw new Error("--run-dir is required");
+  if (!values["label-overlay"]) {
+    throw new Error("--label-overlay is required; source labels are not graph verdicts");
+  }
   const runDir = resolve(values["run-dir"]);
   const runManifestPath = join(runDir, "run-manifest.json");
   const runManifest = readJson<ReviewRunManifest>(runManifestPath);
@@ -883,9 +1180,31 @@ async function main(): Promise<void> {
   }
   const fixtures = readJson<FixtureManifest>(fixtureManifestPath);
   validateFixtureManifest(fixtures);
-  if (sha256File(fixtureManifestPath) !== runManifest.fixtureManifestSha256) {
+  const fixtureManifestSha256 = sha256File(fixtureManifestPath);
+  if (fixtureManifestSha256 !== runManifest.fixtureManifestSha256) {
     throw new Error("Fixture manifest hash does not match the run lock");
   }
+  const graphVerdictOverlayPath = resolve(values["label-overlay"]);
+  const graphVerdictOverlay = readJson<GraphVerdictOverlay>(graphVerdictOverlayPath);
+  const validatedOverlay = validateGraphVerdictOverlay(
+    fixtures,
+    graphVerdictOverlay,
+    fixtureManifestSha256,
+    graphVerdictOverlayPath,
+  );
+  const graphExpectedVerdicts = validatedOverlay.verdicts;
+  const labeling: ScoreSummary["labeling"] = {
+    sourceGoldLabel: "fixture.goldLabel",
+    graphExpectedVerdict: "adjudicated-overlay",
+    fixtureManifestSha256,
+    graphVerdictOverlaySha256: sha256File(graphVerdictOverlayPath),
+    adjudicationMethod: graphVerdictOverlay.adjudication.method!,
+    adjudicationBundleSha256: validatedOverlay.adjudicationBundle.bundleSha256,
+    adjudicationsSha256: validatedOverlay.adjudicationBundle.bundle.adjudications.sha256,
+    consensusSha256: validatedOverlay.adjudicationBundle.bundle.consensus.sha256,
+    mechanicalPolicyVersion: "scifact-materialized-graph-mechanical/v1",
+    allCasesAdjudicated: true,
+  };
   const fixtureManifestDir = dirname(fixtureManifestPath);
   const corpusPath = resolveFrom(fixtureManifestDir, fixtures.dataset.corpusPath);
   const claimsPath = resolveFrom(fixtureManifestDir, fixtures.dataset.claimsPath);
@@ -987,12 +1306,28 @@ async function main(): Promise<void> {
     ),
   ];
   const corpus = readJsonl<SciFactDocument>(corpusPath);
-  const summary = scoreReviewCases(fixtures, scoredResults, corpus, fixtureManifestDir);
+  const summary = scoreReviewCases(
+    fixtures,
+    scoredResults,
+    corpus,
+    graphExpectedVerdicts,
+    labeling,
+    fixtureManifestDir,
+  );
   const outputDir = resolve(values["out-dir"] ?? join(runDir, "scores"));
-  if (existsSync(outputDir)) throw new Error(`Score output directory already exists: ${outputDir}`);
-  mkdirSync(outputDir, { recursive: true });
-  writeJson(join(outputDir, "summary.json"), summary);
-  writeCaseCsv(join(outputDir, "cases.csv"), summary.cases);
+  const recoveryProvenancePath = join(runDir, "recovery-provenance.json");
+  writeScoreArtifacts({
+    outputDir,
+    summary,
+    runManifestPath,
+    resultsPath,
+    recoveryProvenancePath: existsSync(recoveryProvenancePath)
+      ? recoveryProvenancePath
+      : null,
+    fixtureManifestPath,
+    graphVerdictOverlayPath,
+    adjudicationBundlePath: validatedOverlay.adjudicationBundle.bundlePath,
+  });
   console.log(`Scored ${summary.completedCases}/${summary.totalCases} completed case(s): ${outputDir}`);
   for (const mode of ["primary", "q2-oracle"] as const) {
     const score = summary.byMode[mode];

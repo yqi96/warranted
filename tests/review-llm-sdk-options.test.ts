@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
-import { readdirSync, readFileSync, rmSync } from "fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import type { ReviewConfig } from "../src/review-config.ts";
 
 const testConfig: ReviewConfig = {
@@ -35,6 +35,27 @@ let mockMessagesPerCall: unknown[][] | null = null;
 let mockDelayMs = 0;
 let concurrencyCounter = 0;
 let peakConcurrency = 0;
+let mockPostToolUseInputs: unknown[] = [];
+let mockPostToolUseInputsPerCall: unknown[][] | null = null;
+
+function fullRead(filePath: string): Record<string, unknown> {
+  return {
+    hook_event_name: "PostToolUse",
+    tool_name: "Read",
+    tool_use_id: "read-1",
+    tool_input: { file_path: filePath },
+    tool_response: {
+      type: "text",
+      file: {
+        filePath,
+        content: "evidence",
+        numLines: 1,
+        startLine: 1,
+        totalLines: 1,
+      },
+    },
+  };
+}
 
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   query: (args: { prompt: string; options: Record<string, unknown> }) => {
@@ -51,6 +72,33 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
         if (mockDelayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, mockDelayMs));
         }
+        const hookInputs = mockPostToolUseInputsPerCall
+          ? (mockPostToolUseInputsPerCall[callIndex] ?? [])
+          : mockPostToolUseInputs;
+        const postToolUse = (
+          args.options.hooks as
+            | {
+                PostToolUse?: Array<{
+                  hooks: Array<(
+                    input: never,
+                    toolUseId: string | undefined,
+                    options: { signal: AbortSignal },
+                  ) => Promise<unknown>>;
+                }>;
+              }
+            | undefined
+        )?.PostToolUse ?? [];
+        for (const input of hookInputs) {
+          for (const matcher of postToolUse) {
+            for (const hook of matcher.hooks) {
+              await hook(
+                input as never,
+                (input as { tool_use_id?: string }).tool_use_id,
+                { signal: new AbortController().signal },
+              );
+            }
+          }
+        }
         for (const message of messages) {
           yield message;
         }
@@ -61,6 +109,17 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
     return generator();
   },
 }));
+
+beforeEach(() => {
+  mockPostToolUseInputs = [];
+  mockPostToolUseInputsPerCall = null;
+  mkdirSync("/tmp/warranted-sdk-options", { recursive: true });
+  writeFileSync("/tmp/warranted-sdk-options/evidence.md", "evidence\n", "utf8");
+});
+
+afterEach(() => {
+  rmSync("/tmp/warranted-sdk-options/evidence.md", { force: true });
+});
 
 const { callAgent, callAndParse } = await import("../src/review-llm.ts");
 const { runReview } = await import("../src/review-run.ts");
@@ -157,6 +216,114 @@ describe("callAgent SDK call options", () => {
     const res = await callAgent(testConfig, "test prompt", []);
     expect(res).toBe("hello");
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  test("只把完整成功的 Read 记入轨迹，部分读取不算", async () => {
+    mockMessages = [{ type: "result", subtype: "success", result: "{}" }];
+    const filePath = "/tmp/warranted-sdk-options/evidence.md";
+    mockPostToolUseInputs = [
+      fullRead(filePath),
+      {
+        ...fullRead("/tmp/warranted-sdk-options/partial.md"),
+        tool_response: {
+          type: "text",
+          file: {
+            filePath: "/tmp/warranted-sdk-options/partial.md",
+            content: "first page",
+            numLines: 1,
+            startLine: 1,
+            totalLines: 2,
+          },
+        },
+      },
+    ];
+    const reads: string[] = [];
+
+    await callAgent(testConfig, "test prompt", ["evidence.md"], undefined, undefined, [], reads);
+
+    expect(reads).toEqual([filePath]);
+  });
+
+  test("有附件但没有完整 Read 时，runReview 作废且不落事件", async () => {
+    mockMessages = [
+      { type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' },
+    ];
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [
+        { content: "A proposition", evidence: { attachments: ["evidence.md"] } },
+      ])[0]!.id;
+      const err = await runReview(testConfig, db, id).catch((e) => e);
+      expect(err).toBeInstanceOf(ReviewUnavailableError);
+      expect(err.message).toContain("did not successfully Read every attachment");
+      expect(svc.getHistory(db, { id }).events.some((e) => e.op === "review")).toBe(false);
+    } finally {
+      cleanupDb(db);
+    }
+  });
+
+  test("fallback verdict 只承认 fallback 那次的完整 Read，并记录实际模型", async () => {
+    const filePath = "/tmp/warranted-sdk-options/evidence.md";
+    mockMessagesPerCall = [
+      [{ type: "result", subtype: "success", result: "not-json" }],
+      [
+        {
+          type: "result",
+          subtype: "success",
+          result: '{"Q1":"pass","Q2":"pass","findings":[]}',
+        },
+      ],
+    ];
+    mockPostToolUseInputsPerCall = [[], [fullRead(filePath)]];
+    const db = createTestDb();
+    try {
+      const config: ReviewConfig = {
+        ...testConfig,
+        fallbackModel: "fallback-reviewer",
+        dbPath: "/tmp/warranted-sdk-options/.toulmin/graph.db",
+      };
+      const id = svc.createPropositions(db, ctx, [
+        { content: "A proposition", evidence: { attachments: ["evidence.md"] } },
+      ])[0]!.id;
+      const result = await runReview(config, db, id);
+      expect(result.actualModel).toBe("fallback-reviewer");
+      expect(result.attachmentsRead).toEqual([filePath]);
+      const event = svc.getHistory(db, { id }).events.find((item) => item.op === "review")!;
+      expect(event.payload.model).toBe("fallback-reviewer");
+    } finally {
+      cleanupDb(db);
+    }
+  });
+
+  test("首轮读过但最终 fallback 没读时仍作废", async () => {
+    const filePath = "/tmp/warranted-sdk-options/evidence.md";
+    mockMessagesPerCall = [
+      [{ type: "result", subtype: "success", result: "not-json" }],
+      [
+        {
+          type: "result",
+          subtype: "success",
+          result: '{"Q1":"pass","Q2":"pass","findings":[]}',
+        },
+      ],
+    ];
+    mockPostToolUseInputsPerCall = [[fullRead(filePath)], []];
+    const db = createTestDb();
+    try {
+      const config: ReviewConfig = {
+        ...testConfig,
+        fallbackModel: "fallback-reviewer",
+        dbPath: "/tmp/warranted-sdk-options/.toulmin/graph.db",
+      };
+      const id = svc.createPropositions(db, ctx, [
+        { content: "A proposition", evidence: { attachments: ["evidence.md"] } },
+      ])[0]!.id;
+      const err = await runReview(config, db, id).catch((e) => e);
+      expect(err).toBeInstanceOf(ReviewUnavailableError);
+      expect(svc.getHistory(db, { id }).events.some((event) => event.op === "review")).toBe(false);
+    } finally {
+      cleanupDb(db);
+    }
   });
 });
 

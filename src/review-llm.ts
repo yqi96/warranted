@@ -6,15 +6,15 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import type { ReviewConfig } from "./review-config.ts";
 import { writeAuditRecord } from "./review-audit.ts";
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 
 /**
- * 全局并发上限信号量。所有 callAgent 调用（跨 compile-service、compile-reviewers、
- * review-sync 的全部 LLM 调用路径）共享同一个模块级实例，而非按 claim 或按调用方分别限流 ——
- * compileClaims 本身已对所有 claim 做 Promise.all，按 claim 限流无法真正限制总并发。
+ * 全局并发上限信号量。所有 callAgent 调用共享同一个模块级实例，而不是让每条命题
+ * 或每个调用方各自限流；否则并发 review 多条命题时，总在飞请求数仍会失控。
  */
 let inFlight = 0;
 const waiters: Array<() => void> = [];
@@ -45,7 +45,8 @@ export async function callAgent(
   attachmentPaths: string[],
   cwd?: string,
   requestId?: string,
-  deniedOut?: string[]
+  deniedOut?: string[],
+  successfulReadsOut?: string[]
 ): Promise<string> {
   // 构建完整 prompt：审查指令 + 附件路径列表
   const fullPrompt = attachmentPaths.length > 0
@@ -56,6 +57,48 @@ export async function callAgent(
   await acquirePermit(config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
   let finalResult = "";
   const deniedTools: string[] = [];
+  const successfulReads: string[] = [];
+  const recordSuccessfulRead: HookCallback = async (input) => {
+    if (
+      input.hook_event_name === "PostToolUse" &&
+      input.tool_name === "Read" &&
+      input.tool_input &&
+      typeof input.tool_input === "object" &&
+      "file_path" in input.tool_input &&
+      typeof input.tool_input.file_path === "string"
+    ) {
+      const path = input.tool_input.file_path;
+      const response = input.tool_response;
+      const complete = (() => {
+        if (!response || typeof response !== "object" || !("type" in response)) return false;
+        if (
+          response.type === "text" &&
+          "file" in response &&
+          response.file &&
+          typeof response.file === "object"
+        ) {
+          const file = response.file as Record<string, unknown>;
+          return (
+            file.startLine === 1 &&
+            typeof file.numLines === "number" &&
+            typeof file.totalLines === "number" &&
+            file.numLines >= file.totalLines &&
+            file.truncatedByTokenCap !== true
+          );
+        }
+        if (response.type === "file_unchanged") return successfulReads.includes(path);
+        if ("pages" in input.tool_input && input.tool_input.pages !== undefined) return false;
+        return (
+          response.type === "image" ||
+          response.type === "notebook" ||
+          response.type === "pdf" ||
+          response.type === "parts"
+        );
+      })();
+      if (complete) successfulReads.push(path);
+    }
+    return {};
+  };
   try {
     const result = await query({
       prompt: fullPrompt,
@@ -108,6 +151,12 @@ export async function callAgent(
         ...(cwd ? { cwd } : {}),
         // 禁用所有 MCP 服务器（reviewer 不需要 MCP 工具）
         mcpServers: {},
+        // PostToolUse fires only after the built-in Read completed. Merely asking
+        // the model to read, or observing no permission denial, is not evidence
+        // that an attachment was actually opened.
+        hooks: {
+          PostToolUse: [{ matcher: "Read", hooks: [recordSuccessfulRead] }],
+        },
       },
     });
 
@@ -133,6 +182,7 @@ export async function callAgent(
   if (!finalResult) {
     throw new Error("Agent returned no result");
   }
+  successfulReadsOut?.push(...successfulReads);
 
   // 写入审计日志（失败时静默忽略）
   if (config.auditDir) {
@@ -144,11 +194,20 @@ export async function callAgent(
       maxTurns: config.maxTurns ?? 10,
       ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
       input: { prompt: fullPrompt, attachmentPaths, cwd },
-      output: { raw: finalResult, durationMs: Date.now() - t0 },
+      output: {
+        raw: finalResult,
+        durationMs: Date.now() - t0,
+        successfulReads,
+      },
     });
   }
 
   return finalResult;
+}
+
+export interface ReviewAttemptTrace {
+  model: string;
+  successfulReads: string[];
 }
 
 /**
@@ -212,24 +271,40 @@ export async function callAndParse(
   prompt: string,
   attachments: string[],
   cwd: string,
-  deniedOut?: string[]
+  deniedOut?: string[],
+  traceOut?: ReviewAttemptTrace[]
 ): Promise<Record<string, unknown>> {
   const requestId = crypto.randomUUID();
-  const raw = await callAgent(config, prompt + NO_FENCES_SUFFIX, attachments, cwd, requestId, deniedOut);
+  const successfulReads: string[] = [];
+  const raw = await callAgent(
+    config,
+    prompt + NO_FENCES_SUFFIX,
+    attachments,
+    cwd,
+    requestId,
+    deniedOut,
+    successfulReads,
+  );
   const parsed = parseLLMResponse(raw);
-  if (!parsed._parseFailed) return parsed;
+  if (!parsed._parseFailed) {
+    traceOut?.push({ model: config.model, successfulReads });
+    return parsed;
+  }
 
   // 解析失败 → 重试一次（同一 requestId，便于关联）
   const retryConfig: ReviewConfig = { ...config, model: config.fallbackModel ?? config.model };
   try {
+    const retrySuccessfulReads: string[] = [];
     const retryRaw = await callAgent(
       retryConfig,
       prompt + NO_FENCES_SUFFIX,
       attachments,
       cwd,
       requestId,
-      deniedOut
+      deniedOut,
+      retrySuccessfulReads,
     );
+    traceOut?.push({ model: retryConfig.model, successfulReads: retrySuccessfulReads });
     return parseLLMResponse(retryRaw);
   } catch (e) {
     return {

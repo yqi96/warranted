@@ -26,6 +26,7 @@ function makeRecord(overrides?: Partial<AuditRecord>): AuditRecord {
     output: {
       raw: '{"errors":[],"warnings":[]}',
       durationMs: 1234,
+      successfulReads: ["/project/data.csv"],
     },
     ...overrides,
   };
@@ -66,6 +67,7 @@ describe("writeAuditRecord", () => {
     expect(content.input.cwd).toBe("/project");
     expect(content.output.raw).toBe('{"errors":[],"warnings":[]}');
     expect(content.output.durationMs).toBe(1234);
+    expect(content.output.successfulReads).toEqual(["/project/data.csv"]);
     expect(content.model).toBe("claude-sonnet-4-20250514");
     expect(content.maxTurns).toBe(10);
     expect(content.timestamp).toBe("2026-07-15T10:30:00.000Z");

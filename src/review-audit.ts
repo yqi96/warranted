@@ -28,6 +28,8 @@ export interface AuditRecord {
   output: {
     raw: string;
     durationMs: number;
+    /** Attachment paths whose Read tool calls completed successfully in this attempt. */
+    successfulReads: string[];
   };
 }
 

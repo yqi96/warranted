@@ -13,6 +13,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { isAbsolute, resolve } from "node:path";
 import type { ReviewConfig } from "./review-config.ts";
 import { reviewCwd } from "./review-config.ts";
 import { buildReviewPrompt, protocolHash, type ReviewInput } from "./review-prompts.ts";
@@ -31,6 +32,10 @@ export interface ReviewRunResult {
   findings: Finding[];
   /** 被 F1–F4 拒收的条目。是给人看的协议违规记录,不是 finding。 */
   rejected: RejectedFinding[];
+  /** Model that produced the parsed verdict (may be the configured fallback). */
+  actualModel: string;
+  /** Attachment paths whose Read calls completed in the verdict-producing attempt. */
+  attachmentsRead: string[];
 }
 
 /**
@@ -123,11 +128,13 @@ export async function runReview(
   const protocol = protocolHash(prompt);
 
   const denied: string[] = [];
+  const attempts: import("./review-llm.ts").ReviewAttemptTrace[] = [];
   let parsed: Record<string, unknown>;
+  const cwd = reviewCwd(config);
   const t0 = Date.now();
   log("review", "OK", 0, `START review: #${nodeId}`);
   try {
-    parsed = await callAndParse(config, prompt, input.attachments, reviewCwd(config), denied);
+    parsed = await callAndParse(config, prompt, input.attachments, cwd, denied, attempts);
   } catch (e) {
     log("review", "ERR", Date.now() - t0, `#${nodeId}: ${e}`);
     throw new ReviewUnavailableError(`Review of #${nodeId} did not run: ${e}`);
@@ -152,6 +159,26 @@ export async function runReview(
     );
   }
 
+  const verdictAttempt = attempts.at(-1);
+  if (!verdictAttempt) {
+    throw new ReviewUnavailableError(
+      `Review of #${nodeId} produced no auditable model attempt. Nothing was recorded.`
+    );
+  }
+  const resolvedReads = new Set(
+    verdictAttempt.successfulReads.map((path) => resolve(cwd, path))
+  );
+  const unreadAttachments = input.attachments.filter((path) => {
+    const expected = isAbsolute(path) ? resolve(path) : resolve(cwd, path);
+    return !resolvedReads.has(expected);
+  });
+  if (unreadAttachments.length > 0) {
+    throw new ReviewUnavailableError(
+      `Review of #${nodeId} did not successfully Read every attachment ` +
+        `(${unreadAttachments.join(", ")}). Nothing was recorded.`
+    );
+  }
+
   const { accepted, rejected, Q1, Q2 } = interpretResponse(input, parsed);
 
   const { eventId, findings } = svc.recordReview(db, {
@@ -159,7 +186,7 @@ export async function runReview(
     Q1,
     Q2,
     findings: accepted,
-    model: config.model,
+    model: verdictAttempt.model,
     protocolHash: protocol,
     ...(rejected.length > 0 ? { rejected } : {}),
   });
@@ -171,5 +198,13 @@ export async function runReview(
     `END review: #${nodeId} → Q1=${Q1} Q2=${Q2}, ${findings.length} finding(s), ${rejected.length} rejected`
   );
 
-  return { eventId, Q1, Q2, findings, rejected };
+  return {
+    eventId,
+    Q1,
+    Q2,
+    findings,
+    rejected,
+    actualModel: verdictAttempt.model,
+    attachmentsRead: verdictAttempt.successfulReads,
+  };
 }

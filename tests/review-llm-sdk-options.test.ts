@@ -620,6 +620,22 @@ describe("解析失败后的重试", () => {
     expect(r.warnings).toEqual(["from retry"]);
   });
 
+  test("前置 prose 加唯一 JSON 时本地恢复,不重新采样语义", async () => {
+    mockMessagesPerCall = [
+      [{
+        type: "result",
+        subtype: "success",
+        result: 'analysis first\n{"errors":[],"warnings":["salvaged"]}',
+      }],
+      PARSEABLE,
+    ];
+
+    const r = await callAndParse(testConfig, "p", [], "/tmp");
+
+    expect(capturedCalls.length).toBe(1);
+    expect(r.warnings).toEqual(["salvaged"]);
+  });
+
   test("重试也失败时，错误信息里带上实际用的模型名", async () => {
     // 第二次调用没有 success 消息 → callAgent 抛 "Agent returned no result"
     mockMessagesPerCall = [UNPARSEABLE, []];

@@ -210,44 +210,110 @@ export interface ReviewAttemptTrace {
   successfulReads: string[];
 }
 
+function asJsonObject(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
 /**
- * 从文本中提取 markdown 代码块内容。
- * 按行扫描：找到首个开启 fence，再从末尾往前找最后一个关闭 fence，
- * 避免 lazy regex 在内容含三反引号时提前终止。
+ * Find the end of one JSON object/array candidate without being confused by
+ * nested values, braces inside strings, or escaped quotes.
  */
-function extractFromFences(text: string): string | null {
-  const lines = text.split("\n");
-  const openIdx = lines.findIndex(l => /^[ \t]*```(?:json)?[ \t]*$/.test(l));
-  if (openIdx === -1) return null;
-  for (let i = lines.length - 1; i > openIdx; i--) {
-    if (/^[ \t]*```[ \t]*$/.test(lines[i])) {
-      return lines.slice(openIdx + 1, i).join("\n");
+function structuredValueEnd(text: string, start: number): number | null {
+  const opening = text[start];
+  if (opening !== "{" && opening !== "[") return null;
+  const stack: Array<"{" | "["> = [opening];
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start + 1; index < text.length; index++) {
+    const char = text[index]!;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+    } else if (char === "{" || char === "[") {
+      stack.push(char);
+    } else if (char === "}" || char === "]") {
+      const expected = char === "}" ? "{" : "[";
+      if (stack.at(-1) !== expected) return null;
+      stack.pop();
+      if (stack.length === 0) return index;
     }
   }
   return null;
 }
 
 /**
- * 从 Agent 响应文本中提取 JSON 对象（通用解析器）。
- * 自动剥除 markdown 代码围栏，返回任意 JSON 对象。
- * 如果解析失败，在返回值中标记 _parseFailed: true。
+ * Recover one terminal JSON object after explanatory prose or inside markdown
+ * fences. Text after the object is limited to whitespace and one closing fence.
+ * Valid outer arrays are skipped as a unit so an object nested inside an array
+ * is not mistaken for the protocol response. More than one valid object is
+ * ambiguous and therefore fails closed.
  */
-export function parseLLMResponse(raw: string): Record<string, unknown> {
-  let jsonText = raw.trim();
-  const extracted = extractFromFences(jsonText);
-  if (extracted !== null) {
-    jsonText = extracted.trim();
+function extractUniqueJsonObject(text: string): Record<string, unknown> | null {
+  const matches: Array<{ value: Record<string, unknown>; end: number }> = [];
+  for (let start = 0; start < text.length; start++) {
+    const opening = text[start];
+    if (opening !== "{" && opening !== "[") continue;
+    const end = structuredValueEnd(text, start);
+    if (end === null) continue;
+
+    let value: unknown;
+    try {
+      value = JSON.parse(text.slice(start, end + 1));
+    } catch {
+      // Do not salvage a nested object from a malformed outer object/array.
+      // A later sibling candidate remains discoverable after this span.
+      start = end;
+      continue;
+    }
+
+    // A valid structured value owns its nested spans; do not revisit them as
+    // separate candidates. Only object roots satisfy this parser's contract.
+    start = end;
+    const object = asJsonObject(value);
+    if (!object) continue;
+    matches.push({ value: object, end });
+    if (matches.length > 1) return null;
   }
 
+  const match = matches[0];
+  if (!match) return null;
+  const suffix = text.slice(match.end + 1);
+  if (!/^\s*(?:```[ \t]*\s*)?$/.test(suffix)) return null;
+  return match.value;
+}
+
+/**
+ * 从 Agent 响应文本中提取 JSON 对象（通用解析器）。优先接受纯 JSON；
+ * 对前面有说明文字或 markdown 围栏的响应，只恢复位于响应末尾的唯一一个括号平衡、
+ * 可解析对象。多个对象有歧义，数组/标量不是协议对象，均按解析失败处理。
+ */
+export function parseLLMResponse(raw: string): Record<string, unknown> {
+  const jsonText = raw.trim();
   try {
     const parsed = JSON.parse(jsonText);
-    if (parsed && typeof parsed === "object") {
-      return parsed;
-    }
-    return { _parseFailed: true, _raw: jsonText.slice(0, 500) };
+    const direct = asJsonObject(parsed);
+    return direct ?? { _parseFailed: true, _raw: raw.slice(0, 500) };
   } catch {
-    return { _parseFailed: true, _raw: raw.slice(0, 500) };
+    // Mixed prose is not valid as a whole; try one tightly bounded recovery.
   }
+
+  const embedded = extractUniqueJsonObject(raw);
+  if (embedded) return embedded;
+
+  return { _parseFailed: true, _raw: raw.slice(0, 500) };
 }
 
 /**

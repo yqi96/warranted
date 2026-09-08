@@ -10,151 +10,131 @@
 
 > [English](README.md) | [简体中文](README.zh-CN.md)
 
-> **写代码有编译器和测试兜底，做研究有 Warranted。**
+> **写代码有编译器和测试，做研究也需要失败信号。**
 
----
+## 它做什么
 
-## 它解决什么问题
+Warranted 给研究 Agent 一张持久、可审计的论证图。图里只有一种节点：**命题（Proposition）**。每条命题有五个槽位：
 
-编程 Agent 能收敛，因为编译器和测试提供了客观的失败信号。科研没有等价机制——结论活在自然语言里，没有外部验证器，Agent 无从得知自己还缺什么，轻易宣告完成。
+| 槽位 | 含义 |
+|---|---|
+| `content` | 正在被判断的陈述 |
+| `evidence` | 附件和对其他命题的引用 |
+| `warrant` | 这些证据为何支撑内容；可以内联，也可以晋升为独立命题 |
+| `rebuttals` | 攻击内容或理由的命题 |
+| `qualifier` | 单条可信度标尺：`refuted → unestablished → possibly → probably → certainly` |
 
-**Warranted** 填补这一空缺，给 Agent 提供一套**持久化的论证图**：每个主张（Claim）必须有证据（Ground）和推理链（Warrant），矛盾记录为 Rebuttal 而非抹掉，状态推进前必须通过逻辑审查（compile）。研究推理因此变得可审计、可复现、可验证。
+Ground、Backing、Claim、Rebuttal 都是观察视角，不是节点类型。同一条命题可以是某个结论的证据、另一层中的结论，也可以在别处充当反驳。
 
-适合的场景：**论文复现、假设验证、多步骤科学推理、研究透明度**。
-
-![Toulmin Argument Map](docs/assets/screenshot.png)
-
-![Warranted — 多树全局视图](docs/assets/screenshot2.png)
-
----
+结构检查是确定且自动的。证据为空、附件丢失、所依赖的命题发生变化等情况会产生**非阻断警告**；系统不会代替 Agent 修改 qualifier，也不会拦截 Agent 记录判断。只有显式调用 `review` 时，独立 LLM 才会对来源忠实性和推理有效性给出语义层面的第二意见。finding 同样只是意见；它会保持待处理，直到新一次 review 取代它，或有人写明理由 `dismiss`。
 
 ## 文档
 
-第一次来？按这个顺序读：
+| 文档 | 内容 |
+|---|---|
+| [论证图](docs/zh-CN/concepts.md) | 命题、五槽位、qualifier、警告、finding 与 11 个工具 |
+| [复现一篇论文](docs/zh-CN/reproduce-a-paper.md) | 用独立产生的证据重建论文的证据链 |
+| [写一篇论文](docs/zh-CN/write-a-paper.md) | 用 `\cite{prop_N}` 把 LaTeX 引用连接到命题与论文附件 |
+| [研究框架（英文）](docs/en/research-framework.md) | 主 Agent、专职 Agent、论证图与对象层工作的职责边界 |
 
-| 文档 | 讲什么 |
-|------|--------|
-| [论证图](docs/zh-CN/concepts.md) | 核心概念——三种节点类型与角色、`compile`、状态生命周期，以及如何用论证图的语言跟 Agent 沟通。**从这里开始。** |
-| [复现一篇论文](docs/zh-CN/reproduce-a-paper.md) | 场景指南：用一张独立的论证图验证论文主张（`/paper-reproduce`）。 |
-| [写一篇论文](docs/zh-CN/write-a-paper.md) | 场景指南：写论文或文献综述，让每处引用都能追溯到一个 verified 的 Ground（`/overleaf-setup`、`/literature-writing`）。 |
+详细实现契约见 [docs/design.md](docs/design.md) 与 [docs/api.md](docs/api.md)，发布历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-更新历史：[CHANGELOG.md](CHANGELOG.md)
-
----
-
-## 升级到 0.5.0
-
-0.5.0 的行为变更分成三类，发现方式完全不同，所以升级需要**三个**动作而不是一个。跑一遍全量 compile 只能发现第一类，另两类结构上不可能被 compile 看见。
-
-**① 图状态类变更 —— 对每个 Claim 跑一遍 `compile_arguments`。**
-
-claim 型 Ground 现在按它自身的 status 判定。新报错的 Claim 就是"上层结论压在一个未定案或已被推翻的下层结论上"的位置——这个状态一直存在，只是从来没有规则去看它。逐个处理：下层是 `proposed` 就先把它定案；下层是 `refuted` 就把上层改挂到一个能在推翻中存活的更窄的 Claim 上（通常是"该做法在文献中存在"而不是"该做法有效"）。下层是 `disputed` 属于正常，无需处理。
-
-这一遍会对每个 Claim 都调用一次审查模型，包括你以前 compile 过的：compile 结论已经从 Claim 节点里搬走，所有 Claim 的论证指纹因此都变了，这一次没有 `no-change` 可短路。
-
-它也会动一部分 status。这一遍跑完手上没有通过记录的 Claim，其 `supported`/`disputed`/`refuted` 会被退回 `proposed`，压在它上面的 Claim 会跟着复检、可能一起退。这条规则本身不是新的——非 `proposed` 的状态一直都要求有一条通过的 compile——但它以前只在写入那一刻查，所以本次发布之前定过案的 Claim 可能正拿着一个它的论证已经不再支撑的结论。每一次回退都会在这次调用里报出来，写明是哪条 Claim、为什么。
-
-之后再定 status 是安全的：定下层的 status 不会失效它上方的 compile。它能做的是把上层的 `supported`/`disputed`/`refuted` 退回 `proposed`——当上层依赖的那条下层 Claim 不再算已核实的证据时。这类回退会作为警告出现在触发它的那次调用里；把下层重新定案，上层不必重跑 compile 就能标回去。
-
-**② 调用习惯类变更 —— 现在就检查你的写入侧调用方。**
-
-compile **看不见这些**，它们只在你下一次写入时才触发。如果你有脚本、自动化或自定义 skill 在调用 `create_statement` 或 `update_node`，在下一次记录证据之前先对照这六条检查：
-
-- `create_statement` 的 `source` 现在是必填项。
-- `source="literature"` 必须携带 attachments。
-- 每个 attachment 路径都必须能从审查工作目录解析（URL 不算）。
-- 审查基础设施本身出错时，Statement 现在会落到 `pending` 并报出错误，而不是停留在 `verified`。
-- 对已经 `verified` 的 Statement 调用 `update_node(attachments=[])` 现在会报错。
-- `update_node(status="disputed")` 和 `status="refuted"` 现在要求该 Claim 或它的某条 Warrant 上有一条**已核实**的 Rebuttal。记录 Rebuttal 本身仍然永远成功、落在 `pending`；被拦的是定状态那一步，所以"记录一个矛盾、顺手把 Claim 定案"这种一次到底的调用，中间现在需要一个核实动作。
-
-**③ 审查配置 —— 让配置文件自给自足。**
-
-审查子进程现在隔离运行，不再读 `~/.claude/settings.json`。如果你的审查之所以能跑通，是因为网关地址或密钥放在你自己的 Claude Code 设置里而不在 `--review-config` 指向的文件里，那么现在它连不上端点。把 `baseUrl` 和 `apiKey` 写进那个文件。另外，`debounceMs` 如果设过就删掉（它从来没被读过），并检查 `maxTurns`/`maxConcurrency` 是正整数——非法值现在会警告并回落到默认值，而不是被当真。
-
----
+> **开发分支兼容说明：**提交 `90c7acb` 把 0.5.0 发布版的“三节点 + compile”模型替换成了本文描述的 Proposition 模型。旧 `.toulmin/argument.db` 只作为只读历史档案保留；当前运行使用 `.toulmin/graph.db`，不会机械迁移旧 verdict。0.5.0 术语只在 changelog 中作为历史记录保留。
 
 ## 接入 Claude Code
 
-**1. 克隆并配置**
-
-安装 [Bun](https://bun.com/docs/installation)（>= 1.0.0），然后：
+先安装 [Bun](https://bun.com/docs/installation)（>= 1.0.0）、Node.js，以及 Chrome/Chromium 浏览器：
 
 ```bash
 git clone https://github.com/yqi96/warranted
 cd warranted
 
-# 可选：启用 LLM 逻辑审查
+# 可选：启用显式的第三方 LLM review
 cp review.json.example review.json
-# 编辑 review.json，填入 apiKey
+# 编辑 review.json，填写 apiKey；baseUrl 可选。
 ```
 
-**2. 注册 marketplace（每台机器只需一次）**
+插件启动脚本会运行 `bun install --frozen-lockfile`。browser MCP 使用锁定版本的 `chrome-devtools-mcp`，并按需启动隔离的浏览器会话。
+
+注册 marketplace 并在项目中安装：
 
 ```bash
 claude plugin marketplace add $(pwd)
-```
-
-**3. 在你的项目里安装 plugin**
-
-```bash
 cd your-project
 claude plugin install warranted@warranted --scope local
 ```
 
-启动后自动以 `toulmin-researcher` 为主 Agent，MCP server 随之拉起。
+启动后，`toulmin-researcher` 成为主 Agent，同时自动启动两个 stdio MCP server：
 
-启用 LLM 审查后，`compile_arguments` 并行执行节点定义审查（Claim/Warrant 是否符合 Toulmin 定义）与完整逻辑链审查。
+- `toulmin` 把当前论证图存到 `<project>/.toulmin/graph.db`，并暴露 11 个图工具；
+- `browser` 提供进程隔离的 Chrome 会话，供浏览器辅助研究使用。
+
+创建或修改命题不会自动触发 review。只有 Agent 明确调用 `review` 且 `review.json` 提供可用 `apiKey` 时，第三方模型审查才会运行。
 
 > 安装或版本有问题？见 [已验证的依赖版本](docs/reference/known-working-versions.md)。
 
-## 可视化
+## 工具面
 
-在 `warranted` 目录下运行：
+| 分组 | 工具 |
+|---|---|
+| 写入 | `create_propositions`、`update_proposition`、`set_qualifier`、`promote_warrant`、`delete_proposition` |
+| 读取 | `get_argument`、`find_propositions`、`get_stats`、`get_history` |
+| 意见 | `review`、`dismiss` |
+
+写入会校验 content、引用 id 和附件是否存在。结构警告与 review finding 会持续出现在读取结果中；它们提供提示，但不充当写入闸门。
+
+## 可视化
 
 ```bash
 bun run viz
 ```
 
-打开浏览器访问 `http://localhost:3456` 查看论证图。
-
-### 交互操作
+打开 `http://localhost:3456`。可视化器读取 `.toulmin/graph.db`，按 qualifier 给命题着色，显示 warning/finding 徽标，并可切换到其他项目的 `graph.db`。
 
 | 操作 | 效果 |
-|------|------|
-| 单击节点 | 选中节点（高亮青色光环） |
-| 双击节点 | 打开底部详情面板 |
-| Shift + 单击 | 追加/取消选中（多选） |
-| 框选（box 模式） | 拖动画框，框内节点全部选中 |
-| 拖动画布（pan 模式） | 平移视图 |
+|---|---|
+| 单击节点 | 选中 |
+| 双击节点 | 打开详情面板 |
+| Shift + 单击 | 加入或移出多选集合 |
+| box 模式拖动 | 框选多个节点 |
+| pan 模式拖动 | 平移画布 |
 | 滚轮 | 缩放 |
-| 点击空白处 | 取消选中 |
+| 点击空白处 | 清空选择 |
 
-工具栏右侧的 **⬚ / ✥** 按钮切换"框选模式"和"拖动模式"。
+可视化器使用默认端口运行时，UserPromptSubmit hook 会把当前选择注入之后的 Claude 提示。
 
-### 选中即上下文
-
-可视化服务器会记住当前选中的节点。启动 plugin 后，**每次向 Claude 发送指令时，所选节点会自动注入到提示上下文**——无需手动描述"对哪些节点操作"，选好再说即可。
-
----
-
-## 包含的 Agents
+## Agents
 
 | Agent | 作用 |
-|-------|------|
-| `toulmin-researcher` | 主力 Agent。构建和验证论证图，识别结构缺口，驱动每个 Claim 走向有据可查的结论。 |
-| `toulmin-explorer` | 只读浏览。快速查找节点、查看验证状态、探索论证结构，不做修改。 |
-| `code-experimenter` | Object 层。执行受限的编码、复现与实验任务并返回证据报告；不决定 Claim 状态。 |
-| `discrepancy-auditor` | Object 层。在负面结果进入图之前审计它——可能是即将成为 Rebuttal 的意外不一致，也可能是即将中止某项义务的声明阻塞。 |
-| `code-optimizer` | Object 层。识别热路径、做基准测试并在受限范围内实施定向性能优化；不决定 Claim 状态。 |
+|---|---|
+| `toulmin-researcher` | 主 Agent；控制论证图、协调研究并作 qualifier 判断 |
+| `toulmin-explorer` | 快速、只读地查找与浏览论证图 |
+| `code-experimenter` | 执行受限的实现、复现与实验任务 |
+| `code-optimizer` | 在不改变语义的前提下让全规模实验可运行 |
+| `discrepancy-auditor` | 在接受图后果前审计一个不一致或声明的阻塞 |
+| `rigor-auditor` | 在完成层面审计整体研究是否已竭尽且值得报告 |
+| `literature-scout` | 执行一次边界清晰的浏览器辅助文献搜索，并写持久搜索产物 |
+| `paper-reader` | 围绕一个问题阅读指定论文集合并写证据笔记 |
+| `literature-extractor` | 把论文发现连同来源附件记录为命题，不判断 qualifier |
 
----
-
-## 包含的 Skills
+## Skills
 
 | Skill | 触发方式 | 作用 |
-|-------|----------|------|
-| `literature-survey` | `/literature-survey` | 大规模文献综述工作流。五阶段协议：范围界定、筛选、批量提取、分类、综合与验证 DAG。完成后交给 `/literature-writing` 撰写。 |
-| `paper-reproduce` | `/paper-reproduce` | 论文复现工作流。构建独立论证图，逐步验证论文主张是否成立。 |
-| `literature-writing` | `/literature-writing` | 文献写作工作流——related work、引言、讨论、综述的写作阶段。把每条可引用的外部发现接入论证图作为 Statement（Ground 角色），用 LaTeX 以 `\cite{statement_N}` 引用写作，全程维护 `.bib` 文件。 |
-| `cite-review` | `/cite-review` | 引用忠实性审计。并行核对每个 `\cite{statement_N}` 与其 Statement 是否一致，修正不符的 LaTeX，并回填论证图。 |
-| `overleaf-setup` | `/overleaf-setup` | 一次性配置 skill。安装 `leaf`、完成认证、把本地 LaTeX 目录关联到 Overleaf 项目，并写入一个 Stop hook，在每轮对话结束时自动推送（无文件改动则跳过）。 |
+|---|---|---|
+| `literature-survey` | `/literature-survey` | 迭代、问题驱动的批判性文献综述 |
+| `paper-reproduce` | `/paper-reproduce` | 独立复现并基于论证图判断论文主张 |
+| `literature-writing` | `/literature-writing` | 用 `\cite{prop_N}` 写有文献依据的 LaTeX |
+| `cite-review` | `/cite-review` | 按命题内容和 qualifier 检查引用忠实性 |
+| `overleaf-setup` | `/overleaf-setup` | 一次性配置 Overleaf 同步和命题引用约束 |
+| `browser` | `/browser` | 通过 browser MCP 安全操作隔离 Chrome 会话 |
+| `paper-download-browser` | `/paper-download-browser` | 直接 HTTP 不足时，在授权范围内用浏览器下载论文 |
+
+## 开发
+
+项目没有单独构建产物：Bun 直接执行 TypeScript 源码，TypeScript 负责 strict、no-emit 检查。
+
+```bash
+bun test
+bun ./node_modules/typescript/bin/tsc --noEmit
+bun run agent-eval             # 默认 dry-run；只有明确接受模型成本时才加 --live
+```

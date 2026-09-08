@@ -4,92 +4,84 @@
 
 ## 目标
 
-产出一篇研究论文——或一篇文献综述——其中每一处主张都能追溯到论证图里的证据。**完成**意味着：
+用 `/literature-writing` 撰写或修订 LaTeX，让所有承重陈述都能追溯到论证图。若任务是针对较大文献集合开展问题驱动的综述，先运行 `/literature-survey`，再把综合结果交给 `/literature-writing`。
 
-- 每个作为证据的 Statement 都 `verified`（来源论文已附上、内容已确认）。**延迟验证：** 在文献综述中，验证分两个阶段进行——论证所依赖的 Grounds 在第五阶段验证；其余引用面由 `/literature-writing` 在决定引用时验证。
-- 每个 Claim 都通过了 `compile_arguments`
-- 每个 Claim 都有判定：`supported`、`disputed` 或 `refuted`
-- `.tex` 是自洽的：每处引用周围的文字都忠实反映其 Statement
+可靠的交付应满足：
 
-两个 skill 支撑这套流程：先运行一次 `/overleaf-setup` 接好自动推送与引用强制（见下），再用 `/literature-writing` 起草——它在每条外部发现被引用之前先把它接入论证图，并随手维护 `.bib` 文件。
+- 每条被引用的论文发现都有对应 Proposition；
+- 来源论文附在该命题的 evidence 中；
+- 综合命题引用这些论文发现作为 evidence；
+- warrant 解释为什么这些证据能支撑综合；
+- 文本语气强度与命题 qualifier 一致；
+- 矛盾以 rebuttal 命题存在，而不是被改写掉。
 
-**规模判断：** 几十篇或更多论文的文献综述，应先运行 `/literature-survey`（收集、分类、综合），再交给 `/literature-writing` 写作。十来篇论文则直接使用 `/literature-writing`。
-
----
+当前系统没有 compile 步骤。结构 warning 自动重算，`get_stats` 提供最终结算视图。
 
 ## 一次性配置：`overleaf-setup`
 
-写作前运行 `/overleaf-setup`。这是基础设施，不是每次都要做的步骤：
+`/overleaf-setup` 会安装并认证 `leaf` CLI，把本地 LaTeX 目录连接到 Overleaf 项目，并写入用于 staging 与推送源码的 Stop hook。
 
-1. 安装 `leaf` CLI，并把你本地的 LaTeX 目录关联到一个 Overleaf 项目
-2. 写入一个 hook，在每轮对话结束时自动推送到 Overleaf（没有文件改动的轮次会跳过）
-3. 强制执行 `\cite{statement_N}` 引用标准（见下）
+该 hook 同时执行 Proposition 引用约束。配置完成后重启 Claude Code。
 
-配置完成后，重启 Claude Code。之后不用再运行它。
+## 把文章映射到论证图
 
----
+图里的每个节点都是 Proposition：
 
-## 这个场景下的论证图
+| 文章需要表达的内容 | 图中表示 |
+|---|---|
+| 论文报告的一条发现 | Proposition，并把论文放进 `evidence.attachments` |
+| 段落的综合观点 | Proposition，并在 `evidence.nodes` 引用相关发现命题 |
+| 这些发现为何支撑观点 | 该命题的 `warrant` |
+| 对推理原则本身的证据 | 先晋升 warrant，再给晋升后的命题挂 evidence |
+| 冲突发现或边界条件 | 用 `attacks={node, slot}` 创建的 Proposition |
 
-根本区别：**证据和前提放进 Statement，你的结论放进 Claim。**
+一条命题被别人引用时是 ground，自身可信度正在被判断时是 claim；它们是视角，不是不同节点类型。
 
-| 节点 | 表示什么 |
-|------|---------|
-| **Claim** | 你独立的综合结论——你在论证的东西，不是在转述的东西 |
-| **Statement（Ground 角色）** | 一条证据或前提：某篇已发表论文中的发现（附上 PDF）、你自己的实验结果（附上数据文件），或一个作为垫脚石的、已 supported 的 Claim |
-| **Warrant** | 连接这组证据与你的 Claim 的推理原则 |
-| **Statement（Backing 角色）** | 使该 Warrant 正当化的方法学共识或元分析 |
-| **Statement（Rebuttal 角色）** | 一篇结论相冲突的论文，或你的 Claim 已记录在案的边界条件 |
+若主张范围真的变化，可以修改命题。不要为了隐藏矛盾而改写；应把矛盾放进 rebuttal 槽，再根据全部证据判断 qualifier。
 
-一个判断办法：如果句子以"Smith 等人发现……"或"该论文报告……"开头，它属于 Statement（Ground 角色）；如果以"我们主张……"或"证据表明……"开头，它可能是 Claim。
+## `\cite{prop_N}` 标准
 
-**Claim 修改纪律。** 当证据确实不支持原有表述时，修改 Claim 是正当的。但把它当作回避承认矛盾的手段就不正当——相冲突的 Statement 应成为 Rebuttal，Claim 的状态则反映证据的真实状态。
+起草时按 Proposition id 引用：
 
----
+```latex
+\cite{prop_42}
+```
 
-## `\cite{statement_N}` 标准
+Overleaf push hook 会在 `.toulmin/graph.db` 中解析命题 42，找到它附带的论文 PDF，并在 staged 副本中把 `prop_42` 替换成对应 bibliography key。
 
-按 Statement ID 写引用：`\cite{statement_42}`。起草时别去查 bib key。
+| 元素 | 示例 |
+|---|---|
+| `.bib` key | `vaswani2017attention` |
+| 附件 PDF | `vaswani2017attention.pdf` |
+| 草稿引用 | `\cite{prop_42}` |
 
-每轮结束时，hook 推送到 Overleaf，并自动把每个 `\cite{statement_N}` 替换成由该 Statement 附件文件名推导出的真实 bib key。这只有在文件名本身就是 bib key 时才成立：
+每条被引用的命题必须存在，至少附有一份仍存在的 PDF，而且项目某个 `.bib` 文件中必须有匹配 key。多个 PDF 会展开成多个 key；非 PDF 附件继续作为审计证据保留，但不参与引用展开。
 
-| 元素 | 取值 |
-|------|------|
-| `.bib` 条目 key | `vaswani2017attention` |
-| 论文文件名 | `vaswani2017attention.pdf` |
-| Statement 附件 | `vaswani2017attention.pdf` |
+由此得到可审计链：
 
-下载论文时就按它的 bib key 命名——例如 `vaswani2017attention.pdf`。`.bib` 的维护由 Agent 负责。
+```text
+文章句子 ──\cite{prop_N}──► Proposition ──attachment──► 论文
+```
 
-⭐ **关键在这条链：** `\cite{statement_N}` → 一个 verified 的 Statement → 一份附上的论文。一个 Statement 只有在其来源论文附上、并确认支持所述发现后，才被标记为 `verified`，因此每处引用都能回溯到一份真正被查阅过的文档——而不是大模型凭训练记忆生成的、听起来煞有介事的引用。
+这条链证明 provenance，不自动证明 credibility。附上论文不会自动抬高 qualifier，创建 Proposition 也不会自动触发 LLM review。
 
-**附件在记录 Statement 的那一刻就必须给出，而不是等到验证时再补。** `source="literature"` 的 Statement 如果 `attachments` 为空会被直接拒绝，所以你不能先把命题记下来、边写边引用、临交付前再补 PDF。这不是把延迟验证提前了——归档一个文件不触发任何审查——但它确实要求来源在节点诞生时就已经落到磁盘上。
+## 让文本强度匹配 Qualifier
 
-**对于暂时拿不到 PDF 的论文——付费墙、禁发期、只有纸本——把你手上有的东西附上就行**：摘要快照、出版页截图、你自己的阅读笔记。创建时的检查只验证附件列表非空、且每个路径可解析；材料**是否足够**由验证该 Statement 时的审查清单来判断，而那一步本来就是该做这个判断的地方。所以一份摘要快照足以让节点存在、进入可引用的在途状态，而"够不够"的问题留在它该在的位置。
+- **论文口吻：**“Smith 等报告 X”只断言论文说了什么，因此可引用任意 qualifier 的命题；若命题为 `refuted`，句子也必须带出被推翻这一事实。
+- **综合口吻：**“现有证据表明 X”需要一条带 evidence 和 warrant 的综合命题。`possibly` 应使用试探语气；只有 `probably` 或 `certainly` 才适合平直断言。
+- **Unestablished：**不要把 `unestablished` 的综合命题写成结论，但仍可以归因式陈述论文报告了什么。
 
----
+运行 `/cite-review` 同时检查内容忠实性与强度一致性。它可以修正文句或图连接，但 qualifier 变化仍必须是明确判断。
 
-## 值得留意的图状态
+## 值得留意的状态
 
 | 状态 | 含义 |
-|------|------|
-| 来自某篇已发表论文的 `Statement`（Ground 角色）没有附上 PDF | 出处缺失；PDF 就是证据记录 |
-| 某个 `Statement`（Ground 角色）没有任何通往 `Claim` 的 Warrant 路径 | 孤立证据——还没接入任何论证 |
-| 某个 `Claim` 没有 `Warrant` | `compile_arguments` 会在结构检查上失败 |
-| 某个 `Warrant` 的内容在复述支撑关系 | 循环——不是推理原则；链条审查员会标出来 |
-| 某个 `Claim` 被改过、且有相冲突的 `Statement` 却没有 Rebuttal | 矛盾被压下去了，而不是被记录下来 |
-| `.tex` 里出现 `\cite{authorname}` 而不是 `\cite{statement_N}` | 推送被拦下——每个引用 key 都必须是 `statement_N` |
+|---|---|
+| 被引用命题没有 PDF 附件 | 引用没有来源产物，push 会被阻断 |
+| PDF stem 没有匹配 bibliography key | 无法展开成合法 LaTeX 引用 |
+| 正向 qualifier 的综合命题缺 evidence 或 warrant | 结构 warning：当前强度缺乏可见支撑 |
+| 判断之后，证据内容或 qualifier 发生变化 | re-check warning：旧判断依赖的是另一份前提 |
+| 重要发现仍为 `unestablished` | 只能归因式使用，或在依赖它之前明确判断 |
+| review finding 未处理 | 语义问题会一直可见，直到新 review 取代或写理由 dismiss |
 
----
-
-## 当 Agent 跑偏时
-
-**Agent 把引用写成了 `\cite{smith2023}` 而不是 `\cite{statement_N}`。** 到 Overleaf 的推送被拦下——强制 hook 只接受 `statement_N` 形式的 key，正是为了逼每处引用都必须回溯到一个真正被落实过的 Statement。告诉它：*"按 Statement ID 引用——`\cite{statement_N}`——别用作者 key。"*
-
-**Agent 为了让矛盾消失，把 Claim 弱化或改写了。** 冒出了一条相冲突的发现，Agent 没去记录它，反而调整 Claim 让一切不再打架。就说：*"别改 Claim 来回避这个——把相冲突的发现记为 Rebuttal，让 Claim 的状态反映证据的真实状态。"* 只有当证据确实不支持原有表述时，修改 Claim 才正当，而不是用来掩埋冲突。
-
-**某个 Statement（Ground 角色）没有附上论文。** 它在引用一份从未被查阅过的来源——正是论证图存在的意义所要防止的那种幻觉风险。在可视化界面选中该 Statement，问：*"这个 Statement 没附论文——它是基于什么？"* 在来源附上、并确认支持所述发现之前，这个 Statement 不能 `verified`，任何建立在它之上的东西都不该被引用。
-
-**Warrant 只是在复述 Statement 支撑 Claim。** "这三篇论文支撑该论证"只是给连接起了个名字，而没解释它。就说：*"这个 Warrant 是循环的。请给出推理原则——这组证据凭什么能推出你的综合结论？"*
-
-**某个 Claim 是 `supported`，但它的 compile 是 `stale`。** 你在它上次通过之后编辑过某个 Statement 或那个 Warrant，这会把 Claim 退回 `proposed`。就说：*"compile 是 stale 的——把这个 Claim 当定论之前，先重新运行 `compile_arguments`。"*
+交付前运行 `get_stats`，处理重要红点，并确认文章的语气强度仍与图一致。

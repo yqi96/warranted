@@ -1,32 +1,27 @@
 # Wiki Index
 
-> 20 pages | Last updated: 2026-08-12
+> 6 pages | Last updated: 2026-08-31
 
-## architecture
+## Architecture
 
-- [Architecture Overview](architecture.md) — # warranted 架构总览（21 个 MCP 工具、标签系统、角色模型）
-- [Compile System](compile-system.md) — # Compile 系统（两条失效路径、哈希标准 A、规则 C′）
-- [Visualizer Architecture](visualizer.md) — # Visualizer 架构
+- [Architecture Overview](architecture.md) — Proposition 五槽位、11 个 MCP 工具、graph.db、事件与基线
+- [Structural Checks and Review](compile-system.md) — 动态 warning、显式 Q1/Q2 review、finding/dismiss；文末保留旧 Compile 历史
+- [Visualizer Architecture](visualizer.md) — qualifier/结构编码、三种槽位边、HTTP/SSE API
 
-## environment
+## Environment
 
-- [Development Conventions](dev-conventions.md) — # 开发规范（30+ 测试文件、失效管理说明）
-- [Prompt Layering — base agent vs SKILL.md](prompt-layering.md) — # Prompt 分层规范
+- [Development Conventions](dev-conventions.md) — 当前测试集、模块边界、存储和 review 配置
+- [Prompt Layering](prompt-layering.md) — 常驻判断层与场景 skill 的增量边界
 
-## session-log
+## Tooling
 
-- [Session Log 2026-08-07](session-log-2026-08-07-051a40ea.md) — # Session Log 2026-08-07
-- [Session Log 2026-08-07](session-log-2026-08-07-30a1271d.md) — # Session Log 2026-08-07
-- [Session Log 2026-08-07](session-log-2026-08-07-53167506.md) — # Session Log 2026-08-07
-- [Session Log 2026-08-07](session-log-2026-08-07-97bb9617.md) — # Session Log 2026-08-07
-- [Session Log 2026-08-07](session-log-2026-08-07-b56449bf.md) — # Session Log 2026-08-07
-- [Session Log 2026-08-10](session-log-2026-08-10-2bbce29d.md) — # Session Log 2026-08-10
-- [Session Log 2026-08-10](session-log-2026-08-10-703c3cb4.md) — # Session Log 2026-08-10
-- [Session Log 2026-08-10](session-log-2026-08-10-9bea98ef.md) — # Session Log 2026-08-10
-- [Session Log 2026-08-10](session-log-2026-08-10-aa317057.md) — # Session Log 2026-08-10
-- [Session Log 2026-08-10](session-log-2026-08-10-aac45bc9.md) — # Session Log 2026-08-10
-- [Session Log 2026-08-10](session-log-2026-08-10-c5f5ad30.md) — # Session Log 2026-08-10
-- [Session Log 2026-08-10](session-log-2026-08-10-cb5474d8.md) — # Session Log 2026-08-10
-- [Session Log 2026-08-11](session-log-2026-08-11-189cbe18.md) — # Session Log 2026-08-11
-- [Session Log 2026-08-11](session-log-2026-08-11-c1975cb4.md) — # Session Log 2026-08-11
-- [Session Log 2026-08-11](session-log-2026-08-11-c21def45.md) — # Session Log 2026-08-11
+- 当前没有单独的 browser wiki；浏览器代理入口和隔离语义见 [Architecture Overview](architecture.md) 与 `src/browser/index.ts`。
+
+## Source of truth
+
+- `docs/design.md` — 本体、认识论与结算原则
+- `docs/api.md` — 11 个工具和返回契约
+- `src/schema.ts` — 数据库 schema 与枚举
+- `src/content/` — 工具/参数/警告的用户可见文案
+
+旧三节点、compile/Merkle、tags/21 tools 材料只有在页面明确标注“历史”时才是有意保留；未标注的旧叙述应视为文档缺陷。

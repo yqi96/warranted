@@ -2,68 +2,82 @@
 title: Prompt Layering — base agent vs SKILL.md
 tags: [prompt, skill, agent, conventions]
 category: environment
-updated: 2026-08-05
+updated: 2026-08-31
 ---
 
-# Prompt 分层规范:toulmin-researcher(判断层) vs SKILL.md(协议层)
+# Prompt 分层规范：判断层 vs 场景协议层
 
-`toulmin-researcher.md` 是 main agent 的 system prompt,**永远在场**;skill 只在场景命中时加载。
-由此推出本规范的所有规则。以 `paper-reproduce` 为已验证范例(2026-08-05 梳理)。
+`agents/toulmin-researcher.md` 是主 research agent 的常驻判断层；`skills/*/SKILL.md` 只在场景命中时加载。Skill 应写常驻层之上的增量，而不是复制一份缩短版 agent prompt。
 
 ## 两层定义
 
-| | 判断层 `agents/toulmin-researcher.md` | 协议层 `skills/*/SKILL.md` |
+| | 判断层 `agents/toulmin-researcher.md` | 场景协议层 `skills/*/SKILL.md` |
 |---|---|---|
-| 回答的问题 | 面对**任意**任务:图该不该介入、什么形态、防什么作弊 | 在**这个**场景里:哪些规则是硬性契约 |
-| 内容性质 | 可推广的方法论、教"如何思考" | 政策决定、教"必须遵守什么" |
-| 质量标准 | 单独在场时 agent 能"大差不差"把事办好 | 契约可被逐条检查 |
+| 回答的问题 | 任意任务中，图是否介入、何种命题值得记录、如何判断和委派 | 此场景中，哪些步骤、证据标准和产物是硬契约 |
+| 内容性质 | 可推广的认识论与工作边界 | 场景特有的流程、映射、零容忍规则 |
+| 质量标准 | 单独加载时不会犯范畴错误 | 与常驻层合用时可逐条验收且无重复 |
+
+## 当前本体锚点
+
+所有 prompt/skill 都应使用当前契约：
+
+- 图中只有 Proposition；每条命题有 content/evidence/warrant/rebuttal/qualifier 五槽位。
+- 创建命题落 `unestablished`；最终可信度只由主 agent/用户通过 `set_qualifier` 判断。
+- 结构 warning 自动派生，显式 `review` 只给 Q1/Q2 第二意见；二者都不是 qualifier gate。
+- 变更、判断、review 和 dismiss 进入 append-only events；重要改判应给 note。
+- Ground/Backing 是证据视角，Warrant/Rebuttal 是槽位，不是节点类型。
+
+旧 `create_claim/create_statement/create_warrant`、status/verification、`compile_arguments` 和 tags 不应作为当前 prompt 操作词汇。
 
 ## 归属清单
 
-**放判断层(基座)的信息类型:**
+### 放在判断层
 
-1. 本体论与不变式 — 节点类型、Statement 的角色、两层架构、compile 门、status 生命周期
-2. 介入判据 — stakes 测试、支持性工作豁免、"图记录知识状态变化不记录工作"
-3. 四个推导问题 — at stake / Claim 先行还是证据先行 / 什么能击败 / 防什么作弊
-4. 场景推导演示(worked scenarios)— 每场景数行:图形态 + 时序 + Blocks + **定义性不变量**
-5. 通用图操作词汇表(Graph Operations 表)
-6. 通用委派原则 — bounded contract、one task per subagent、报告仅建议;**不点名具体 agent**
-7. 通用反模式
-8. 用户交互规则(平实语言汇报、图术语输入当 obligation、selection 上下文)
+1. Proposition 五槽位、qualifier、warning/review/events 的通用边界。
+2. 图的介入判据：图记录会影响研究判断的知识状态，不记录任务和活动流水。
+3. 通用推导问题：什么命题 at stake、应命题先行还是证据先行、什么能击败它、结果如何回图。
+4. 通用判断原则：综合证据、warrant、rebuttal 与不确定性；warning/finding 只是依据。
+5. 通用委派边界：subagent 做对象层工作，主会话保留图控制和最终判断。
+6. 通用反模式：事后改目标、矛盾抹除、为显示进度而造命题、用图术语替代研究结论。
+7. 用户交互：用平实语言汇报；图状态提问默认只读；selection 是当前上下文。
 
-**放协议层(skill)的信息类型:**
+### 放在 Skill
 
-1. 触发条件与场景边界(frontmatter description)
-2. Graph Mapping 翻译表 — 该场景原材料 → 图角色的具体对应
-3. 粒度政策 — 该场景里什么算一个节点、什么必须拆开
-4. Obligations 状态机 — 场景特有状态 → 动作(**不含基座已覆盖的通用行**)
-5. 硬性契约 / 零容忍规则 — 如独立性测试、citation contract
-6. 可调政策 — 如"先优化后缩 scope"、数值修正允许条件、qualifier 收窄规则
-7. 具体 subagent 路由 — 何时找谁 + briefing 内容;仅当场景确有长时隔离需求(见 skill-authoring 既有规则)
-8. 场景产物要求 — 报告/文档格式
+1. frontmatter 中的触发条件与场景边界。
+2. 场景材料如何映射到命题和五槽位。
+3. 此场景的粒度政策：何时拆命题、何时保留内联 warrant、何时晋升。
+4. 场景状态机和工作顺序，例如先抽取来源命题再综合，或先预注册命题再实验。
+5. 硬契约：独立证据、引用忠实性、接受阈值、禁止使用的材料。
+6. 具体 subagent 路由、briefing 字段、产物路径和报告格式。
+7. 场景完成判据，包括未处理 warning/finding/rebuttal 如何影响交付。
 
-## 判据(写任何一句话前先过一遍)
+## 五个判据
 
-1. **删除测试**:把这句话删掉,agent 会做"错类型的事"(范畴错误)→ 基座;只会做得"不够严格/不够全"→ skill。
-2. **Delta 原则**:skill 假定基座永远已加载,只写增量,**不复述基座**。基座已有的通用规则(如"委派工作者不拥有图"、"矛盾不可抹除")在 skill 中直接删,不改写保留。
-3. **不变量锚点例外**:定义性不变量(如"复现 Claim verbatim 不可改"、独立性原则)允许两处出现——基座一行(作为场景的定义),skill 展开(挂政策细节:qualifier 收窄何时合法、零容忍条款、artifact 判别测试)。
-4. **方向测试**:教"如何思考/推导"→ 基座;教"这个场景必须遵守什么"→ skill。
-5. **How 归 agent 文件**:skill 对被委派 agent 只说 when(触发)/ what(使命一句话),方法论(检查清单、审计问题)在 `agents/<name>.md`。
+1. **删除测试**：删掉一句话会让 agent 做错类型的事，放常驻层；只会让特定场景不够严格，放 skill。
+2. **Delta 原则**：skill 假定主 agent 已加载，不复述“矛盾不可抹除”“subagent 不裁决 qualifier”等通用规则。
+3. **不变量锚点例外**：定义场景身份的一句不变量可在常驻层点名、在 skill 展开。例如 paper reproduction 的独立证据要求。
+4. **方向测试**：教“如何判断”归 agent；教“此场景必须做到什么”归 skill。
+5. **How 归角色文件**：skill 给被委派 agent 说明 when/what/产物；角色自身的方法论留在 `agents/<name>.md`。
 
-## paper-reproduce 逐节归属(范例)
+## Paper reproduction 示例（当前写法）
 
-| SKILL.md 内容 | 判定 | 理由 |
-|---|---|---|
-| Graph Mapping 表 + 粒度规则 | skill ✓ | 场景翻译表;基座只有推导演示 |
-| Obligations 表(场景行) | skill ✓ | 状态机;曾含 `create_warrant` 通用行,已按 Delta 原则删除 |
-| "初始结构建成 → 先 compile" | skill ✓ | 场景时序政策:实验开跑前先测论文逻辑 |
-| Fidelity(qualifier 收窄、数值修正条件、歧义记录) | skill ✓ | 可调政策;"矛盾不可抹除"一句已删(基座反模式覆盖) |
-| Independence(artifact 测试、零容忍) | skill ✓ | 硬性契约;基座只留一行不变量 |
-| Delegation 路由(experimenter/auditor/optimizer + briefing) | skill ✓ | 路由政策;"delegate by default""workers 不拥有图"已删(基座覆盖) |
-| Documentation(复现报告要求) | skill ✓ | 场景产物 |
-| Claim verbatim 不可改 / 独立性一行 | 两处 | 不变量锚点例外(判据 3) |
+| 内容 | 归属 | 原因 |
+|------|------|------|
+| 图只记录会影响结论的命题，不记录执行步骤 | 判断层 | 所有研究任务通用 |
+| 论文内容定义复现目标，但不能作为独立复现证据 | skill + 一句判断层锚点 | 场景定义性不变量 |
+| core/result proposition 的层级与 evidence 引用 | skill | 场景特定图映射 |
+| 在看到结果前声明接受规则 | skill | 复现实验的反事后合理化契约 |
+| 新结果必须回图、矛盾不能覆盖旧证据 | 判断层 | 通用研究纪律 |
+| fresh artifacts、报告字段、代码一致性审计 | skill | 场景产物与证据标准 |
+| 最终 qualifier 由主 agent 综合判断 | 判断层 | 通用裁决边界 |
 
-## 相关
+## 历史说明
 
-- 既有 skill-authoring 规则(无跨 skill 引用、无通用 object worker、审计类 skill 用 phased pipeline)见项目 memory `feedback_skill_authoring.md`
-- [Architecture Overview](architecture.md) 有 agents 与 skills 清单
+本页最初在 2026-08-05 以旧三节点/compile 本体写成。当时的“初始结构后先 compile”“Claim status 生命周期”“create_warrant 通用行”等示例是旧架构的 prompt 分层案例，不是当前操作说明。`90c7acb` 后对应思想分别落到五槽位建模、动态 warning、显式 review 和 `set_qualifier`。
+
+## 关联
+
+- [Architecture Overview](architecture.md)
+- [Structural Checks and Review](compile-system.md)
+- `agents/toulmin-researcher.md`
+- `skills/paper-reproduce/SKILL.md`

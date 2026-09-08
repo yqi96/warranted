@@ -10,153 +10,131 @@ Make AI research agents accountable — give every conclusion a traceable argume
 
 > [English](README.md) | [简体中文](README.zh-CN.md)
 
-> **Coding agents have compilers and tests. Research agents have Warranted.**
+> **Code has compilers and tests. Research needs failure signals too.**
 
----
+## What it does
 
-## The problem
+Warranted gives a research agent a persistent, auditable argument graph. The graph has one node type: a **proposition**. Every proposition has five slots:
 
-AI coding agents converge because compilers and tests provide objective failure signals. Research has no equivalent — conclusions live in natural language with no external verifier, so agents routinely declare work complete with no way to know what's missing.
+| Slot | Meaning |
+|---|---|
+| `content` | the statement being judged |
+| `evidence` | attached files and references to other propositions |
+| `warrant` | why that evidence supports the content, inline or promoted to its own proposition |
+| `rebuttals` | propositions that attack the content or warrant |
+| `qualifier` | one credibility scale: `refuted → unestablished → possibly → probably → certainly` |
 
-**Warranted** fills that gap. It gives AI agents a persistent argument graph where every Claim requires Grounds and a Warrant, contradictions are recorded as Rebuttals rather than erased, and status can only advance after passing a logic check (`compile`). The result is research reasoning that is auditable, reproducible, and verifiable — not just plausible-sounding.
+Ground, backing, claim, and rebuttal are viewpoints, not node types. The same proposition can be evidence for one conclusion, a conclusion in its own right, and a rebuttal somewhere else.
 
-Good fit for: **paper reproduction, hypothesis verification, multi-step scientific reasoning, research transparency**.
-
-![Warranted Argument Map](docs/assets/screenshot.png)
-
-![Warranted — multi-tree overview](docs/assets/screenshot2.png)
-
----
+Structural checks are deterministic and automatic. They return **non-blocking warnings** for incomplete evidence, missing attachments, changed dependencies, and similar conditions. They do not rewrite qualifiers or prevent the agent from recording a judgment. An explicit `review` call can ask a separate LLM for a semantic second opinion about source faithfulness and inference validity. Findings are advisory; they remain pending until a later review replaces them or they are dismissed with a reason.
 
 ## Documentation
 
-New here? Read in this order:
-
 | Doc | What it covers |
-|-----|----------------|
-| [The Argument Graph](docs/en/concepts.md) | Core concepts — three node types and roles, `compile`, the status lifecycle, and how to talk to the agent in graph terms. **Start here.** |
-| [Reproducing a Paper](docs/en/reproduce-a-paper.md) | Scenario guide: verify a paper's claims with an independent argument graph (`/paper-reproduce`). |
-| [Writing a Paper](docs/en/write-a-paper.md) | Scenario guide: draft a paper or literature survey where every citation traces to a verified Ground (`/overleaf-setup`, `/literature-writing`). |
+|---|---|
+| [The Argument Graph](docs/en/concepts.md) | propositions, five slots, qualifiers, warnings, findings, and the 11-tool surface |
+| [Reproducing a Paper](docs/en/reproduce-a-paper.md) | rebuild a paper's evidential chain using independently produced evidence |
+| [Writing a Paper](docs/en/write-a-paper.md) | write LaTeX whose `\cite{prop_N}` citations trace to propositions and attached papers |
+| [Research Framework](docs/en/research-framework.md) | how the primary agent, specialists, graph, and object-layer work divide responsibility |
 
-Release history: [CHANGELOG.md](CHANGELOG.md)
+The detailed contracts live in [docs/design.md](docs/design.md) and [docs/api.md](docs/api.md). Release history is in [CHANGELOG.md](CHANGELOG.md).
 
----
-
-## Upgrading to 0.5.0
-
-0.5.0's behavior changes split into three classes with completely different discovery methods, so upgrading needs **three** actions, not one. Running a full compile finds the first class and structurally cannot find the other two.
-
-**① Graph-state changes — run `compile_arguments` over every Claim.**
-
-Claim-type Grounds are now judged by their own status, and Claims that report new errors are the places where an upper conclusion sits on an unsettled or refuted lower conclusion. That state has existed all along with no rule ever looking at it. Handle them one at a time: if the lower Claim is `proposed`, settle it first; if it is `refuted`, re-hang the upper Claim on a narrower Claim that survives the refutation (typically "this approach exists in the literature" rather than "this approach works"). A `disputed` lower Claim is fine and needs no action.
-
-Expect this first pass to call the review model for every Claim, even ones you compiled before: the compile verdict moved out of the Claim node, which changed every argument hash, so nothing short-circuits on `no-change` this once.
-
-Expect it to also move some statuses. A Claim that comes out of this pass without a passed verdict has its `supported`/`disputed`/`refuted` status reverted to `proposed`, and Claims resting on it are rechecked and may follow. That rule is not new — a non-`proposed` status has always required a passed compile — but it used to be checked only when the status was written, so a Claim settled before this release could be holding a verdict its argument no longer earns. Each revert is reported on the call, naming the Claim and why.
-
-Settling statuses afterwards is safe — a lower status change does not invalidate the compile above it. What it can do is revert an upper `supported`/`disputed`/`refuted` back to `proposed`, when the lower Claim it counted on no longer counts as verified evidence. Those reverts are reported as warnings on the call that caused them; re-settle the lower Claim and you can set the upper one back without recompiling.
-
-**② Call-habit changes — audit your write-path callers now.**
-
-Compile **cannot see these**; they fire only on your next write. If you have scripts, automation, or custom skills that call `create_statement` or `update_node`, check them against these six before your next recording session:
-
-- `source` is now required on `create_statement`.
-- `source="literature"` must carry attachments.
-- Every attachment path must resolve from the review working directory (URLs do not qualify).
-- A review-infrastructure error now leaves the Statement `pending` and reports the error, rather than resting at `verified`.
-- `update_node(attachments=[])` against a `verified` Statement now errors.
-- `update_node(status="disputed")` and `status="refuted"` now require a **verified** Rebuttal on the Claim or one of its Warrants. Recording the Rebuttal still always succeeds and lands `pending`; it is the status call that is gated, so a caller that recorded a contradiction and settled the Claim in one go now needs a verification step between the two.
-
-**③ Review configuration — make your config file self-sufficient.**
-
-The reviewer subprocess now runs isolated: it no longer reads `~/.claude/settings.json`. If your review worked because the gateway address or the key lived in your own Claude Code settings rather than in the file you pass to `--review-config`, review will now fail to reach the endpoint. Put `baseUrl` and `apiKey` in that file. Also drop `debounceMs` if you set it (it was never read), and check that `maxTurns`/`maxConcurrency` are positive integers — an invalid value now warns and falls back to the default instead of being taken literally.
-
----
+> **Development-branch compatibility note:** commit `90c7acb` replaced the released 0.5.0 three-node/compile model with the proposition model described above. Old `.toulmin/argument.db` files remain read-only historical archives; current runs use `.toulmin/graph.db` and do not mechanically migrate old verdicts. The 0.5.0 terminology remains in the changelog only as release history.
 
 ## Setup with Claude Code
 
-**1. Clone and configure**
-
-Install [Bun](https://bun.com/docs/installation) (>= 1.0.0), then:
+Install [Bun](https://bun.com/docs/installation) (>= 1.0.0), Node.js, and a Chrome/Chromium browser, then:
 
 ```bash
 git clone https://github.com/yqi96/warranted
 cd warranted
 
-# Optional: enable LLM logic review
+# Optional: enable explicit third-party LLM review
 cp review.json.example review.json
-# Edit review.json and fill in apiKey
+# Edit review.json and fill in apiKey; baseUrl is optional.
 ```
 
-**2. Register with marketplace (once per machine)**
+The plugin launchers run `bun install --frozen-lockfile`. The browser MCP uses the pinned `chrome-devtools-mcp` dependency and starts isolated browser sessions on demand.
+
+Register and install the plugin:
 
 ```bash
 claude plugin marketplace add $(pwd)
-```
-
-**3. Install the plugin in your project**
-
-```bash
 cd your-project
 claude plugin install warranted@warranted --scope local
 ```
 
-On launch, `toulmin-researcher` becomes the primary agent and the MCP server starts automatically.
+On launch, `toulmin-researcher` becomes the primary agent. Two stdio MCP servers start automatically:
 
-When LLM review is enabled, node definitions are reviewed on creation and `compile_arguments` runs a full logic-chain audit.
+- `toulmin` stores the current graph at `<project>/.toulmin/graph.db` and exposes the 11 graph tools.
+- `browser` provides process-isolated Chrome sessions for browser-assisted research.
 
-> Hitting install or version issues? See [known-working versions](docs/reference/known-working-versions.md) for a verified dependency snapshot.
+Review is never triggered merely by creating or editing a proposition. It runs only when the agent deliberately calls `review`, and only when `review.json` supplies a usable `apiKey`.
 
----
+> Hitting install or version issues? See [known-working versions](docs/reference/known-working-versions.md).
+
+## Tool surface
+
+| Group | Tools |
+|---|---|
+| Write | `create_propositions`, `update_proposition`, `set_qualifier`, `promote_warrant`, `delete_proposition` |
+| Read | `get_argument`, `find_propositions`, `get_stats`, `get_history` |
+| Opinion | `review`, `dismiss` |
+
+Writes validate content, referenced ids, and attachment existence. Structural warnings and review findings remain visible on reads; they advise rather than gate writes.
 
 ## Visualizer
-
-From the `warranted` directory:
 
 ```bash
 bun run viz
 ```
 
-Open `http://localhost:3456` in your browser.
-
-### Interaction
+Open `http://localhost:3456`. The visualizer reads `.toulmin/graph.db`, colors propositions by qualifier, shows warning/finding badges, and can switch to another project's `graph.db`.
 
 | Action | Effect |
-|--------|--------|
-| Click a node | Select it (cyan glow ring) |
-| Double-click a node | Open detail panel |
-| Shift + click | Add to / remove from selection |
-| Drag (box mode) | Draw a box to select multiple nodes |
-| Drag (pan mode) | Pan the canvas |
-| Scroll | Zoom |
-| Click empty space | Clear selection |
+|---|---|
+| Click a node | select it |
+| Double-click a node | open its detail panel |
+| Shift + click | add to or remove from the selection |
+| Drag in box mode | select several nodes |
+| Drag in pan mode | move the canvas |
+| Scroll | zoom |
+| Click empty space | clear the selection |
 
-The **⬚ / ✥** buttons in the toolbar switch between box-select and pan mode.
-
-### Selection as context
-
-The visualizer server tracks the current selection. Once the plugin is running, **every message you send to Claude automatically includes the selected nodes as context** — no need to describe which nodes you mean, just select and ask.
-
----
+The UserPromptSubmit hook injects the current visualizer selection into later Claude prompts when the visualizer is running on its default port.
 
 ## Agents
 
 | Agent | Role |
-|-------|------|
-| `toulmin-researcher` | Primary agent. Builds and validates the argument graph, identifies structural gaps, drives each Claim toward a well-evidenced conclusion. |
-| `toulmin-explorer` | Read-only. Quickly finds nodes, checks verification status, explores argument structure without making changes. |
-| `code-experimenter` | Object-layer. Executes bounded coding, reproduction, and experiment tasks and returns evidence reports; does not decide Claim status. |
-| `discrepancy-auditor` | Object-layer. Audits a negative outcome before it enters the graph — an unexpected mismatch about to become a Rebuttal, or a claimed blocker about to halt an obligation. |
-| `code-optimizer` | Object-layer. Identifies hot paths, benchmarks, and implements targeted performance improvements within a bounded scope; does not decide Claim status. |
-
----
+|---|---|
+| `toulmin-researcher` | primary agent; controls the graph, coordinates research, and makes qualifier judgments |
+| `toulmin-explorer` | fast read-only graph lookup and navigation |
+| `code-experimenter` | bounded implementation, reproduction, and experiment execution |
+| `code-optimizer` | makes full-scope experiments feasible without changing their semantics |
+| `discrepancy-auditor` | audits one mismatch or claimed blocker before graph consequences are accepted |
+| `rigor-auditor` | completion-level audit of whether the overall research is exhausted and worth reporting |
+| `literature-scout` | performs one bounded browser-assisted literature search move and writes a durable search artifact |
+| `paper-reader` | reads specified papers against one inquiry question and writes evidence notes |
+| `literature-extractor` | records paper findings as propositions with source attachments; does not judge qualifiers |
 
 ## Skills
 
 | Skill | Trigger | Role |
-|-------|---------|------|
-| `literature-survey` | `/literature-survey` | Full-scale literature survey workflow. Five-phase protocol: scope, screen, batch-extract, classify, then synthesize and verify the DAG. Hand off to `/literature-writing` for the write-up. |
-| `paper-reproduce` | `/paper-reproduce` | Paper reproduction workflow. Builds an independent argument graph and verifies paper claims step by step. |
-| `literature-writing` | `/literature-writing` | Literature-backed writing workflow — related work, introductions, discussions, survey write-ups. Grounds each citable finding in the argument graph and writes LaTeX with `\cite{statement_N}` citations. Maintains a `.bib` file throughout. |
-| `cite-review` | `/cite-review` | Citation-faithfulness audit. Checks every `\cite{statement_N}` against its Statement in parallel, corrects mismatched LaTeX, and reconciles the graph. |
-| `overleaf-setup` | `/overleaf-setup` | One-time setup skill. Installs `leaf`, authenticates, links a local LaTeX directory to an Overleaf project, and writes a Stop hook that auto-pushes on every conversation turn (skips if no files changed). |
+|---|---|---|
+| `literature-survey` | `/literature-survey` | iterative, question-driven critical literature review |
+| `paper-reproduce` | `/paper-reproduce` | independent reproduction and graph-based judgment of a paper's claims |
+| `literature-writing` | `/literature-writing` | literature-backed LaTeX writing with `\cite{prop_N}` citations |
+| `cite-review` | `/cite-review` | checks citation content and strength against propositions and qualifiers |
+| `overleaf-setup` | `/overleaf-setup` | one-time Overleaf sync and proposition-citation enforcement |
+| `browser` | `/browser` | safe operation of an isolated Chrome session through the browser MCP |
+| `paper-download-browser` | `/paper-download-browser` | authorized browser-assisted paper download when direct HTTP is insufficient |
+
+## Development
+
+There is no separate build artifact: Bun executes the TypeScript sources directly, while TypeScript is configured for strict, no-emit checking.
+
+```bash
+bun test
+bun ./node_modules/typescript/bin/tsc --noEmit
+bun run agent-eval             # dry-run; add --live only when model cost is intended
+```

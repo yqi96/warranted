@@ -4,70 +4,84 @@
 
 ## Goal
 
-Verify whether a paper's claims are correct by building an independent argument graph. Run `/paper-reproduce` to start. **Done** means every Claim has a verdict — `supported`, `disputed`, or `refuted`. `proposed` is acceptable only when a barrier audit has confirmed a genuine barrier.
+Run `/paper-reproduce` when the goal is to independently test whether a paper's reported results and core conclusions hold. Reproduction rebuilds the paper's evidential chain with fresh implementation and execution artifacts; summarizing the paper is not enough.
 
----
+A complete reproduction can end positively or negatively. It is unfinished when a required proposition remains `unestablished` merely because the work stopped.
 
-## The graph in this scenario
+## Build an argument skeleton
 
-The graph represents the paper's argument, not a new one. Every node is extracted from the paper.
+Extract only the propositions needed for the reproduction target. The graph may be shallow or a multi-level DAG:
 
-| Node | What it represents | Initial state |
-|------|--------------------|---------------|
-| **Claim** | The paper's conclusion, extracted verbatim | `proposed` |
-| **Ground** | The paper's stated experimental result | `source="observed"`, `verification="pending"` |
-| **Warrant** | The inference principle connecting Ground to Claim | — |
-| **Backing** | Support for the Warrant's authority | — |
-| **Rebuttal** | A contradiction found during reproduction | — |
+```text
+fresh artifacts ──evidence──► result proposition ──evidence──► core proposition
+                                      warrant                     warrant
+```
 
-**Claims are immutable.** A Claim encodes exactly what you are verifying. If reproduction yields a different result, the difference belongs in a Rebuttal — not in a modified Claim. Changing the Claim changes what you're testing. Grounds allow minor numerical corrections (e.g., 42.3 → 42.1 from seed or implementation variance), but the finding a Ground asserts is fixed for the same reason.
+Every node is a proposition. A reported result becomes a proposition when it can fail independently, needs its own qualifier or rebuttal, separates a distinct dataset or metric, or is reused by several conclusions. Otherwise, attach the fresh artifacts directly to the proposition they test.
 
-**Grounds start unverified.** A Ground initializes as `verification="pending"`. It is `verified` when an independent reproduction has been completed and a description document is attached. A Ground without a description document is incomplete.
+Before execution:
 
-**Independence.** If the paper produced an artifact — supplementary data, pre-computed outputs, model weights — you cannot use it as verification evidence. That is circular. Author-published code may be reused as long as it matches the paper's described methodology. The test: *did this paper produce this artifact, or did the paper use it as external input?*
+- preserve the paper's intended meaning in each target proposition;
+- write the intended warrant for each inference;
+- leave reproduction evidence slots empty;
+- leave every extracted proposition at `unestablished`.
 
----
+The paper defines what must be reproduced. It is not evidence that its own results are true. Do not attach the paper, its precomputed outputs, released weights, or supplementary result files as proof of a proposition under direct experimental test.
 
-## Barrier audits
+## Define evidence obligations
 
-Agents give up too easily — they hit "the data isn't available" or "this is too complex" and stop. So a claimed block is never accepted at face value: the agent routes it to the `discrepancy-auditor`, which interrogates the claim against eight recurring patterns of false barriers and classifies it. The only way "out" is to prove the barrier is real — which, far more often, means discovering it wasn't.
+For every proposition that fresh execution must establish, record:
 
-Any time the agent encounters "cannot / not available / too complex / not feasible", the block goes to a barrier audit before it is accepted. The audit returns a classification:
+- the target quantity and scope;
+- the method, data, metric, baseline, and tolerance;
+- the artifacts a successful run must produce;
+- what outcome would support, limit, refute, or leave the proposition inconclusive;
+- the minimum positive qualifier required for the reproduction to count as successful.
 
-- **FALSE_BARRIER** — the path is clear, proceed immediately
-- **SCOPE_REDUCTION** — define the narrower sub-task and execute it (the classification alone is not the deliverable)
-- **REAL_BARRIER** — a genuine barrier, only after all four hard conditions are met
+Choose thresholds before seeing the result. Each `unestablished` leaf that requires fresh execution is an open work item.
 
-A Claim may not remain `proposed` without a barrier audit. If a Claim is still `proposed` when everything else is done, tell the agent to run a barrier audit on it.
+## Execute from the leaves upward
 
----
+Delegate bounded implementation and experiment work to `code-experimenter`; use `code-optimizer` only to make the same full-scope test feasible. Cheap sanity checks can establish implementation behavior, but only the declared run can establish the target result.
 
-## Graph states to watch
+For each completed obligation:
 
-These states are visible in the graph or the visualizer and signal that something needs attention.
+1. inspect the implementation and artifacts;
+2. attach code, execution traces, raw outputs, metric calculations, and a short evidence report to the proposition directly tested;
+3. state the warrant explaining why this run bears on the proposition;
+4. set the qualifier earned by that evidence;
+5. re-judge downstream propositions whose evidence now changed.
 
-| State | What it means |
-|-------|--------------|
-| A `Ground` has `verification='pending'` while its Claim is `supported` | The conclusion rests on unverified evidence |
-| A `Ground` has no description document | Reproduction is incomplete regardless of verification status |
-| A `Claim` is `proposed` with no active work remaining | No barrier audit has been run |
-| A `Claim`'s compile is `stale` | Something in the argument chain was modified — rerun `compile_arguments` |
-| A `Rebuttal` exists but the `Claim` is `supported` | A contradiction has been recorded; the verdict may need reassessment |
+Do not set a downstream proposition positive while an evidence proposition required by its warrant remains `unestablished`.
 
----
+## Audit mismatches and blockers
 
-## When the agent goes off track
+An unexpected result is not automatically a rebuttal. Route one mismatch or claimed blocker to `discrepancy-auditor` before accepting its graph consequence.
 
-These are the failures you'll actually see, and the most direct way to name each one. Describing the graph state gets to the root faster than describing the symptom.
+- an implementation, data, environment, or metric fault means repair and rerun;
+- an insufficient test leaves the obligation `unestablished`;
+- a defensible narrower result becomes a separate, narrower proposition while the original coverage gap stays visible;
+- a credible contradiction becomes an independently evidenced proposition attacking the affected content or warrant;
+- an inconclusive result leaves a precise open evidence requirement.
 
-**The agent gave up without a barrier audit.** It left a Claim `proposed`, or said a step "wasn't feasible," but you never saw a barrier assessment. Tell it to route the block to `discrepancy-auditor`. Most of the time the audit finds the barrier was false and the work continues.
+A scope reduction is work to execute, not permission to stop after naming it.
 
-**The agent reported a conclusion that doesn't match the paper.** Somewhere along the way it quietly rewrote the Claim to fit what it managed to reproduce. Say: *"In reproduction the Claim must stay verbatim to the paper. If your result differs, that's a Rebuttal — don't change the Claim."* This is the most common drift, and it's invisible unless you compare the Claim node against the paper's wording.
+## Judge completion
 
-**A Claim is `supported` but one of its Grounds is still `pending`.** The verdict is resting on evidence that was never independently reproduced. Select that Ground in the visualizer and ask: *"This Ground isn't verified — why is the Claim supported?"* Either the reproduction is missing, or the Ground is leaning on an artifact the paper itself produced — which can't count as verification.
+Judge leaves first, then rebuttals and promoted warrants, then downstream conclusions. Before reporting completion:
 
-**The Warrant just restates that the Grounds support the Claim.** Something like "the experimental results support the conclusion" isn't an inference principle — it names the connection instead of explaining it, and that's the usual reason a chain check fails. Say: *"This Warrant is circular. State the inference principle — given this kind of evidence, by what reasoning does it imply this conclusion?"*
+- every required proposition has a defensible qualifier or an audited explanation of why no defensible test can currently be run;
+- every positive conclusion is supported by the evidence propositions its warrant requires;
+- no material rebuttal remains unjudged;
+- structural warnings that could undermine the conclusion are cleared or explicitly dismissed; review findings are replaced by a later review after correction or dismissed with reasons;
+- `get_stats` accurately exposes any remaining red items.
 
-**The agent called a Claim `supported`, but its compile is `stale`.** It changed something in the chain — a Ground, the Warrant — which reverts the Claim to `proposed` and marks the compile stale, then reported success anyway. Say: *"The compile is stale — re-run `compile_arguments` and re-assess the evidence before this is `supported`."*
+`review` is optional and explicit. Use it for a semantic second opinion on source faithfulness or inference validity; it never replaces the primary agent's qualifier judgment.
 
-**The agent got a `SCOPE_REDUCTION` verdict and stopped.** A scope reduction is not an exit — the narrower sub-task still has to be defined and executed. Say: *"`SCOPE_REDUCTION` means do the reduced task, not just declare it. What's the narrower version, and where's its result?"*
+## Failure modes to challenge
+
+- **The target was rewritten after seeing the result.** Preserve the original proposition; record the differing result as evidence or a rebuttal.
+- **Paper-produced artifacts were used as proof.** They may define the target or help debugging, but do not independently reproduce it.
+- **A number was reported without an audit trail.** Attach the implementation, execution trace, raw result, calculation, and report.
+- **The warrant merely says “the results support the conclusion.”** State the general inference principle that makes this kind of result relevant.
+- **A warning was treated as a gate or ignored.** Warnings are non-blocking signals: inspect, repair, or dismiss with a reason.

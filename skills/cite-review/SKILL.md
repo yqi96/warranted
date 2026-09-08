@@ -88,7 +88,7 @@ Then apply corrections:
 
 **Content mismatch, pdf_verdict SUPPORTS, or DOES_NOT_SUPPORT with a relevant finding**
 
-1. `create_propositions` with `content=<recommendation.CREATE_PROPOSITION>` and `evidence={attachments: [<same PDF path>]}`. Write the `warrant` only if you can state the general principle that lets this paper support this content; leave it empty otherwise.
+1. Call `create_propositions(items=[{content: <recommendation.CREATE_PROPOSITION>, evidence: {attachments: [<same PDF path>]}}])`. Add `warrant` to that item only if you can state the general principle that lets this paper support this content; leave it absent otherwise.
 2. In the tex, rewrite the sentence to `recommendation.REWRITE` if present, then replace `\cite{prop_OLD}` with `\cite{prop_NEW}`.
 3. Leave the original proposition untouched.
 
@@ -106,7 +106,7 @@ The default fix is the prose: apply `recommendation.REWRITE` so the sentence cla
 
 Every tex edit in Phase 3 is a structural change that may open or close graph gaps. Address each before concluding.
 
-**Wire new propositions into the argument.** For each proposition created in Phase 3, name the proposition the paragraph's thesis corresponds to, then `update_proposition(<that proposition>, evidence={add_nodes: [<new id>]})`. Do not remove the old proposition from any evidence slot — corrections are additive.
+**Wire new propositions into the argument.** For each proposition created in Phase 3, name the proposition the paragraph's thesis corresponds to, then call `update_proposition(id=<that proposition>, evidence={add_nodes: [<new id>]})`. Do not remove the old proposition from any evidence slot — corrections are additive.
 
 If the paragraph's thesis has no proposition at all, that is a writing gap rather than a citation error: name it and leave it to `literature-writing`. If the consuming proposition has an empty `warrant`, note it — the structural check will flag it the moment anyone tries to carry that proposition to `possibly` or above.
 
@@ -119,11 +119,11 @@ You do not have to track which propositions need rechecking: changing an evidenc
 
 **Propagate structural problems.** If a correction revealed that a paragraph's argument does not hold — a substantive logical gap, not a misquote — record it rather than leaving it implicit:
 
-- a finding that limits what a proposition can claim → `create_propositions` with `attacks={node, slot: "content"}`
-- a warrant whose inference no longer holds under the corrected evidence → `update_proposition(warrant=...)`, or, if the warrant was promoted, edit the promoted proposition instead
+- a finding that limits what a proposition can claim → `create_propositions(items=[{content: <finding>, attacks: {node: <target id>, slot: "content"}}])`
+- a warrant whose inference no longer holds under the corrected evidence → `update_proposition(id=<target id>, warrant=...)`, or, if the warrant was promoted, edit the promoted proposition instead
 - a proposition the corrected evidence collectively disputes → the rebuttal above *is* the record; leave the qualifier alone and name it as an open gap. `refuted` requires every rebuttal to stand at `possibly` or better, and the one you just created is `unestablished`; judging it is argument-audit work this skill's scope excludes.
 
-**Settle.** Call `get_stats` and report what is red after your run: unresolved findings, structural violations, propositions marked for recheck. There is no compile step — structural checks recompute after every change on their own. If a correction leaves you unsure whether a proposition's evidence still carries it, `review` that proposition for a second opinion; the findings it returns are yours to settle, not the skill's to close.
+**Settle.** Call `get_stats` and report what is red after your run: propositions with unresolved findings, propositions with pending structural warnings, and missing attachments. There is no compile step — structural checks recompute on reads after every change. If a correction leaves you unsure whether a proposition's evidence still carries it, call `review(id=<proposition id>)` for a second opinion; the findings it returns are yours to settle, not the skill's to close.
 
 ## Constraints
 
@@ -133,6 +133,6 @@ You do not have to track which propositions need rechecking: changing an evidenc
 
 **Graph edits are additive.** Never edit an existing proposition's `content` or `warrant` to make it fit the sentence — the corrected citation gets a *new* proposition and the original is left standing. The only non-additive changes permitted here: lowering a qualifier whose evidence you just removed, and revising a consuming proposition's `content` when the prose has materially changed the asserted thesis.
 
-**Flags are read, not silenced.** Writes return warnings; read every one. Fix what it points at, or `dismiss` it with your reason. Editing content until a check stops firing is the one repair that is never allowed.
+**Flags are read, not silenced.** Writes return warnings; read every one. Fix what it points at, or call `dismiss(items=[{id: <warning or finding id>, reason: <your reason>}])`. Editing content until a check stops firing is the one repair that is never allowed.
 
 **Scope.** Review citation accuracy and the graph consequences of correcting it. Do not perform a full argument audit, and do not re-run literature evidence construction.

@@ -4,21 +4,21 @@ Use this reference for Discussion, Conclusion, implications, limitations, and mi
 
 ## Mixed Evidence Contract
 
-Discussion Claims may combine:
+Discussion propositions may combine:
 
-- observed Grounds from this study
-- literature Grounds from published work
-- Rebuttals and boundary conditions
-- Backings for method or inferential authority
+- result propositions from this study
+- literature evidence propositions from published work
+- rebuttal propositions and boundary conditions
+- method or inferential authority propositions
 
-The Warrant must explain the cross-source inference. Do not merely place this-study results beside citations and imply synthesis.
+The warrant must explain the cross-source inference. Do not merely place this-study results beside citations and imply synthesis.
 
-## Claim Strength
+## Proposition Strength
 
 The Discussion may interpret, generalize, and compare, but only to the degree earned by the graph.
 
-- Broad implication Claims require Warrants and Backings.
-- Mechanistic Claims require evidence specific to mechanism, not just association.
+- Broad implication propositions require warrants and supporting authority.
+- Mechanistic propositions require evidence specific to mechanism, not just association.
 - Clinical, policy, or design implications require scope conditions.
 - Future-work statements should reflect unresolved obligations, not unsupported speculation.
 
@@ -28,33 +28,33 @@ Limitations are graph objects, not decorative prose.
 
 Each material limitation should map to one of:
 
-- Rebuttal
+- rebuttal proposition
 - unresolved obligation
-- scoped Ground
-- Backing limitation
+- scoped proposition
+- limitation in warrant or supporting method proposition
 
-Do not introduce a limitation in prose without deciding whether it weakens a Claim, narrows a Warrant, or leaves a Ground pending.
+Do not introduce a limitation in prose without deciding whether it weakens a proposition, narrows a warrant, or leaves supporting evidence unsettled.
 
 ## Literature Comparison
 
 When comparing with prior work:
 
 - use `literature-writing` for cited findings
-- create Rebuttals for genuine disagreement
-- create Warrants for convergence claims across methods, cohorts, or datasets
+- create rebuttal propositions for genuine disagreement
+- write warrants for convergence claims across methods, cohorts, or datasets
 - avoid explaining away conflicts unless the graph records the basis
 
 ## Conclusion
 
-The Conclusion states only Claims earned by the graph.
+The Conclusion states only propositions earned by the graph.
 
-Do not upgrade `proposed` or `disputed` Claims into confident conclusion prose. If the manuscript needs a stronger conclusion than the graph supports, repair the graph or weaken the conclusion.
+Do not upgrade `unestablished`, `possibly`, or `refuted` propositions into confident conclusion prose. If the manuscript needs a stronger conclusion than the graph supports, repair the graph or weaken the conclusion.
 
 ## Completion
 
 The Discussion/Conclusion is complete when:
 
-- every synthesis Claim has observed and/or literature Grounds
-- cross-source inference is represented by Warrant prose
-- limitations correspond to Rebuttals or unresolved obligations
-- conclusion strength matches Claim status
+- every synthesis proposition has result and/or literature evidence
+- cross-source inference is represented by warrant prose
+- limitations correspond to rebuttal propositions or unresolved obligations
+- conclusion strength matches proposition qualifier

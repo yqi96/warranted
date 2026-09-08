@@ -2,104 +2,124 @@
 title: Architecture Overview
 tags: [architecture, typescript, sqlite, mcp]
 category: architecture
-updated: 2026-08-12
+updated: 2026-08-31
 ---
 
-# warranted 架构总览
+# Warranted 架构总览
 
 ## 项目定位
 
-MCP (Model Context Protocol) 服务器，实现 Toulmin 论证模型，用于科学推理和证据管理。支持论文复现、假设验证、科学主张管理等研究任务。为 AI agent 提供结构化论证图管理，使每个结论都有可追溯的论证图。
+Warranted 是面向研究 agent 的 MCP 服务。它把研究结论保存为可追溯的命题图：命题陈述什么、依赖哪些证据、为什么能由证据推出、受到什么反驳、当前可信度如何，以及这些判断后来为什么改变。
 
-## 技术栈
+当前本体是**一种节点（Proposition）+ 五个槽位**，不是旧版 Claim/Warrant/Statement 三节点模型。规范来源是 `docs/design.md` 和 `docs/api.md`；本页只描述代码落点。
+
+## 技术栈与启动
 
 | 组件 | 技术 |
 |------|------|
 | Runtime | Bun >= 1.0.0 |
-| Language | TypeScript (strict mode) |
-| Database | SQLite (WAL mode，单表 + JSON data 列) |
-| MCP SDK | `@anthropic-ai/claude-agent-sdk` ^0.3.201 |
-| Validation | Zod ^3.23.8 |
+| Language | TypeScript（strict mode） |
+| Database | SQLite（文件库使用 WAL，启用外键） |
+| MCP | `@modelcontextprotocol/sdk` |
+| Review subprocess | `@anthropic-ai/claude-agent-sdk` |
+| Validation | Zod |
+| Browser proxy | `chrome-devtools-mcp`（固定依赖版本、每 session 独立进程） |
 
-启动命令：`bun src/index.ts [--db-path ./custom.db] [--review-config ./review.json]`
+主服务：`bun src/index.ts [--db-path ./custom.db] [--review-config ./review.json] [--no-persist]`
 
-默认 DB：`.toulmin/argument.db`
+默认数据库：`.toulmin/graph.db`。旧 `.toulmin/argument.db` 原地保留为历史归档，不会自动迁移。
 
-## 三层架构
+可视化器：`bun run viz`，默认读取同一个 `graph.db`。
 
+## 代码边界
+
+```text
+schema.ts / db.ts           Schema 唯一事实源、建库、旧库拒绝、FTS 探测
+          ↓
+repo.ts                     纯 SQL 与行级读写
+          ↓
+service.ts                  事务、输入不变量、事件、基线、命题操作
+          ↓
+structural-check.ts         读取时派生的结构警告与“该重查”警告
+review-*.ts                 显式语义审查、finding 校验与持久化
+          ↓
+tools.ts                    11 个 MCP 工具的 schema、调用与返回形状
+          ↓
+index.ts                    CLI、stdio transport、生命周期与优雅关闭
 ```
-Repository (repo.ts)    — 纯 SQL CRUD，JSON_EXTRACT 查询
-        ↓
-Service (service.ts)    — 业务逻辑、验证、状态流转、级联规则
-        ↓
-Tools (tools.ts)        — MCP 工具注册、输入验证、错误处理（21 个工具）
-```
 
-修改规则：新功能先在 tools.ts 注册，再在 service.ts 实现；repo.ts 只做纯 SQL。
+`tools.ts` 只负责输入/输出形状；业务规则放在 `service.ts`。Schema 只存在于 `src/schema.ts`，不再维护第二份 `sql/schema.sql`。
 
-## 21 个 MCP 工具
+## 11 个 MCP 工具
 
-- **创建(5)**: create_claim, create_statement, create_warrant, create_statements, verify_statements
-- **标签(5)**: create_tag, create_tags, list_tags, tag_nodes, update_tag, rename_tag, merge_tags
-- **读取(6)**: list_claims, list_statements, get_argument, get_node, search_nodes, get_stats
-- **修改(1)**: update_node
-- **删除(1)**: delete_node
-- **编译(1)**: compile_arguments
+| 类别 | 工具 |
+|------|------|
+| 写入（5） | `create_propositions`、`update_proposition`、`set_qualifier`、`promote_warrant`、`delete_proposition` |
+| 读取（4） | `get_argument`、`find_propositions`、`get_stats`、`get_history` |
+| 意见（2） | `review`、`dismiss` |
+
+写入与判断刻意分开：创建命题一律落 `unestablished`；只有 `set_qualifier` 能改变可信度并写入判断基线。`review` 是显式、慢且可选的第二意见，创建或更新命题不会自动触发它。
+
+## 数据模型
+
+### 命题与槽位
+
+`propositions` 是唯一节点表。每条命题有五个槽位：
+
+| 槽位 | 存储 | 说明 |
+|------|------|------|
+| content | `propositions.content` | 可判断真假的陈述 |
+| evidence | `evidence_attachments` + `evidence_nodes` | 文件或其他命题的引用 |
+| warrant | `warrant_text` 或 `warrant_node_id` | 内联理由，或晋升后的独立命题；两种形态互斥 |
+| rebuttal | `rebuttals` | 攻击该命题的其他命题引用 |
+| qualifier | `propositions.qualifier` | `refuted → unestablished → possibly → probably → certainly` |
+
+Ground/Backing 是从中心命题看证据的两种视角；Warrant/Rebuttal 是槽位。它们不再是节点类型。
+
+### 留痕、意见与基线
+
+| 表 | 作用 |
+|----|------|
+| `events` | append-only 事件流；create/update/delete/qualifier/promote/review/dismiss 均留痕 |
+| `findings` | review 事件的查询索引；处理状态由 dismiss 事件派生，不存可变 status |
+| `baseline_head` | 最近一次 `set_qualifier` 时本命题的结构指纹 |
+| `baseline_refs` | 当时直接引用的 content hash 与 qualifier 快照 |
+| `propositions_fts` | FTS5 trigram 索引；不可用时搜索降级为 LIKE |
+
+结构警告不是数据库状态：每次读取按当前图重新计算。warning id 包含重查指纹；图发生相关变化后会生成新 id，因此旧 dismiss 不会误压住新问题。
+
+## 写入与删除语义
+
+- 硬输入不变量包括：content 非空、引用命题存在、附件路径在写入时存在。
+- 结构检查和 review finding 都是醒目的意见，不是写入门禁；agent 与用户通过 `set_qualifier` 作最终判断。
+- 证据槽存引用而非所有权。`delete_proposition` 只删除被点名的命题，并从引用方槽位摘除关系；不会级联删除其他命题。
+- 删除前会把整条命题的 before 快照写入事件流，事件没有节点外键，因此墓碑能活过节点删除。
 
 ## 关键文件
 
 | 文件 | 说明 |
 |------|------|
-| `src/index.ts` | 入口，CLI 参数解析，stdio transport |
-| `src/service.ts` | 核心业务逻辑（最复杂） |
-| `src/tools.ts` | MCP 工具注册 |
-| `src/repo.ts` | 数据访问层 |
-| `src/types.ts` | 类型定义 |
-| `src/content/` | 工具描述、字段提示、警告文案（拆分为 tools.ts、elements.ts、params.ts、warnings.ts、hints.ts、messages.ts） |
-| `src/compile-service.ts` | Compile 系统核心 |
-| `src/compile-reviewers.ts` | 各类 reviewer 实现 |
-| `src/compile-prompts.ts` | Compile LLM prompt 模板 |
-| `src/merkle-hash.ts` | 论证图 Merkle 哈希（staleness 检测） |
-| `src/tag-similarity.ts` | 基于嵌入的标签相似度推荐 |
-| `src/concurrency.ts` | 并发控制（mapLimit，默认 4 路并发） |
-| `sql/schema.sql` | SQLite schema |
-| `agents/` | Claude Code agent 定义（Toulmin 层：toulmin-researcher、toulmin-explorer；object 层：code-experimenter、discrepancy-auditor、code-optimizer） |
-| `skills/` | paper-reproduce、literature-writing、literature-survey、cite-review、overleaf-setup 技能 |
-| `visualizer/` | D3.js v7 模块化可视化（双阶段，14 JS 模块） |
-| `tests/` | 测试文件，bun test |
+| `src/schema.ts` | Schema、枚举、旧表清单、FTS SQL |
+| `src/db.ts` | SQLite 连接、WAL、外键、旧库拒绝、FTS 降级 |
+| `src/repo.ts` | 数据访问与事件/基线/finding 索引 |
+| `src/service.ts` | 命题操作、事务、判断与历史 |
+| `src/structural-check.ts` | 当前状态检查和基线比对 |
+| `src/review-run.ts` | 单命题显式 review 编排 |
+| `src/review-validate.ts` | finding 引证的 F1–F4 机械校验 |
+| `src/tools.ts` | 11 个 MCP 工具注册 |
+| `src/content/` | 工具与参数说明、警告/通知文案 |
+| `visualizer/` | Proposition 图可视化与 HTTP/SSE API |
+| `src/browser/index.ts` | 隔离 Chrome session 的 MCP 代理 |
+| `tests/` | 当前单元/集成测试与 agent-eval |
 
-## 数据模型
+## 历史边界
 
-单张 `nodes` 表，type-specific 字段存储在 JSON `data` 列，5 个 JSON_EXTRACT 索引。
-
-`nodes.type` 只有三种值：**claim / warrant / statement**。Ground、Backing、Rebuttal 是**角色**，由三张关系表决定：
-
-| 角色 | 来源 | 语义 |
-|------|------|------|
-| ground | `warrant_grounds.ground_id` | 某 warrant 的证据基础 |
-| backing | `warrant_backings.statement_id` | 某 warrant 的权威支撑 |
-| rebuttal | `rebuttal_targets.statement_id` | 反驳某 claim 或 warrant |
-
-三种角色都接受 Statement 或 Claim 节点。判据：记录（观察到或读到的）是 Statement；论证结论是 Claim。一个节点可同时扮演多个角色。
-
-### 标签系统
-
-| 表 | 作用 |
-|----|------|
-| `tags` | 标签注册（name UNIQUE, description, claim_id） |
-| `node_tags` | 多对多关系（node_id, tag_id, ON UPDATE CASCADE） |
-
-标签必须先注册再使用。`create_tag` / `create_tags` 注册，`tag_nodes` 批量增减。`rename_tag` 利用 `ON UPDATE CASCADE` 跟随，`merge_tags` 合并一项到另一项并去重。`create_claim(tags=[])` 创建时直接打标签。`search_nodes(keyword, tags)` 按标签筛选。
-
-## 级联删除规则
-
-- **Claim** 删除需 `cascade=true`，连带删 Warrant（Ground Statement 独立保留）
-- **Warrant** 级联删除时从关系表中移除关联 Ground/Backing 记录
-- **Statement（Ground 角色）** 自动从所有 `warrant_grounds` 记录中移除
-- **Statement（Backing/Rebuttal 角色）** 直接删除
+2026-08-20 的 `90c7acb` 将旧“Claim/Warrant/Statement + roles + compile/status/verification/tags”本体断代为当前 Proposition 模型。下列名称只应出现在明确标注的历史说明中：`nodes`、`compile_state`、`warrant_grounds`、`warrant_backings`、`rebuttal_targets`、`tags`、`compile_arguments`、Merkle staleness。
 
 ## 关联
 
-- [[compile-system]] — Compile 系统详细设计
-- [[visualizer]] — 可视化器架构
-- [[dev-conventions]] — 开发规范
+- [Structural Checks and Review](compile-system.md)
+- [Visualizer Architecture](visualizer.md)
+- [Development Conventions](dev-conventions.md)
+- `docs/design.md` — 本体与认识论规范
+- `docs/api.md` — 工具契约

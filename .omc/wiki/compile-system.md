@@ -1,130 +1,99 @@
 ---
-title: Compile System
-tags: [compile, merkle, hash, staleness, review, llm]
+title: Structural Checks and Review
+tags: [structural-check, baseline, review, findings, events, history]
 category: architecture
-updated: 2026-08-12
+updated: 2026-08-31
 ---
 
-# Compile 系统
+# 结构检查与显式 Review
 
-## 概述
+> 文件名保留为 `compile-system.md`，是为了不打断旧链接；**当前系统没有 `compile_arguments`、`compile_state` 或 Merkle staleness**。旧 Compile 的设计记录见文末“历史”一节。
 
-`compile_arguments` 工具对一个 Claim 及其完整论证子图做确定性结构检查 + LLM 驱动的逻辑审查，返回 `passed` 或 `failed` 并将结果写入 `compile_state` 表。未配置审查模型时，跑完结构检查后默认通过并附警告。
+## 当前分工
 
-## 核心文件
+| 层 | 回答什么 | 触发方式 | 是否阻断判断 |
+|----|----------|----------|--------------|
+| 输入校验 | 写入形状是否可成立：content 非空、引用存在、附件存在 | 每次写入 | 是，只拒绝非法输入 |
+| 结构检查 | 当前结构是否与 qualifier 相称、判断依据是否变过 | 每次读取动态计算 | 否，返回 warning |
+| 语义 review | 附件是否忠实、证据经由 warrant 能否推出命题 | 显式调用 `review(id)` | 否，返回 finding |
+| 最终判断 | 命题应落在哪个 qualifier | agent/用户调用 `set_qualifier` | 最终裁决 |
 
-| 文件 | 职责 |
+创建和更新命题不会自动调用 LLM。结构检查无需模型配置；语义 review 只有显式调用时才发生。
+
+## 结构检查
+
+结构检查实现于 `src/structural-check.ts`，warning 定义于 `src/types.ts`。`unestablished` 表示尚未判断，因此不产生 S/A 当前状态检查；一旦命题被定档，检查按档位逐步收紧。
+
+### 当前状态检查（S/A）
+
+| Code | 条件 |
 |------|------|
-| `src/compile-service.ts` | 编排各 reviewer，写入 compile_state |
-| `src/compile-reviewers.ts` | 各类 reviewer 实现 |
-| `src/compile-prompts.ts` | LLM prompt 模板 |
-| `src/merkle-hash.ts` | 论证图 Merkle 哈希，用于 staleness 检测 |
+| S1 | `possibly` 及以上但证据槽为空 |
+| S2 | `possibly` 及以上且附件后来不存在 |
+| S3 | `possibly` 及以上但 warrant 为空 |
+| S4 | `probably`/`certainly` 引用了仍为 `unestablished` 的证据或晋升 warrant |
+| S5 | `possibly` 及以上且附件解析到项目根之外 |
+| A1 | 命题为 `refuted`，但没有 rebuttal |
+| A2 | 命题为 `refuted`，但某个 rebuttal 自身不在正向三档 |
 
-## compile_state 裁决
+附件采用“写硬读软”：写入时不存在会被拒绝；写入后文件被移走或删除，则读取时产生 S2/S5。
 
-compile 裁决只存在 `compile_state` 表，`data.compile_status` 已删除。verdict 有三种值：
+### 基线比对（R）
 
-| verdict | 含义 |
-|---------|------|
-| `"passed"` | 最近一次 compile 通过，且论证结构未变化 |
-| `"failed"` | 最近一次 compile 未通过（结构检查或 LLM 审查发现缺陷） |
-| `"stale"` | 上次 passed 后，论证结构发生了变化 |
+`set_qualifier` 是基线的唯一写入者。它在同一事务内保存：
 
-`compile_state` 行不再删除：`stale` 保留记录信息（"曾经 compile 过"），`failed` 保持 `failed`（不因无模型审查而覆盖）。
+- 本命题的 content、warrant、证据成员和反驳成员指纹；
+- 每个直接引用当时的 content hash 和 qualifier。
 
-## 两条独立的失效路径
+之后读取命题时会比较当前值：
 
-### 1. 结构失效（`invalidateCompiledClaims`）
+| Code | 条件 |
+|------|------|
+| R0 | 命题自己的 content/warrant/证据成员/反驳成员变了 |
+| R1 | 判断时依赖的引用不再位于该槽位，或已被删除 |
+| R2 | 直接引用的 content 变了 |
+| R3 | 直接引用的 qualifier 变了 |
 
-content 或关系（`ground_ids`、`backing_ids`、`rebuttal_ids`）变更时触发：
+R 族回答“作判断时依据的东西还是不是原来那份”，不等价于旧版 compile cache。
 
-- `compile_state.verdict` → `"stale"`，清空 `argumentHash`
-- Claim 的 `status` 若为 `supported` / `disputed` / `refuted`，退回 `"proposed"`
-- 只做一跳 direct 反查：子证据不在上层审查输入里，不继续 BFS 传播
+### Warning 身份与复燃
 
-### 2. 充分性失效（`revertUnsupportedClaimStatuses`）
+warning 不落状态表。其 id 从 `(node id, code, trigger, recheck fingerprint)` 派生：
 
-verification 或 status 变更时触发。论证的形式没变（content 和关系都没动），所以 compile 仍为 `passed`：
+1. 当前图计算 warning 集合；
+2. 到 append-only 事件流查同 id 的 dismiss；
+3. 命中则显示 `acknowledged`，否则显示 `pending`；
+4. 命题或引用发生相关变化后 fingerprint 改变，产生新 id，旧 dismiss 自然失效。
 
-- 按 Claim 当前 status 复检对应的门：`supported` 检查 A1（某条 Warrant 的 Ground 全部已核实），`disputed`/`refuted` 检查 A3/A4（存在已核实的 Rebuttal）
-- 门不成立才退回 `proposed`；仍成立的不动
-- 向上传播：退回的 Claim 作为上层 Ground/Rebuttal 也不再算已核实，但上层 compile 保持 `passed`
-- 警告文案明确说 `do NOT re-run compile_arguments for Claim #N`
+因此“复燃”是读取时计算的结果，不需要 stale 字段或后台失效任务。
 
-## 判定规则
+## 显式语义 Review
 
-### A0：status 需要 compile 通过
+`review(id)` 只审查**一条命题的局部视图**：命题自身、直接证据、附件和 warrant；不递归整张子图，也不把目标命题当前 qualifier 交给 reviewer。
 
-```typescript
-// service.ts
-const cs = repo.getCompileState(db, claimId);
-if (cs?.verdict !== "passed") {
-  throw StatusTransitionError("the argument changed after it last passed compile...");
-}
-```
+| 问题 | 含义 | 引证要求 |
+|------|------|----------|
+| Q1 | 附件是否真的表达了该命题声称的内容 | attachment + 原文 quote；协议期望 locator，但当前 F1–F4 不因 locator 为空而拒收；无附件时为 `n/a` |
+| Q2 | 即使接受证据，warrant 是否足以推出 content | 引用目标命题或直接证据命题的 content/warrant 原文片段 |
 
-`supported`、`disputed`、`refuted` 三种目标状态都需要 compile 通过。compile 也反向检查：跑完后若 Claim 没有 `passed` 记录，status 退回 proposed。
+每条 finding 必须经过 F1–F4 机械校验：quote 非空、Q1 附件属于目标槽、Q2 node 在 review 视野内、quote 是对应槽位文本的逐字子串（仅折叠空白）。单条不合格 finding 被拒收并记入 review 事件，其余合格项仍可落库。
 
-### 规则 C′：Claim 算不算已核实
+未配置 `--review-config`、子进程失败、附件读取工具被拒或输出无法解析时，review 返回不可用并且**不记录 pass**。有效 review 无论“有问题”还是“没问题”都写入事件流，以区分“审过且未发现问题”和“从未审过”。
 
-| 节点类型 | 已核实条件 |
-|----------|-----------|
-| Statement | `verification === "verified"` |
-| Claim | `status ∈ {supported, disputed}` |
+## Finding 与 Dismiss
 
-`disputed` 作为已核实状态是因为：一个记录在案的证据冲突是已定论的状态，上层引用它获取的是 scope 而非 truth value。
+- finding 不会因图变化自动过期；它是审查器当时提出过的意见。
+- 处理方式是修正图，或调用 `dismiss` 对单条 warning/finding 给出理由。
+- dismiss 只追加一条事件，不删除原对象；处理状态由事件流派生。
+- warning id 可能因结构变化而复燃成新 id；finding id 不随图变化。
 
-## Staleness 检测机制
+## 历史断代
 
-使用 Merkle Hash 对论证子图做内容摘要：
-
-- `compile_arguments` 通过时，将当前 `argumentHash` 写入 `compile_state`
-- 任何结构性变更（content 或关系变化）会清空 `argumentHash` 并将 verdict 设为 `"stale"`
-- 哈希只覆盖 content 和关系结构，不覆盖 status/verification
-- 三种角色（Ground/Backing/Rebuttal）都只算节点自己的 content 哈希，不递归子树
-- 编译调度时 hash 比对若未变，跳过 LLM 审查，只跑结构检查
-
-## 审查类型
-
-均在 `compile_arguments` 显式调用时触发：
-
-| 审查 | 检查内容 | 模型 |
-|------|---------|------|
-| `structure` | 论证结构完整性 + 7 条确定性质量规则 | 无 LLM |
-| `claim` | Claim content 是否符合 Toulmin 定义 | LLM |
-| `warrant` | 每个 Warrant content 是否符合 Toulmin 定义 | LLM |
-| `chain` | 整体论证链路逻辑连贯性 | LLM |
-
-`claim`/`warrant` 与 `chain` 并行执行（`Promise.all`）。当两者均有 error 时，`chain` 结果标记 `advisory: true`。
-
-chain reviewer 收到的 Ground/Backing/Rebuttal 只有 `{id, content, type}`，不包含子树的完整论证。
-
-Statement 证据审查（`verification: pending/verified`）是独立系统，在 `update_node` 时同步触发，不在 compile 时触发。
-
-## 无审查模型时的行为
-
-未配 `review.json` 时，`compile_arguments` 不再失败。结构检查照跑，全过就记为 `passed`，附加警告说逻辑没人审过。`failed` 记录保持不覆盖。
-
-## 相关类型
-
-```typescript
-export interface CompileState {
-  claimId: number;
-  verdict: "passed" | "failed" | "stale";
-  summary: string;
-  argumentHash?: string;  // Merkle Root 哈希，passed 时写入
-  createdAt: string;
-}
-
-export interface ElementReviewResult {
-  reviewer: "structure" | "claim" | "warrant" | "chain";
-  errors: string[];
-  warnings: string[];
-  infos?: string[];
-  advisory?: boolean;
-}
-```
+`90c7acb`（2026-08-20）是明确边界：该提交删除旧三节点模型的 compile/status/verification/Merkle 子系统，切换到 Proposition、qualifier、动态 warning 与显式 review。更早提交中的 `compile_arguments`、`compile_state` 和 Merkle 失效传播只属于历史，不应作为当前接口或迁移指南；旧表只用于识别并拒绝旧库。
 
 ## 关联
 
-- [[architecture]] — 工具全貌与三层架构
+- [Architecture Overview](architecture.md)
+- [Development Conventions](dev-conventions.md)
+- `docs/design.md` §2–§3
+- `docs/api.md` §4–§5

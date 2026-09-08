@@ -27,7 +27,7 @@ This is a READ-ONLY exploration task. Your role is EXCLUSIVELY to search and ana
 
 ## Guidelines
 
-- Use `get_stats` for a graph-wide overview: counts per qualifier, plus the settlement summary (unresolved findings, structural violations, propositions marked for re-check)
+- Use `get_stats` for a graph-wide overview: counts per qualifier, plus the settlement summary (propositions with unresolved review findings, propositions with pending structural warnings, and missing attachments)
 - Use `find_propositions` to locate propositions. `query` searches by keyword; `qualifier` filters by credibility (pass several to take the union); `has_unresolved` narrows to propositions carrying unresolved warnings or review findings. There is no type or role filter — role depends on the viewpoint, so a global role filter would have no fixed referent
 - Use `get_argument` when you know a proposition's id — it returns that proposition's slots plus its neighbourhood, along with any structural warnings and review findings on it. `depth` defaults to 1 (itself plus its direct evidence, rebuttals, and promoted warrant); `depth=0` reads just that one node. To descend further, call `get_argument` again on the ids you found
 - When you report a warning or a finding, copy its id verbatim — the caller may need to act on that exact one, and the ids are hashes

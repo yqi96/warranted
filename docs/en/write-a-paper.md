@@ -4,92 +4,84 @@
 
 ## Goal
 
-Produce a research paper — or a literature survey — where every claim is traceable to evidence in the argument graph. **Done** means:
+Use `/literature-writing` to write or revise LaTeX prose whose load-bearing statements trace to the argument graph. Use `/literature-survey` first when the task is an inquiry-led review of a larger literature, then hand the resulting synthesis to `/literature-writing`.
 
-- Every Statement used as evidence is `verified` (source paper attached, content confirmed). **Deferred verification:** for a literature survey, verification happens in two stages — the Grounds the argument rests on are verified in phase 5; the remaining citation surface is verified by `/literature-writing` as it decides what to cite.
-- Every Claim has passed `compile_arguments`
-- Every Claim has a verdict: `supported`, `disputed`, or `refuted`
-- The `.tex` is coherent: each citation's surrounding text faithfully represents its Statement
+A sound handoff has:
 
-Two skills drive this: run `/overleaf-setup` once to wire up auto-push and citation enforcement (below), then `/literature-writing` to draft — it grounds each external finding in the graph before it's cited and maintains the `.bib` file as you go.
+- a proposition for every cited paper finding;
+- the source paper attached to that proposition;
+- synthesis propositions whose evidence references those findings;
+- warrants explaining why the evidence supports each synthesis;
+- prose strength that matches each proposition's qualifier;
+- contradictions represented as rebuttal propositions rather than edited away.
 
-**For scale:** a literature survey of dozens of papers or more should run `/literature-survey` first (collect, classify, synthesize) and hand off to `/literature-writing` for the prose. For a dozen or so papers, go straight to `/literature-writing`.
+There is no compile step. Structural warnings are recomputed automatically, and `get_stats` provides the final settlement view.
 
----
+## Setup once: `overleaf-setup`
 
-## Setup (once): `overleaf-setup`
+`/overleaf-setup` installs and authenticates the `leaf` CLI, links a local LaTeX directory to an Overleaf project, and writes the Stop hook that stages and pushes source changes.
 
-Run `/overleaf-setup` before writing. This is infrastructure, not a recurring step:
+The hook enforces proposition citations. Restart Claude Code after setup.
 
-1. Installs the `leaf` CLI and links your local LaTeX directory to an Overleaf project
-2. Writes a hook that pushes to Overleaf automatically at the end of each conversation turn (skips turns where no files changed)
-3. Enforces the `\cite{statement_N}` citation standard (see below)
+## Map prose to the graph
 
-After setup, restart Claude Code. You won't need to run it again.
+Every graph node is a proposition:
 
----
+| What the manuscript needs | Graph representation |
+|---|---|
+| a finding reported by a paper | proposition with the paper in `evidence.attachments` |
+| a paragraph's synthesis point | proposition with the relevant finding propositions in `evidence.nodes` |
+| why those findings support the point | that proposition's `warrant` |
+| evidence about the reasoning principle itself | promote the warrant, then attach evidence to the promoted proposition |
+| a conflicting finding or boundary condition | proposition created with `attacks={node, slot}` |
 
-## The graph in this scenario
+A proposition is a ground when another proposition cites it and a claim when its own credence is being judged. These are perspectives, not different node types.
 
-The fundamental distinction: **evidence and premises go in Statements, your conclusions go in Claims.**
+Revise a proposition when the asserted scope genuinely changes. Do not rewrite it merely to hide contradictory evidence; record the contradiction in the rebuttal slot and judge the qualifier the full evidence earns.
 
-| Node | What it represents |
-|------|--------------------|
-| **Claim** | Your independent synthesis conclusion — something you are arguing, not reporting |
-| **Statement (Ground role)** | A piece of evidence or premise: a finding from a published paper (PDF attached), your own experimental result (data file attached), or a supported Claim used as a stepping stone |
-| **Warrant** | The inference principle connecting this body of evidence to your Claim |
-| **Statement (Backing role)** | Methodological consensus or meta-analysis that legitimizes the Warrant |
-| **Statement (Rebuttal role)** | A paper with contradicting findings, or a documented boundary condition of your Claim |
+## The `\cite{prop_N}` standard
 
-One way to check: if the sentence starts with "Smith et al. found that..." or "The paper reports...", it belongs in a Statement (Ground role). If it starts with "We argue..." or "The evidence suggests...", it may be a Claim.
+Draft citations by proposition id:
 
-**Claim revision discipline.** Revising a Claim is legitimate when evidence genuinely doesn't support the original formulation. It is not legitimate as a way to avoid acknowledging contradictions — conflicting Statements become Rebuttals, and the Claim status reflects the actual state of the evidence.
+```latex
+\cite{prop_42}
+```
 
----
+The Overleaf push hook resolves proposition 42 in `.toulmin/graph.db`, finds its attached paper PDFs, and replaces `prop_42` with the corresponding bibliography keys in the staged copy.
 
-## The `\cite{statement_N}` standard
+| Element | Example |
+|---|---|
+| `.bib` key | `vaswani2017attention` |
+| attached PDF | `vaswani2017attention.pdf` |
+| draft citation | `\cite{prop_42}` |
 
-Write citations by Statement ID: `\cite{statement_42}`. Don't look up bib keys while drafting.
+Every cited proposition must exist, have at least one attached PDF that still exists, and have a matching key in a project `.bib` file. Multiple attached PDFs expand to multiple keys; non-PDF attachments remain audit evidence but are ignored for citation expansion.
 
-At the end of each turn, the hook pushes to Overleaf and automatically replaces each `\cite{statement_N}` with the real bib key derived from the Statement's attached filename. This only works if the filename is already the bib key:
+This creates an auditable chain:
 
-| Element | Value |
-|---------|-------|
-| `.bib` entry key | `vaswani2017attention` |
-| Paper filename | `vaswani2017attention.pdf` |
-| Statement attachment | `vaswani2017attention.pdf` |
+```text
+manuscript sentence ──\cite{prop_N}──► proposition ──attachment──► paper
+```
 
-Name papers by their bib key when you download them — e.g. `vaswani2017attention.pdf`. The agent handles `.bib` maintenance.
+The chain proves provenance, not credibility. Attaching a paper does not automatically raise a qualifier, and creating a proposition does not trigger LLM review.
 
-⭐ **The chain matters:** `\cite{statement_N}` → a verified Statement → an attached paper. A Statement is only marked `verified` once its source paper is attached and confirmed to support the stated finding, so every citation traces back to a document that was actually examined — not a plausible-sounding reference generated from training data.
+## Match prose strength to qualifiers
 
-**The attachment is required at the moment you record the Statement, not at verification time.** A `source="literature"` Statement with an empty `attachments` list is rejected outright, so you cannot record the proposition now, cite it while drafting, and attach the PDF before delivery. This is not deferred verification pulled forward — archiving a file triggers no review — but it does mean the source has to be on disk when the node comes into existence.
+- **Paper voice:** “Smith et al. report X” may cite a proposition at any qualifier because the sentence attributes a report. If it is `refuted`, the sentence must also carry that fact.
+- **Synthesis voice:** “The evidence suggests X” needs a synthesis proposition with evidence and a warrant. Use tentative language at `possibly`; assert plainly only at `probably` or `certainly`.
+- **Unestablished:** do not present an `unestablished` synthesis as a conclusion. Attribution to what a paper reports is still possible.
 
-**For a paper you cannot get the PDF for yet — paywalled, embargoed, print-only — attach whatever you do have**: an abstract snapshot, a publisher-page capture, your reading notes. The creation check only tests that the attachment list is non-empty and that each path resolves; whether the material is *sufficient* is judged by the review checklist when the Statement is verified, which is the step that was always supposed to make that call. So a snapshot lets the node exist and stay citable-in-progress, and the sufficiency question stays where it belongs.
+Run `/cite-review` to check both content faithfulness and strength alignment. It may correct prose or graph links, but qualifier changes remain deliberate judgments.
 
----
+## States to watch
 
-## Graph states to watch
+| State | Meaning |
+|---|---|
+| cited proposition has no attached PDF | the citation has no source artifact and push is blocked |
+| PDF stem has no matching bibliography key | citation expansion cannot produce valid LaTeX |
+| synthesis proposition has empty evidence or warrant at a positive qualifier | structural warning: the asserted strength lacks visible support |
+| evidence content or qualifier changed after a judgment | re-check warning: the old judgment rested on a different premise |
+| material finding remains `unestablished` | use attribution only, or judge it deliberately before relying on it |
+| unresolved review finding | semantic concern remains visible until replaced by a later review or dismissed with a reason |
 
-| State | What it means |
-|-------|--------------|
-| A `Statement` (Ground role) from a published paper has no attached PDF | Provenance is missing; the PDF is the evidence record |
-| A `Statement` (Ground role) has no Warrant path to any `Claim` | Isolated evidence — not yet connected to any argument |
-| A `Claim` has no `Warrant` | `compile_arguments` will fail the structure check |
-| A `Warrant` content restates the support relationship | Circular — not an inference principle; chain reviewer will flag it |
-| A `Claim` was revised and has conflicting `Statement`s with no Rebuttal | Contradiction is being suppressed rather than recorded |
-| `.tex` contains `\cite{authorname}` instead of `\cite{statement_N}` | The push is blocked — every citation key must be `statement_N` |
-
----
-
-## When the agent goes off track
-
-**The agent wrote a citation as `\cite{smith2023}` instead of `\cite{statement_N}`.** The push to Overleaf is blocked — the enforcement hook only accepts `statement_N` keys, precisely so every citation has to trace back to a Statement that was actually grounded. Tell it: *"Cite by Statement ID — `\cite{statement_N}` — not by author key."*
-
-**The agent softened or rewrote a Claim to make a contradiction disappear.** A conflicting finding turned up, and instead of recording it the agent adjusted the Claim so nothing clashes. Say: *"Don't revise the Claim to dodge this — record the conflicting finding as a Rebuttal and let the Claim's status reflect the real state of the evidence."* Revising a Claim is legitimate only when the evidence genuinely doesn't support the original wording, not as a way to bury a conflict.
-
-**A Statement (Ground role) has no attached paper.** It's citing a source that was never examined — the exact hallucination risk the graph exists to prevent. Select the Statement in the visualizer and ask: *"There's no paper attached to this Statement — what is it based on?"* Until a source is attached and confirmed to support the stated finding, the Statement can't be `verified`, and nothing resting on it should be cited.
-
-**The Warrant just restates that the Statements support the Claim.** "These three papers support the argument" names the connection instead of explaining it. Say: *"This Warrant is circular. State the inference principle — why does this body of evidence imply your synthesis?"*
-
-**A Claim is `supported`, but its compile is `stale`.** You edited a Statement or the Warrant after it last passed, which reverts the Claim to `proposed`. Say: *"The compile is stale — re-run `compile_arguments` before treating this Claim as settled."*
+Before delivery, run `get_stats`, resolve material red items, and ensure the manuscript's hedging still matches the graph.

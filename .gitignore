@@ -9,3 +9,14 @@ CLAUDE.md
 operation.log
 tests/agent-eval/results/
 skills/paper-download-scihub/
+
+# Downloaded third-party benchmark assets. Keep the reproducibility manifest and
+# checksums in experiments/, but do not commit datasets, papers, or source copies.
+experiments/benchmarks/
+experiments/downloads/
+experiments/papers/
+experiments/evaluation/outputs/
+
+# Local generated repository wiki and PDF inspection intermediates.
+.qoder/
+tmp/

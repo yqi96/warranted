@@ -2,7 +2,7 @@
 title: Development Conventions
 tags: [dev, bun, test, logging, mcp, review]
 category: environment
-updated: 2026-08-12
+updated: 2026-08-31
 ---
 
 # 开发规范
@@ -11,107 +11,89 @@ updated: 2026-08-12
 
 | 场景 | 命令 |
 |------|------|
-| 开发（内存 DB）| `bun run dev` |
-| 测试 | `bun test` |
+| 启动 MCP 服务 | `bun run dev` 或 `bun run mcp` |
+| 全量测试 | `bun test` |
+| 类型检查 | `./node_modules/.bin/tsc --noEmit` |
+| agent-eval dry-run | `bun run agent-eval` |
 | 可视化 | `bun run viz` |
-| 类型检查 | `npx tsc --noEmit` |
+| 可视化热更新 | `bun run viz:dev` |
 
-**禁止使用** npm install / yarn / pnpm，一律用 Bun。
+依赖和脚本统一使用 Bun；不要再生成 npm/yarn/pnpm lockfile。`bun run dev` 使用默认文件库 `.toulmin/graph.db`，不是内存库；测试辅助才通常使用 `:memory:`。
 
-## 测试结构
+## 当前测试结构
 
-`tests/` 下 30+ 测试文件，按功能域分组：
+当前 `tests/` 下的自动测试文件：
 
 | 文件 | 内容 |
 |------|------|
-| `scenarios.test.ts` | E2E 场景测试 |
-| `service.test.ts` | Service 层单元测试 |
-| `repo.test.ts` | Repository CRUD 测试 |
-| `tools.test.ts` | 工具注册和输入验证 |
-| `tools-no-block-review.test.ts` | 无审查模型时的工具行为 |
-| `compile.test.ts` | Compile 失效与 staleness 传播 |
-| `compile-definition-review.test.ts` | 节点定义审查 |
-| `compile-failed-status-revert.test.ts` | compile 失败后的 status 回退 |
-| `compile-quality.test.ts` | 结构质量检查 |
-| `compile-review-output.test.ts` | 审查输出格式 |
-| `compile-no-persist.test.ts` | --no-persist 模式 |
-| `claim-ground.test.ts` | Claim 型 Ground 全链路 |
-| `claim-subrole.test.ts` | Claim 型 Backing/Rebuttal 全链路 |
-| `review-*.test.ts` | 异步 review 系统 |
-| `review-prompts.test.ts` | 审查 prompt 模板 |
-| `review-outcome.test.ts` | 审查结果判定 |
-| `review-config.test.ts` | 审查配置加载 |
-| `review-llm-sdk-options.test.ts` | Agent SDK 选项 |
-| `review-real-data.test.ts` | 真实数据审查（集成测试，需 API） |
-| `review-integration.test.ts` | 真实 API 集成测试 |
-| `review-chain-detection.test.ts` | 链式检测 |
-| `auto-verify.test.ts` | 自动验证 |
-| `verification-withdrawal.test.ts` | 撤回核实 |
-| `batch.test.ts` | 批量操作（create_statements, verify_statements） |
-| `delete-integrity.test.ts` | 删除完整性 |
-| `db.test.ts` | 数据库迁移和 schema |
-| `fts.test.ts` | 全文搜索 |
-| `tags.test.ts` | 标签系统 |
-| `tag-similarity.test.ts` | 标签相似度 |
-| `agent-tool-allowlist.test.ts` | Agent 工具白名单 |
-| `agent-eval/` | 约束性 agent 评测 |
-| `helpers.ts` | 共享测试工具（createTestDb、factory methods） |
+| `service.test.ts` | Proposition 五槽位、事务、事件、基线、删除与查询 |
+| `structural-check.test.ts` | S/A/R 结构警告、fingerprint 与 dismiss 复燃 |
+| `review.test.ts` | review 输入、Q1/Q2、finding 校验与落库 |
+| `review-llm.test.ts` | reviewer JSON 响应解析与解析失败标记 |
+| `review-config.test.ts` | review 配置加载和非法值回退 |
+| `review-llm-sdk-options.test.ts` | Agent SDK 隔离和凭据传递 |
+| `review-audit.test.ts` | review 审计记录 |
+| `agent-tool-allowlist.test.ts` | agent MCP 工具 allowlist |
+| `hooks.test.ts` | guard 废弃契约与 visualizer selection 注入 |
+| `overleaf-push.test.ts` | Overleaf 推送/引用替换脚本 |
+| `agent-eval/` | 8 个 live 行为评测用例；默认 dry-run，不属于 `bun test` 单元测试集 |
+| `helpers.ts` | 共享测试 DB 与 fixture 辅助 |
 
-**强制要求**: 任何代码变更都必须附带测试用例，无测试不完成。
+旧的 `compile*.test.ts`、`tags.test.ts`、`batch.test.ts`、`claim-*.test.ts`、`auto-verify.test.ts` 等属于 2026-08-20 前的本体，已随 `90c7acb` 删除；不要把它们当作当前缺失测试清单。
 
-## 日志规范
+代码行为变更应补最窄的回归覆盖，并至少运行相关测试、全量 `bun test` 与 TypeScript 检查。纯文档变更仍应运行引用/旧术语搜索和 `git diff --check`。
 
-- **格式**: CSV-like，输出到 stderr 和 `.toulmin/operation.log`
-- **内容**: 工具名、状态、耗时、输入摘要、输出摘要
-- **注意**: 不干扰 MCP 的 JSON-RPC stdio 协议
+## 模块边界
+
+- `src/schema.ts` 是 schema 唯一事实源；测试通过 `openDatabase`/`initializeSchema` 建库，不复制 DDL。
+- `src/repo.ts` 做 SQL 与行级读写，不编码业务裁决。
+- `src/service.ts` 承担事务、不变量、事件、基线和命题操作。
+- `src/structural-check.ts` 只派生 warning，不写可变 warning 状态。
+- `src/review-*.ts` 只生成和验证第二意见，不决定 qualifier。
+- `src/tools.ts` 只负责 MCP schema、调用、序列化和错误转换；不要在这里复制 service 规则。
+- 工具/参数的用户可见语义集中在 `src/content/`，避免 prompt、tool schema 和错误文案各写一份。
 
 ## 数据存储
 
 | 路径 | 内容 |
 |------|------|
-| `.toulmin/argument.db` | 默认 SQLite 数据库 |
-| `.toulmin/reviews/` | 异步 Review 结果 |
-| `.toulmin/operation.log` | 操作日志 |
+| `.toulmin/graph.db` | 当前默认 SQLite 数据库 |
+| `.toulmin/graph.db-wal` / `-shm` | SQLite WAL 辅助文件 |
+| `.toulmin/operation.log` | 工具调用日志；`--no-persist` 时禁用 |
+| `.toulmin/audit/` | 显式 review 的原始输入/输出审计；仅配置 review 且未禁用时写入 |
 
-`.toulmin/` 和 `*.db` 均已 gitignore。
+`.toulmin/argument.db` 是旧本体数据库。当前 `openDatabase` 检测到 `nodes`、`compile_state`、tags/role 关系表时会拒绝继续，不做机械迁移；保留旧库只读归档，新工作使用 `graph.db`。
 
-## 审查系统
+## 日志规范
 
-两类审查，各走独立路径：
+- 工具日志输出到 stderr，避免干扰 MCP 的 JSON-RPC stdio。
+- 日志记录工具名、状态、耗时、输入摘要和输出摘要。
+- 文件库默认写 `.toulmin/operation.log`；`--no-persist` 关闭操作日志和 review audit，但不把数据库变成内存库。
+- 关闭流程先停止 MCP，再等待 in-flight 工具调用 drain，最后关闭 SQLite。
 
-| 审查类型 | 触发时机 | 失败行为 |
-|---------|---------|---------|
-| 节点定义审查（claim/warrant content） | compile_arguments（显式调用），与逻辑链审查并行 | verdict=failed |
-| 逻辑链审查 | compile_arguments（显式调用） | verdict=failed |
-| Statement 证据审查 | update_node(verification="verified") 同步触发 | 退回 pending |
+## 结构检查、Review 与判断
 
-Statement content 变更时若已 verified，自动退回 pending。
+三者不要混写：
 
-### 失效管理 — 两条独立路径
+| 机制 | 触发 | 结果 |
+|------|------|------|
+| 输入校验 | create/update/promote 等写入 | 非法 content、缺失引用或缺失附件直接拒绝 |
+| 结构检查 | 命题读取、统计、判断后返回 | 动态 warning；不阻止 `set_qualifier` |
+| 语义 review | 仅显式 `review(id)` | Q1/Q2 + findings；不自动改 qualifier |
+| 判断 | `set_qualifier` | 写 qualifier、判断事件与 baseline |
 
-| 路径 | 触发器 | 结果 |
-|------|--------|------|
-| 结构失效 | content 或关系变化 | compile → stale + status → proposed |
-| 充分性失效 | verification 或 status 变化 | compile 保持 passed，status 复检后可能退回 proposed |
+没有“创建即自动 review”，也没有“修改即 compile stale”。Review 未配置或运行失败时不降级为 pass；结构检查仍免费、同步可用。
 
-### Pending Ground 提示文案（按 source 区分）
+`dismiss` 只能逐条处理 warning/finding，理由必填。它追加事件，不删除原意见。结构变化会让 warning 以新 fingerprint/id 复燃；finding 则保留为当时审查提出的历史意见。
 
-`create_statement` 和 `update_node` 在 Statement 处于 pending 状态时，根据 `source` 返回不同的操作指引：
+## MCP 与浏览器服务
 
-| source | 提示要点 |
-|--------|---------|
-| `literature` | 附上来源文件（PDF/网页），含作者/年份/DOI |
-| `observed` | 附上所有产出物：原始数据、结果文件、代码、日志等 |
-
-## MCP 协议
-
-- **通信**: stdio（JSON-RPC 2.0）
-- **客户端配置**:
-  - Claude Code: `.mcp.json`
-  - Claude Desktop: `claude_desktop_config.json`
-- **无需环境变量**，所有配置通过 CLI 参数或 JSON 文件
+- 论证服务通过 stdio 注册 11 个工具，配置入口是 `.mcp.json`。
+- Review 只从 `--review-config <file>` 启用；配置至少需要 `apiKey`，可带 `model`、`baseUrl`、并发/轮数和 audit 路径。
+- Browser 是独立 MCP 服务。`browser_open` 为每个 session 启动隔离 Chrome；后续调用必须携带 `_browser_session`，结束后调用 `browser_close`。
 
 ## 关联
 
-- [[architecture]] — 整体项目结构
-- [[compile-system]] — Compile 系统详细设计
+- [Architecture Overview](architecture.md)
+- [Structural Checks and Review](compile-system.md)
+- [Visualizer Architecture](visualizer.md)

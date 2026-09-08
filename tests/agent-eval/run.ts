@@ -275,11 +275,16 @@ if (!opts.live) {
   }
   const t1 = selected.filter((c) => c.tier === 1).length;
   const t2 = selected.filter((c) => c.tier === 2).length;
+  const judgeCalls = opts.judge ? selected.filter((c) => c.rubric?.length).length : 0;
   console.log(
     `\n共 ${selected.length} 个用例(Tier1 ${t1} 个 / Tier2 ${t2} 个)` +
-      `,预计 claude 调用 ${selected.length + (opts.judge ? selected.length : 0)} 次。`,
+      `,预计 Claude CLI 调用 ${selected.length + judgeCalls} 次` +
+      `(主会话 ${selected.length} 次 / judge ${judgeCalls} 次)。`,
   );
-  console.log("确认成本后加 --live 执行;建议测试期先移除/清空 review.json 以关闭 LLM review。");
+  console.log(
+    "确认成本后加 --live 执行。创建/更新命题不会自动 review;" +
+      "仅当 live agent 显式调用 review 且配置有效时,才会产生额外 reviewer 调用。",
+  );
   process.exit(0);
 }
 

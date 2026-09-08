@@ -4,115 +4,81 @@
 
 ## What Warranted is for
 
-Most research tools help you work faster. Warranted helps you work with fewer hidden assumptions — every conclusion has a traceable chain of evidence and reasoning. If the chain doesn't hold up, the conclusion can't be marked as supported.
+Warranted makes research reasoning auditable. It records what is being asserted, what evidence it rests on, why that evidence carries the assertion, what attacks it, and how much credence the current evidence earns.
 
-This is not a general-purpose writing assistant. If you want prose polish, use other tools. Warranted is for the structure underneath: what you're claiming, what you're claiming it's based on, and whether that connection survives scrutiny.
+The graph is not a task list or activity log. Record a proposition when judging it materially affects the research question, a downstream argument, or a decision.
 
----
+## One proposition, five slots
 
-## Why each constraint exists
+The graph has one node type: a **proposition**, a statement that can be judged to hold or not.
 
-AI coding agents converge because compilers and tests fail loudly when the work is wrong. Research has no such signal — a conclusion is just prose, and an agent can declare it sound whenever it decides to. Warranted manufactures the missing signal: each of its constraints turns one way agents cut corners into something that can *fail*.
-
-| The agent's shortcut | The constraint | What it forces |
-|---|---|---|
-| Labels a conclusion `supported` whenever it decides to | the `compile` gate | `supported` means a chain that was actually checked |
-| Cites a paper it never read, or invents a plausible reference | a Ground is `verified` only with an attached source confirmed to support the finding | every citation traces to a document that was examined |
-| Moves the goalposts — rewrites the conclusion to match what it got | Claims are immutable in reproduction; a differing result becomes a Rebuttal | you always test the paper's actual claim |
-| Buries evidence that contradicts the conclusion | contradictions are recorded as Rebuttals, and can't be erased | the verdict reflects the real state of the evidence |
-| Quits early — "not available," "too complex" | a barrier audit interrogates the block before accepting it | the exit stays closed unless the barrier is genuinely real |
-| "Verifies" a result using the paper's own outputs | the independence rule rejects the paper's own artifacts as evidence | reproduction is actually independent |
-
-Read this way, none of the rules are bureaucratic — each is the answer to a specific failure you'd otherwise have to catch by hand.
-
----
-
-## Three node types and roles
-
-Warranted implements the [Toulmin model](https://en.wikipedia.org/wiki/Toulmin_model) of argumentation.
-
-There are **three node types** — Claim, Warrant, and Statement. Ground, Backing, and Rebuttal are not separate types; they are **roles a Statement plays** once it is linked into an argument.
-
-**Claim** — a proposition you are asserting. In paper reproduction, this is the paper's conclusion extracted verbatim. In original writing, this is your synthesis judgment. Claims advance from `proposed` to a verdict only after the argument chain passes a logic check.
-
-**Statement** — a unit of evidence or context. Its role in the argument is determined by how it is attached:
-- **Ground role**: attached to a Warrant's `ground_ids` — the evidence that grounds the inference
-- **Backing role**: attached to a Warrant's `backing_ids` — methodological consensus or meta-analysis that legitimizes the Warrant
-- **Rebuttal role**: attached via `rebuttal_for` to a Claim or Warrant — a documented exception or contradiction
-
-A Statement can play multiple roles simultaneously. A Claim can also serve as a Ground for another Warrant (direct chain reasoning).
-
-**Warrant** — the inference principle connecting Grounds to a Claim. This is the hardest node to write correctly.
-
-A Warrant is not a restatement of the support relationship. "Ground 1 and Ground 2 support Claim" is circular — it says the evidence supports the conclusion without explaining *why*. That's not an inference principle, it's just naming the connection.
-
-A Warrant answers: given this type of evidence, by what reasoning does it imply this type of conclusion?
-
-| ❌ Circular (not a Warrant) | ✓ Inference principle (Warrant) |
+| Slot | Meaning |
 |---|---|
-| "The experimental results support the warming claim" | "Controlled experiments showing a statistically significant treatment effect compared to control provide causal evidence for the tested mechanism" |
-| "The three papers all agree, supporting the Claim" | "Convergent findings across independent studies with different methods reduce the probability that any single result is an artifact of methodology" |
-| "The benchmark scores show the method is better" | "Lower held-out test error indicates better generalization to unseen data under the same distribution" |
+| `content` | the atomic statement being judged |
+| `evidence.attachments` | files that directly support or document it |
+| `evidence.nodes` | references to other propositions used as evidence |
+| `warrant` | the general reasoning principle connecting evidence to content |
+| `rebuttals` | propositions that attack the content or its promoted warrant |
+| `qualifier` | current credence: `refuted → unestablished → possibly → probably → certainly` |
 
-When `compile_arguments` reports that the chain reviewer found the reasoning incoherent, the Warrant is usually the cause — either circular, too vague to evaluate, or genuinely not connecting the specific Grounds to the specific Claim.
+The warrant may remain inline. Promote it into its own proposition only when it needs evidence, a rebuttal, a qualifier, or reuse elsewhere.
 
-A Warrant is linked to specific Grounds — the evidence it is channeling toward the Claim. Multiple Grounds can feed into one Warrant when the inference depends on them together.
+Terms such as claim, ground, backing, and rebuttal describe a proposition's role from a particular viewpoint:
 
----
+- a proposition is a **claim** when its own credibility is at issue;
+- it is a **ground** when another proposition cites it as evidence;
+- it is **backing** when it supports a promoted warrant;
+- it is a **rebuttal** when it appears in another proposition's rebuttal slot.
 
-## Compile
+The same proposition can occupy several of these perspectives. No type conversion or copied node is involved.
 
-`compile_arguments` runs a logic audit on a Claim and its entire argument subgraph. It checks:
+## Qualifiers are judgments
 
-1. **Structure** (deterministic): is the chain complete? Claim → Warrant → Grounds, with no missing links.
-2. **Chain** (LLM): is the reasoning coherent? Does the Warrant actually connect the evidence to the conclusion, or is it circular?
+New propositions always start at `unestablished`. Only `set_qualifier` records a credibility judgment:
 
-A Claim's status cannot advance to `supported`, `disputed`, or `refuted` unless compile has passed. This is enforced — not advisory. The reason: without this gate, `supported` is just a label the agent applies when it decides to. Enforcing compile means the label corresponds to an argument chain that was actually checked.
-
-Compile runs after the initial structure is built, and again after any structural change.
-
----
-
-## Status lifecycle
-
-```
-proposed
-   │
-   ▼ (compile passes + evidence assessed)
-supported / disputed / refuted
-   │
-   ▼ (any node in the argument chain is modified)
-proposed  ← back here, automatically
-```
-
-When a node in the argument chain is mutated, the Claim's compile state becomes `stale` and its status reverts to `proposed`. The tool response tells you which Claim was affected and why. This is intentional: a modification to the evidence or reasoning invalidates the prior verdict.
-
-To advance the status again, compile must pass and the evidence must be re-assessed.
-
----
-
-## Talking to the agent in graph terms
-
-The gates above are mechanical: they confirm a Warrant *exists*, a source is *attached*, a chain *compiles*. What they can't check is judgment — whether the Warrant actually reasons rather than restates, whether the attached paper actually says what the Ground claims, whether a declared barrier is actually real. Those three are your job, and they're exactly where the scenario guides tell you to look.
-
-The graph also gives you precise vocabulary for pointing at what's wrong. Before you learn it, the natural instinct is to describe problems in loose prose — "this doesn't look right," "your result doesn't match the paper," "I'm not sure this is well supported." The agent then has to guess which part you mean.
-
-Naming the node and its state removes that guesswork:
-
-| Vague | Precise (graph terms) |
+| Qualifier | Reading |
 |---|---|
-| "This conclusion isn't really backed up." | "This Claim is `supported`, but its Ground is still `pending`." |
-| "Your result is different from the paper." | "You changed the Claim — in reproduction it stays verbatim; the difference is a Rebuttal." |
-| "I don't think you actually checked this." | "This Ground has no attached paper — it can't be `verified` yet." |
+| `refuted` | the proposition is rejected on the current evidence |
+| `unestablished` | no defensible judgment has yet been recorded |
+| `possibly` | plausible, but supported only weakly or provisionally |
+| `probably` | the evidence makes it more likely than not |
+| `certainly` | the evidence is strong enough for the highest available band |
 
-The precise version points the agent at the root cause instead of a symptom, so it repairs the structure rather than rewording the prose. In the visualizer you can go one step further: select the node and ask about it directly — your selection is sent along automatically, so you don't even need to name it.
+Changing content and changing credence are separate actions. `update_proposition` changes what is being judged; `set_qualifier` changes the judgment and snapshots the evidence state that informed it.
 
-The scenario guides list the bad cases you're most likely to hit and what to say for each.
+## Structural warnings
 
----
+Structural checks run automatically whenever a proposition is read or changed. They can report:
 
-## Using Warranted alongside other tools
+- empty evidence or warrant slots at a positive qualifier;
+- missing or non-portable attachments;
+- referenced propositions that are still `unestablished`;
+- a `refuted` proposition without a positively judged rebuttal;
+- content, membership, or referenced qualifiers that changed since the last judgment.
 
-Warranted manages epistemic structure — what you're claiming, on what basis, with what reasoning. It does not manage prose quality, speed, or breadth of search.
+Warnings are **non-blocking**. The system does not change qualifiers or reject a judgment merely because a warning exists. Fix the underlying condition, or call `dismiss` with a reason. Dismissal is retained in the event history, and a material graph change gives recomputed warnings new ids, so previously dismissed warnings can reappear.
 
-Other tools (ultrathink, general writing assistants) work well alongside Warranted: use them for prose polish, brainstorming, or broad search. Use Warranted for the argument structure that underlies your conclusions. The combination is: other tools help you find and articulate; Warranted makes sure what you're asserting is actually supported.
+Three write-time checks remain hard failures: content must be non-empty, referenced proposition ids must exist, and attachment paths must resolve.
+
+## Explicit semantic review
+
+`review(id)` is an optional, deliberate, potentially expensive second opinion from a separate model. It examines one proposition:
+
+1. **Q1 — faithfulness:** do attached sources actually say what the proposition claims?
+2. **Q2 — validity:** even granting the evidence, does the warrant support the content?
+
+Review is not automatic and does not set a qualifier. Its findings remain visible until a later review replaces them or they are explicitly dismissed with a reason. Structural checks continue to work when no review model is configured.
+
+## The 11 tools
+
+| Purpose | Tools |
+|---|---|
+| Create and change | `create_propositions`, `update_proposition`, `set_qualifier`, `promote_warrant`, `delete_proposition` |
+| Read and settle | `get_argument`, `find_propositions`, `get_stats`, `get_history` |
+| Independent opinion | `review`, `dismiss` |
+
+`get_stats` is the graph-level settlement view: it lists unresolved findings, structural warnings, missing attachments, and qualifier counts. There is no compile step; structural state is recomputed from the current graph.
+
+## Historical terminology
+
+Released versions through 0.5.0 used separate Claim, Warrant, and Statement node types, plus `status`, `verification`, and `compile_state`. Commit `90c7acb` retired that model. Old `.toulmin/argument.db` files are retained as read-only archives; the current graph lives at `.toulmin/graph.db`.

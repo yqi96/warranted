@@ -26,7 +26,7 @@ Granularity:
 
 ## Obligations
 
-Object-layer work in this channel — search, reading, download, BibTeX, prose edits — is valid only when it creates, judges, cites, or reconciles a proposition the manuscript rests on. A searched paper must become evidence, backing, or a rebuttal, or be discarded with a reason; it is never accumulated as an inert reading list.
+Object-layer work in this channel — search, reading, download, BibTeX, prose edits — is valid only when it creates, judges, cites, or reconciles a proposition the manuscript rests on. A searched paper must become evidence for a proposition or a promoted warrant, support a rebuttal proposition, or be discarded with a reason; it is never accumulated as an inert reading list.
 
 | Graph state | Required action |
 |---|---|
@@ -34,10 +34,10 @@ Object-layer work in this channel — search, reading, download, BibTeX, prose e
 | A sentence cites a paper for a finding | Reuse a matching proposition, or `create_propositions` with the paper attached |
 | A paper provides several relevant findings | One item per distinct finding in the same `create_propositions` call |
 | Several papers support the same specific finding | Attach them to the same proposition only when they support the same finding |
-| A cited proposition's paper has never been checked against its content | Read the paper, then `update_proposition(evidence={add_attachments: [...]})` and judge it with `set_qualifier` |
-| A paragraph thesis has evidence but no `warrant` | `update_proposition(warrant=...)` — the structural check demands it from `possibly` upward |
-| The warrant itself needs authority, or is what a source disputes | `promote_warrant`, then attach its backing as evidence on the promoted proposition |
-| A paper contradicts a thesis or its warrant | `create_propositions` with `attacks={node, slot}` |
+| A cited proposition's paper has never been checked against its content | Read the paper, then `update_proposition(id=<id>, evidence={add_attachments: [...]})` and judge it with `set_qualifier(updates=[{id: <id>, qualifier: <band>}])` |
+| A paragraph thesis has evidence but no `warrant` | `update_proposition(id=<id>, warrant=...)` — the structural check demands it from `possibly` upward |
+| The warrant itself needs authority, or is what a source disputes | `promote_warrant(id=<id>)`, then attach evidence to the promoted proposition |
+| A paper contradicts a thesis or its warrant | `create_propositions(items=[{content: <finding>, attacks: {node: <target id>, slot: <content or warrant>}}])` |
 | The text changes the paragraph thesis | Reconcile the proposition's `content` |
 | A citation points to the wrong proposition | Point to the correct one, or create one; edit an existing proposition only to fix an error, never to fit the sentence |
 | Existing LaTeX uses author-year or legacy `statement_N` keys | Migrate each: identify the finding actually cited, create or reuse its proposition, replace the key with `prop_N`. Never map `statement_7` to `prop_7` by number — the old ids belong to an archived graph |
@@ -88,4 +88,4 @@ Recurring cases:
 
 The test: if something leaves the prose without reappearing in the graph — or changes in the graph without reaching the prose — that is concealment, not revision.
 
-Writes return warnings, and changing a proposition's evidence or content re-arms every warning previously dismissed on it. Read them. Fix what a warning points at, or `dismiss` it with a reason you are willing to have read back; never edit content until the check stops firing.
+Writes return warnings, and changing a proposition's evidence or content re-arms every warning previously dismissed on it. Read them. Fix what a warning points at, or call `dismiss(items=[{id: <warning or finding id>, reason: <reason you are willing to have read back>}])`; never edit content until the check stops firing.

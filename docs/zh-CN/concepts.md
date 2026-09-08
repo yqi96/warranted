@@ -4,115 +4,81 @@
 
 ## Warranted 是做什么的
 
-大多数科研工具帮你做得更快。Warranted 帮你做得**假设更少**——每个结论都有一条可追溯的证据与推理链。链条经不起推敲，结论就不能标记为 `supported`。
+Warranted 让研究推理可被审计：正在断言什么、它依赖什么证据、证据为何足以支撑断言、什么在攻击它，以及当前证据究竟挣到了多高可信度。
 
-它不是通用写作助手。想润色文字，用别的工具。Warranted 管的是底层结构：你在主张什么、基于什么、这个连接经不经得起审视。
+论证图不是任务清单或活动日志。只有当一条命题的判断会实质影响研究问题、下游论证或决策时，才把它放进图里。
 
----
+## 一种命题，五个槽位
 
-## 每条约束为什么存在
+图里只有一种节点：**命题（Proposition）**，即一条可以判断成立与否的陈述。
 
-编程 Agent 能收敛，是因为代码写错时编译器和测试会大声报错。科研没有这种信号——结论只是一段文字，Agent 想什么时候宣布它成立都行。Warranted 制造了这个缺失的信号：它的每一条约束，都把 Agent 常用的一种偷懒方式，变成一件**可能失败**的事。
-
-| Agent 的偷懒 | 对应的约束 | 强制达成的效果 |
-|---|---|---|
-| 想标 `supported` 就标 | `compile` 闸门 | `supported` 意味着推理链真的被检查过 |
-| 引用一篇没读过的论文，或编造一个看似合理的引用 | Ground 只有在附上并确认支持该发现的来源后才 `verified` | 每条引用都能追溯到一份真正被查阅过的文档 |
-| 挪动标杆——把结论改写成自己复现出来的样子 | 复现场景下 Claim 不可变；结果不同则记为 Rebuttal | 你测的始终是论文原本的主张 |
-| 把与结论矛盾的证据藏起来 | 矛盾以 Rebuttal 记录，且无法抹除 | 判定反映证据的真实状态 |
-| 提前放弃——"拿不到""太复杂" | 阻塞审计在接受阻塞前先盘问它 | 除非阻塞确实为真，否则出口关闭 |
-| 用论文自己的产物来"验证"结果 | 独立性规则拒绝论文自身的产物作为证据 | 复现是真正独立的 |
-
-这样看，没有一条规则是官僚主义——每一条都是对某种你本来得靠人工去抓的失败的回应。
-
----
-
-## 三种节点类型与角色
-
-Warranted 实现了论证的 [Toulmin 模型](https://en.wikipedia.org/wiki/Toulmin_model)。
-
-共有**三种节点类型**：Claim、Warrant 和 Statement。Ground、Backing、Rebuttal 不是独立的类型；它们是 **Statement 在论证中扮演的角色**，由节点的挂载方式决定。
-
-**Claim（主张）**——你所断言的命题。论文复现中，这是逐字提取的论文结论；原创写作中，这是你的综合判断。Claim 只有在论证链通过逻辑审查后，才从 `proposed` 推进到某个判定。
-
-**Statement（陈述）**——一个证据或上下文单元，其在论证中的角色由挂载方式决定：
-- **Ground 角色**：挂入某个 Warrant 的 `ground_ids` — 作为推理的证据基础
-- **Backing 角色**：挂入某个 Warrant 的 `backing_ids` — 为推理原则本身提供方法学支撑
-- **Rebuttal 角色**：通过 `rebuttal_for` 挂到某个 Claim 或 Warrant — 记录例外或矛盾
-
-一个 Statement 可以同时扮演多个角色。Claim 也可以直接作为另一个 Warrant 的 Ground（链式推理）。
-
-**Warrant（理据）**——连接 Ground 与 Claim 的推理原则。这是最难写对的节点。
-
-Warrant 不是对"支撑关系"的复述。"Ground 1 和 Ground 2 支撑 Claim"是循环论证——它只说了证据支撑结论，却没解释*为什么*。那不是推理原则，只是给连接起了个名字。
-
-Warrant 回答的是：给定这类证据，凭什么推理能推出这类结论？
-
-| ❌ 循环（不是 Warrant） | ✓ 推理原则（Warrant） |
+| 槽位 | 含义 |
 |---|---|
-| "实验结果支撑了变暖的主张" | "相比对照组、显示出统计显著处理效应的受控实验，为所检验的机制提供了因果证据" |
-| "三篇论文一致，支撑了该 Claim" | "采用不同方法的独立研究得出趋同结论，降低了任一单独结果只是方法学假象的概率" |
-| "基准分数表明该方法更好" | "更低的留出测试误差，表明在同一分布下对未见数据有更好的泛化能力" |
+| `content` | 正在被判断的原子陈述 |
+| `evidence.attachments` | 直接支撑或记录它的文件 |
+| `evidence.nodes` | 作为证据引用的其他命题 |
+| `warrant` | 连接证据与内容的通用推理原则 |
+| `rebuttals` | 攻击内容或已晋升 warrant 的命题 |
+| `qualifier` | 当前可信度：`refuted → unestablished → possibly → probably → certainly` |
 
-当 `compile_arguments` 报告链条审查员认为推理不连贯时，问题通常出在 Warrant——要么循环，要么太含糊无法评估，要么根本没把具体的 Ground 连到具体的 Claim。
+warrant 可以内联。只有当这条推理原则本身需要证据、反驳、独立 qualifier 或跨处复用时，才把它晋升为独立命题。
 
-Warrant 与特定的 Ground 相连——它正把这些证据导向 Claim。当推理依赖多个 Ground 共同成立时，多个 Ground 可汇入同一个 Warrant。
+Claim、Ground、Backing、Rebuttal 描述的是从某个视角看到的角色：
 
----
+- 一条命题自身的可信度正在被判断时，它是 **Claim**；
+- 被另一条命题放进 evidence 槽时，它是 **Ground**；
+- 支撑已晋升 warrant 时，它是 **Backing**；
+- 出现在另一条命题的 rebuttal 槽时，它是 **Rebuttal**。
 
-## Compile（逻辑审查）
+同一条命题可以同时处于多个视角；不需要转换类型，也不需要复制节点。
 
-`compile_arguments` 对一个 Claim 及其整个论证子图做逻辑审计，检查两件事：
+## Qualifier 是判断
 
-1. **结构**（确定性）：链条是否完整？Claim → Warrant → Grounds，没有缺失的连接。
-2. **链条**（LLM）：推理是否连贯？Warrant 是真的把证据连到了结论，还是循环？
+新命题一律从 `unestablished` 开始。只有 `set_qualifier` 会记录可信度判断：
 
-Claim 的状态不通过 compile 就无法推进到 `supported`、`disputed` 或 `refuted`。这是**强制**的，不是建议。原因是：没有这道闸门，`supported` 就只是 Agent 想贴就贴的标签。强制 compile，才让这个标签对应到一条真正被检查过的论证链。
-
-compile 在初始结构搭好后运行一次，之后每次结构变动再运行。
-
----
-
-## 状态生命周期
-
-```
-proposed
-   │
-   ▼ （compile 通过 + 证据已评估）
-supported / disputed / refuted
-   │
-   ▼ （论证链中任一节点被修改）
-proposed  ← 自动回到这里
-```
-
-当论证链中的某个节点被改动，该 Claim 的 compile 状态变为 `stale`，状态回退到 `proposed`。工具返回会告诉你哪个 Claim 受影响、为什么。这是有意为之：对证据或推理的修改，使先前的判定失效。
-
-要再次推进状态，compile 必须通过，且证据必须重新评估。
-
----
-
-## 用论证图的语言跟 Agent 沟通
-
-上面那些闸门是机械的：它们确认 Warrant *存在*、来源*已附上*、链条*能 compile*。它们查不了的是判断——Warrant 是真的在推理还是在复述、附上的论文是不是真的支持 Ground 所述、声明的阻塞是不是真的成立。这三件事是你的活儿，也正是各场景指南让你盯着看的地方。
-
-论证图还给了你精确的词汇去指出问题所在。学会这套词汇之前，人的本能是用模糊的话描述问题——"这看着不对""你的结果跟论文对不上""我不太确定这个有没有依据"。Agent 只能去猜你指的是哪一部分。
-
-点名节点和它的状态，就消除了这种猜测：
-
-| 模糊 | 精确（论证图语言） |
+| Qualifier | 含义 |
 |---|---|
-| "这个结论其实没什么支撑。" | "这个 Claim 是 `supported`，但它的 Ground 还是 `pending`。" |
-| "你的结果跟论文不一样。" | "你改了 Claim——复现场景下它必须逐字保留；不同之处是 Rebuttal。" |
-| "我觉得你根本没核对过这个。" | "这个 Ground 没有附上论文——它还不能 `verified`。" |
+| `refuted` | 当前证据否定这条命题 |
+| `unestablished` | 尚未记录可辩护的判断 |
+| `possibly` | 有可能成立，但支撑仍弱或暂时 |
+| `probably` | 现有证据使其更可能成立 |
+| `certainly` | 证据达到了系统提供的最高可信档 |
 
-精确的说法把 Agent 引向根因而非症状，于是它去修结构，而不是把文字重新措辞一遍。在可视化界面里你还能更进一步：选中节点直接问它——你的选择会自动一起发送，你甚至不用点名是哪个。
+改内容与改可信度是两个动作。`update_proposition` 改“正在判断什么”；`set_qualifier` 改判断，并快照当时所依据的证据状态。
 
-下面的场景指南列出了你最可能遇到的坏情况，以及每种情况该怎么说。
+## 结构警告
 
----
+结构检查在读取或修改命题时自动运行，可以报告：
 
-## 与其他工具搭配使用
+- 正向 qualifier 下证据或 warrant 为空；
+- 附件丢失或不可移植；
+- 所引用的命题仍为 `unestablished`；
+- `refuted` 命题没有一条正向判档的 rebuttal；
+- 上次判断之后，内容、成员或引用命题的 qualifier 发生变化。
 
-Warranted 管的是认知结构——你在主张什么、基于什么、用什么推理。它不管文笔质量、速度或搜索广度。
+警告**不阻断**。系统不会因为警告存在就改 qualifier，也不会拒绝记录判断。应修复根因，或用理由调用 `dismiss`。dismiss 会进入事件历史；图发生实质变化后，重新计算的警告会得到新 id，因此以前驳回过的警告可能复燃。
 
-其他工具（ultrathink、通用写作助手）与 Warranted 配合良好：用它们润色文字、头脑风暴、大范围检索；用 Warranted 管住你结论底下的论证结构。组合起来就是：别的工具帮你找到并表达，Warranted 确保你所断言的东西真的有支撑。
+只有三条写入校验会硬拒绝：content 不得为空、引用的命题 id 必须存在、附件路径必须能解析。
+
+## 显式语义 Review
+
+`review(id)` 是可选、明确触发、可能昂贵的第三方模型意见。它只检查一条命题：
+
+1. **Q1——忠实性：**附件来源是否真的说了命题所声称的内容？
+2. **Q2——有效性：**即使承认证据为真，warrant 是否能推出 content？
+
+review 不会自动运行，也不会设置 qualifier。finding 会一直可见，直到新一次 review 取代它，或有人写明理由显式 dismiss。即使没有配置 review 模型，确定性的结构检查仍正常工作。
+
+## 11 个工具
+
+| 用途 | 工具 |
+|---|---|
+| 创建与修改 | `create_propositions`、`update_proposition`、`set_qualifier`、`promote_warrant`、`delete_proposition` |
+| 读取与结算 | `get_argument`、`find_propositions`、`get_stats`、`get_history` |
+| 独立意见 | `review`、`dismiss` |
+
+`get_stats` 是全图结算视图，列出未处理 finding、结构警告、缺失附件和各 qualifier 数量。当前系统没有 compile 步骤；结构状态始终从当前图实时重算。
+
+## 历史术语
+
+0.5.0 及更早发布版使用独立的 Claim、Warrant、Statement 节点，以及 `status`、`verification` 和 `compile_state`。提交 `90c7acb` 已废除该模型。旧 `.toulmin/argument.db` 只作为只读档案保留；当前论证图位于 `.toulmin/graph.db`。

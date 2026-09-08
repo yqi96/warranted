@@ -15,7 +15,10 @@
 *.bbl
 *.blg
 
-# The exported argument graph IS the deliverable — keep it even though the
-# repo root ignores *.db. Prefer committing graph.json when the exporter allows.
-!**/graph.db
-!**/graph.json
+# The case-local Warranted database is the argument deliverable. Keep the
+# canonical <case>/.toulmin/graph.db layout so attachment paths resolve from
+# the case root, but never commit SQLite's transient WAL/SHM companions.
+!**/.toulmin/
+!**/.toulmin/graph.db
+**/.toulmin/*.db-wal
+**/.toulmin/*.db-shm

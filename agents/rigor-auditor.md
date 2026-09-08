@@ -16,7 +16,7 @@ Do not begin unless the delegation specifies:
 
 - the original research goal (verbatim, not paraphrased)
 - the current graph: every proposition with its content, qualifier, evidence (attachments and referenced propositions), warrant, and rebuttals
-- the settlement summary: unresolved review findings, structural violations, propositions marked for re-check
+- the settlement summary: propositions with unresolved review findings, propositions with pending structural warnings, and missing attachments
 - the deliverable/artifacts produced so far
 - what was attempted and what was explicitly not, with reasons
 - known constraints (compute, data availability, time budget)

@@ -45,7 +45,8 @@ export const TOOLS = {
     title: "Delete proposition",
     description:
       "Delete a proposition. Nothing cascades — what sits in an evidence slot is a reference, not a child. " +
-      "To keep the record that it existed but stop it supporting anything, use set_qualifier with 'refuted' instead.",
+      "When changing research direction, retain the evidence and explain the revision in a note; update downstream references as needed. " +
+      "Use 'refuted' only when counterevidence warrants that judgment, not merely to stop pursuing a proposition. A refuted proposition can still be cited with its negative polarity.",
   },
 
   // ── 读取 ───────────────────────────────────────────────────────────────────
@@ -86,7 +87,8 @@ export const TOOLS = {
       "Ask an independent third-party model to check one proposition's current local view: whether its attachments substantiate what it claims (Q1), and whether the direct evidence, even granting it, gets you to the content (Q2). " +
       "It sees no history, command trace, omitted file, or wider graph, so it cannot by itself establish chronology or provenance. " +
       "Reviews may take several minutes and are expensive; use them deliberately for consequential semantic risks. " +
-      "If the runtime supports background or asynchronous tool calls, prefer that mode, but keep the reviewed proposition and attachments unchanged, do not submit a duplicate while one is pending, and do not rely on a verdict until the result returns. Structural checks remain automatic.",
+      "If the runtime supports background or asynchronous tool calls, prefer that mode, but keep the reviewed proposition and attachments unchanged, do not submit a duplicate while one is pending, and do not rely on a verdict until the result returns. " +
+      "An incomplete result reports the failure and any candidate findings for verification; these are not recorded findings or a pass and cannot be dismissed by id. Earlier findings remain in force. Structural checks remain automatic.",
   },
 
   dismiss: {

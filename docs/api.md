@@ -22,7 +22,7 @@
 | `update_proposition` | 改 content / warrant 文本 / 证据成员 / 反驳成员 | 不动 qualifier;判可信度用 `set_qualifier` |
 | `set_qualifier` | 判定可信度(批量),并落基线快照 | 这是 L3 判断动作;改事实内容用 `update_proposition` |
 | `promote_warrant` | 把内联理由晋升成独立命题 | 仅当要反驳/补依据/复用这条理由时;否则留内联 |
-| `delete_proposition` | 删除命题 | 硬删,墓碑进事件流;想保留痕迹但降权是 `set_qualifier(refuted)` |
+| `delete_proposition` | 删除命题 | 硬删,墓碑进事件流;研究转向可保留原命题并记录原因,不自动等于 `refuted` |
 | `get_argument` | 读一条命题及其邻域(含警告与意见) | 按 id 精确读;不知道 id 用 `find_propositions` |
 | `find_propositions` | 按关键词/可信度/待处理筛命题 | 找 id 与批量扫描;拿单条全貌用 `get_argument` |
 | `get_stats` | 结算摘要(红点清单) | 交付前扫全图;看单条用 `get_argument` |
@@ -118,7 +118,7 @@
 
 **description**:删除一条命题。
 
-**与最近邻的判别**:想让这条命题不再支撑上游、但保留它存在过的事实,用 `set_qualifier(refuted)`;真要它消失才用本工具。
+**与最近邻的判别**:研究转向时可保留原命题及证据,用 note 解释修订并按需调整下游引用。只有反证支持时才用 `set_qualifier(refuted)`;停止追踪不等于证伪,且 `refuted` 命题仍可作为带否定极性的证据被引用。需要删除当前节点时才用本工具。
 
 | 字段 | 说明 |
 | --- | --- |
@@ -247,6 +247,22 @@ type Finding =
 F4 是把 §2.3"强制引证"从措辞变成可执行判据的地方——Q1 的引证真伪要读 PDF 才知道(留给人),Q2 的引证真伪机器当场就能验。
 
 拒收通常是逐条的,但最终 verdict 必须满足 `Q1=fail ⇔ 至少一条有效 Q1 finding`、`Q2=fail ⇔ 至少一条有效 Q2 finding`;`pass/n/a` 不得报告对应 finding,即使那条 finding 随后被机械拒收也不能把矛盾答复洗成 clean pass。若拒收后破坏了这项一致性,整次 review 作为协议失败不落事件、不落 finding。
+
+**未完成审查的工具返回。** `ReviewUnavailableError` 保持为错误;MCP 返回 `isError: true`,文本内容是可解析 JSON,并在 `structuredContent` 提供同一诊断对象。成功返回的形状不变。诊断包含:
+
+| 字段 | 说明 |
+| --- | --- |
+| `status` / `recorded` | 固定为 `"incomplete"` / `false`;没有正式 review 事件,不更改 qualifier、旧 findings 或 review coverage |
+| `stage` / `reason` | 失败阶段及原因;阶段为 `configuration`、`snapshot`、`input_freshness`、`execution`、`boundary`、`parse`、`read` 或 `protocol` |
+| `nodeId` | 请求审查的命题 |
+| `inputFingerprint` / `requestId` | 可用时提供绑定的输入及请求标识;缺配置或尚未形成快照时不伪造 |
+| `attempts` | 实际尝试的标识、序号、模型、状态以及已读/未读附件;路径使用声明附件名称,不把不同尝试的读取合并成完整覆盖 |
+| `attachmentsRead` / `unreadAttachments` | 最终尝试完整读过/尚未完整读过的声明附件 |
+| `candidateFindings` | 响应可解析时通过 F1–F4 的候选意见,使用无正式 id 的 `FindingDraft` 形状 |
+| `rejected` | 未通过机械验证的原始条目及拒收原因,不是可依赖的 findings |
+| `candidateNotice` | 提醒机械校验不证明已读全附件、输入仍然有效或科学判断成立;候选不能用 `dismiss` 结算 |
+
+没有可解析响应时返回空候选集。候选诊断不取代一次完整审查,不包含可当作正式 verdict 的顶层 Q1/Q2。主 agent 可据此核查有价值的线索,修复失败条件后决定是否重审;不得把失败当通过或为通过而移除关键原始证据。图中的既有意见只按正常的新审查或 `dismiss` 规则结算。
 
 **review 事件本身记每个问题的结论**,而不只是记 findings:
 

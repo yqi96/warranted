@@ -32,6 +32,7 @@ let mockMessages: unknown[] = [];
  * 这是真实的失败路径，不需要另造一个抛错开关。
  */
 let mockMessagesPerCall: unknown[][] | null = null;
+let mockErrorsPerCall: Array<Error | null> | null = null;
 let mockDelayMs = 0;
 let concurrencyCounter = 0;
 let peakConcurrency = 0;
@@ -165,6 +166,8 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
             }
           }
         }
+        const error = mockErrorsPerCall?.[callIndex];
+        if (error) throw error;
         for (const message of messages) {
           yield message;
         }
@@ -177,6 +180,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
 }));
 
 beforeEach(() => {
+  mockErrorsPerCall = null;
   mockPostToolUseInputs = [];
   mockPostToolUseInputsPerCall = null;
   mkdirSync("/tmp/warranted-sdk-options", { recursive: true });
@@ -191,7 +195,7 @@ const { callAgent, callAndParse } = await import("../src/review-llm.ts");
 const { buildReviewRequestPrompt } = await import("../src/review-prompts.ts");
 const { runReview } = await import("../src/review-run.ts");
 const svc = await import("../src/service.ts");
-const { ReviewUnavailableError } = await import("../src/errors.ts");
+const { NotFoundError, ReviewUnavailableError } = await import("../src/errors.ts");
 const { createTestDb, cleanupDb, checkContextFor } = await import("./helpers.ts");
 
 /** runReview 只用 ctx 解析附件路径,这些用例一个附件都不挂。 */
@@ -1039,5 +1043,277 @@ describe("审查器不落盘会话记录", () => {
     expect(capturedCalls.length).toBe(2);
     expect(capturedCalls[0]!.options.persistSession).toBe(false);
     expect(capturedCalls[1]!.options.persistSession).toBe(false);
+  });
+});
+
+describe("incomplete review diagnostics", () => {
+  beforeEach(() => {
+    capturedCalls = [];
+    mockMessages = [];
+    mockMessagesPerCall = null;
+    mockDelayMs = 0;
+  });
+
+  afterEach(() => {
+    mockDelayMs = 0;
+  });
+
+  function q2(id: number, quote = "A proposition") {
+    return {
+      question: "Q2", confidence: "high", content: "The warrant does not establish the claim",
+      citation: { node_id: id, slot: "content", quote },
+    };
+  }
+
+  function reply(value: unknown) {
+    return [{ type: "result", subtype: "success", result: JSON.stringify(value) }];
+  }
+
+  test("missing configuration returns empty, explicitly incomplete diagnostics without a request", async () => {
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
+      const err = await runReview(null, db, id, ctx).catch((e) => e);
+      expect(err).toBeInstanceOf(ReviewUnavailableError);
+      expect(err.diagnostics).toMatchObject({
+        status: "incomplete", recorded: false, stage: "configuration", nodeId: id,
+        candidateFindings: [], rejected: [], attempts: [],
+      });
+      expect(err.diagnostics.requestId).toBeUndefined();
+      expect(capturedCalls).toHaveLength(0);
+      expect(svc.propositionView(db, ctx, id).review.status).toBe("never");
+    } finally { cleanupDb(db); }
+  });
+
+  test("unread attachment preserves a valid Q2 candidate and all prior formal state", async () => {
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{
+        content: "A proposition", evidence: { attachments: ["evidence.md"] },
+      }])[0]!.id;
+      mockMessages = reply({ Q1: "pass", Q2: "fail", findings: [q2(id)] });
+      mockPostToolUseInputs = [fullRead("attachments/0001.md")];
+      await runReview(testConfig, db, id, ctx);
+      svc.setQualifier(db, ctx, [{ id, qualifier: "probably" }]);
+      const before = svc.propositionView(db, ctx, id);
+      const history = svc.getHistory(db, { id });
+      mockPostToolUseInputs = [];
+      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
+      expect(err).toBeInstanceOf(ReviewUnavailableError);
+      expect(err.diagnostics).toMatchObject({
+        status: "incomplete", stage: "read", nodeId: id,
+        attachmentsRead: [], unreadAttachments: ["evidence.md"], rejected: [],
+      });
+      expect(err.diagnostics.inputFingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(err.diagnostics.candidateFindings).toHaveLength(1);
+      expect(err.diagnostics.candidateFindings[0]).not.toHaveProperty("id");
+      expect(err.diagnostics.candidateFindings[0].question).toBe("Q2");
+      expect(err.diagnostics.candidateNotice).toContain("not formal findings");
+      expect(err.diagnostics.attempts[0]).toMatchObject({
+        attempt: 1, model: testConfig.model, status: "parsed",
+        requestId: err.diagnostics.requestId,
+        attachmentsRead: [], unreadAttachments: ["evidence.md"],
+      });
+      const after = svc.propositionView(db, ctx, id);
+      expect(after.findings).toEqual(before.findings);
+      expect(after.qualifier).toBe(before.qualifier);
+      expect(after.review).toEqual(before.review);
+      expect(svc.getHistory(db, { id })).toEqual(history);
+    } finally { cleanupDb(db); }
+  });
+
+  test("protocol failure preserves valid candidates and rejected finding reasons", async () => {
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
+      mockMessages = reply({ Q1: "n/a", Q2: "pass", findings: [q2(id), q2(id, "invented quote")] });
+      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
+      expect(err.diagnostics.stage).toBe("protocol");
+      expect(err.diagnostics.candidateFindings).toHaveLength(1);
+      expect(err.diagnostics.rejected).toHaveLength(1);
+      expect(err.diagnostics.rejected[0]).toMatchObject({ failed: "F4", raw: q2(id, "invented quote") });
+      expect(err.diagnostics.rejected[0].detail).toContain("verbatim");
+      expect(svc.getHistory(db, { id }).events.some((event) => event.op === "review")).toBe(false);
+      expect(svc.propositionView(db, ctx, id).findings).toEqual([]);
+    } finally { cleanupDb(db); }
+  });
+
+  test("input changes keep candidates bound to the original snapshot without recording", async () => {
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "Before" }])[0]!.id;
+      mockMessages = reply({ Q1: "n/a", Q2: "fail", findings: [q2(id, "Before")] });
+      mockDelayMs = 20;
+      const running = runReview(testConfig, db, id, ctx).catch((e) => e);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      svc.updateProposition(db, ctx, { id, content: "After" });
+      const err = await running;
+      expect(err.diagnostics.stage).toBe("input_freshness");
+      expect(err.diagnostics.candidateFindings[0].citation.quote).toBe("Before");
+      expect(err.diagnostics.inputFingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(svc.propositionView(db, ctx, id).review.status).toBe("never");
+      expect(svc.getHistory(db, { id }).events.some((event) => event.op === "review")).toBe(false);
+    } finally { cleanupDb(db); }
+  });
+
+  test("deleting a running review's target preserves its candidate as incomplete input", async () => {
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
+      mockMessages = reply({ Q1: "n/a", Q2: "fail", findings: [q2(id)] });
+      mockDelayMs = 20;
+      const running = runReview(testConfig, db, id, ctx).catch((e) => e);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      svc.deleteProposition(db, ctx, { id });
+      const err = await running;
+      expect(err).toBeInstanceOf(ReviewUnavailableError);
+      expect(err.diagnostics).toMatchObject({ stage: "input_freshness", recorded: false, nodeId: id });
+      expect(err.diagnostics.candidateFindings).toHaveLength(1);
+      expect(err.diagnostics.candidateFindings[0].citation.quote).toBe("A proposition");
+      expect(svc.getHistory(db, {}).events.some((event) => event.op === "review")).toBe(false);
+    } finally { cleanupDb(db); }
+  });
+
+  test("a target absent before review keeps ordinary NotFound semantics", async () => {
+    const db = createTestDb();
+    try {
+      const err = await runReview(testConfig, db, 123, ctx).catch((e) => e);
+      expect(err).toBeInstanceOf(NotFoundError);
+      expect(err.diagnostics).toBeUndefined();
+      expect(capturedCalls).toHaveLength(0);
+    } finally { cleanupDb(db); }
+  });
+
+  test("an error after commit cannot claim that the review was unrecorded", async () => {
+    const db = createTestDb();
+    const loggerError = new ReviewUnavailableError("mock post-commit log error");
+    const errorSpy = spyOn(console, "error").mockImplementation((line) => {
+      if (String(line).includes("END review")) throw loggerError;
+    });
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
+      mockMessages = reply({ Q1: "n/a", Q2: "pass", findings: [] });
+      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
+      expect(err).toBe(loggerError);
+      expect(err.diagnostics).toBeUndefined();
+      expect(svc.propositionView(db, ctx, id).review.status).toBe("current");
+    } finally {
+      errorSpy.mockRestore();
+      cleanupDb(db);
+    }
+  });
+
+  test("no model response has an error attempt but no fabricated candidate", async () => {
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
+      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
+      expect(err.diagnostics).toMatchObject({ stage: "execution", candidateFindings: [], rejected: [] });
+      expect(err.diagnostics.attempts[0]).toMatchObject({ attempt: 1, status: "error", model: testConfig.model });
+      expect(err.diagnostics.requestId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(err.diagnostics.attempts[0].error).toContain("Agent returned no result");
+    } finally { cleanupDb(db); }
+  });
+
+  test("parse retry keeps both attempt identities and does not invent findings", async () => {
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
+      mockMessages = [{ type: "result", subtype: "success", result: "not JSON" }];
+      const err = await runReview({ ...testConfig, fallbackModel: "fallback" }, db, id, ctx).catch((e) => e);
+      expect(err.diagnostics).toMatchObject({ stage: "parse", candidateFindings: [], rejected: [] });
+      expect(err.diagnostics.attempts.map((a: { attempt: number; status: string; model: string }) =>
+        [a.attempt, a.status, a.model])).toEqual([[1, "unparseable", testConfig.model], [2, "unparseable", "fallback"]]);
+      expect(new Set(err.diagnostics.attempts.map((a: { requestId: string }) => a.requestId)).size).toBe(1);
+    } finally { cleanupDb(db); }
+  });
+
+  test("fallback exception retains each attempt's actual read coverage and request identity", async () => {
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{
+        content: "A proposition", evidence: { attachments: ["evidence.md"] },
+      }])[0]!.id;
+      mockMessages = [{ type: "result", subtype: "success", result: "not JSON" }];
+      mockErrorsPerCall = [null, new Error("mock SDK stream failed")];
+      mockPostToolUseInputsPerCall = [[], [fullRead("attachments/0001.md")]];
+      const err = await runReview({ ...testConfig, fallbackModel: "fallback" }, db, id, ctx).catch((e) => e);
+      expect(err.diagnostics).toMatchObject({
+        stage: "execution", recorded: false, candidateFindings: [],
+        attachmentsRead: ["evidence.md"], unreadAttachments: [],
+      });
+      expect(err.diagnostics.attempts).toMatchObject([
+        { attempt: 1, status: "unparseable", attachmentsRead: [], unreadAttachments: ["evidence.md"] },
+        { attempt: 2, status: "error", model: "fallback", error: "mock SDK stream failed",
+          attachmentsRead: ["evidence.md"], unreadAttachments: [] },
+      ]);
+      expect(err.diagnostics.attempts.every((a: { requestId: string }) =>
+        a.requestId === err.diagnostics.requestId)).toBe(true);
+      expect(svc.propositionView(db, ctx, id).review.status).toBe("never");
+    } finally { cleanupDb(db); }
+  });
+
+  test("snapshot failure identifies unread declared input without fabricating a request", async () => {
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{
+        content: "A proposition", evidence: { attachments: ["evidence.md"] },
+      }])[0]!.id;
+      rmSync("/tmp/warranted-sdk-options/evidence.md");
+      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
+      expect(err.diagnostics).toMatchObject({
+        stage: "snapshot", recorded: false, candidateFindings: [], attempts: [],
+        attachmentsRead: [], unreadAttachments: ["evidence.md"],
+      });
+      expect(err.diagnostics.requestId).toBeUndefined();
+      expect(err.diagnostics.inputFingerprint).toBeUndefined();
+      expect(capturedCalls).toHaveLength(0);
+    } finally { cleanupDb(db); }
+  });
+
+  test("tool boundary failure still delivers parsed candidates without formal review", async () => {
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
+      mockMessages = [
+        { type: "system", subtype: "permission_denied", tool_name: "Read", tool_use_id: "x" },
+        ...reply({ Q1: "n/a", Q2: "fail", findings: [q2(id)] }),
+      ];
+      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
+      expect(err.diagnostics.stage).toBe("boundary");
+      expect(err.diagnostics.candidateFindings).toHaveLength(1);
+      expect(svc.propositionView(db, ctx, id).review.status).toBe("never");
+    } finally { cleanupDb(db); }
+  });
+
+  test("MCP transport serializes incomplete diagnostics as JSON and keeps isError", async () => {
+    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const { registerTools } = await import("../src/tools.ts");
+    const server = new McpServer({ name: "diagnostics-test", version: "0" });
+    const client = new Client({ name: "diagnostics-test-client", version: "0" });
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
+      registerTools(server, db, "/tmp/warranted-sdk-options/.toulmin/graph.db", testConfig);
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      mockMessages = reply({ Q1: "n/a", Q2: "pass", findings: [q2(id)] });
+      const result = await client.callTool({ name: "review", arguments: { id } });
+      expect(result.isError).toBe(true);
+      const payload = JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
+      expect(payload).toMatchObject({ status: "incomplete", recorded: false, stage: "protocol", nodeId: id });
+      expect(payload).not.toHaveProperty("Q1");
+      expect(payload).not.toHaveProperty("Q2");
+      expect(payload.candidateFindings).toHaveLength(1);
+      expect(payload.candidateFindings[0]).not.toHaveProperty("id");
+      expect(result.structuredContent).toEqual(payload);
+      expect(svc.propositionView(db, ctx, id).review.status).toBe("never");
+    } finally {
+      await client.close();
+      await server.close();
+      cleanupDb(db);
+    }
   });
 });

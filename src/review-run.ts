@@ -18,8 +18,8 @@ import type { ReviewConfig } from "./review-config.ts";
 import { reviewCwd } from "./review-config.ts";
 import { buildReviewRequestPrompt, protocolHash, type ReviewInput } from "./review-prompts.ts";
 import { validateFindings } from "./review-validate.ts";
-import { callAndParse } from "./review-llm.ts";
-import { ReviewUnavailableError } from "./errors.ts";
+import { callAndParse, type ReviewAttemptTrace } from "./review-llm.ts";
+import { NotFoundError, ReviewUnavailableError } from "./errors.ts";
 import { log } from "./logger.ts";
 import * as svc from "./service.ts";
 import { assertVerdictFindingConsistency } from "./review-consistency.ts";
@@ -30,7 +30,7 @@ import {
 } from "./review-snapshot.ts";
 import { materializeReviewAttachments } from "./review-materialize.ts";
 import type { CheckContext } from "./structural-check.ts";
-import type { Finding, FindingDraft, RejectedFinding } from "./types.ts";
+import type { Finding, FindingDraft, RejectedFinding, ReviewIncompleteDiagnostics } from "./types.ts";
 
 export interface ReviewRunResult {
   eventId: number;
@@ -78,16 +78,7 @@ export function interpretResponse(
   input: ReviewInput,
   parsed: Record<string, unknown>
 ): { Q1: "pass" | "fail" | "n/a"; Q2: "pass" | "fail"; accepted: FindingDraft[]; rejected: RejectedFinding[] } {
-  const { accepted, rejected } = validateFindings(
-    input,
-    Array.isArray(parsed.findings) ? parsed.findings : []
-  );
-  const outcome = {
-    Q1: readQ1(parsed.Q1, input.attachments.length > 0),
-    Q2: readQ2(parsed.Q2),
-    accepted,
-    rejected,
-  };
+  const outcome = collectResponse(input, parsed);
   assertVerdictFindingConsistency({
     Q1: outcome.Q1,
     Q2: outcome.Q2,
@@ -95,6 +86,20 @@ export function interpretResponse(
     rejected: outcome.rejected,
   });
   return outcome;
+}
+
+/** Keep mechanically valid candidates even when later whole-review guards fail. */
+function collectResponse(input: ReviewInput, parsed: Record<string, unknown>) {
+  const { accepted, rejected } = validateFindings(
+    input,
+    Array.isArray(parsed.findings) ? parsed.findings : []
+  );
+  return {
+    Q1: readQ1(parsed.Q1, input.attachments.length > 0),
+    Q2: readQ2(parsed.Q2),
+    accepted,
+    rejected,
+  };
 }
 
 /**
@@ -109,28 +114,79 @@ export async function runReview(
   nodeId: number,
   ctx?: CheckContext
 ): Promise<ReviewRunResult> {
+  let stage: ReviewIncompleteDiagnostics["stage"] = "configuration";
+  let initialInput: ReviewInput | undefined;
+  let inputFingerprint: string | undefined;
+  let materialized: ReturnType<typeof materializeReviewAttachments> | undefined;
+  const attempts: ReviewAttemptTrace[] = [];
+  let candidateFindings: FindingDraft[] = [];
+  let rejectedFindings: RejectedFinding[] = [];
+  let recorded = false;
+
+  function readCoverage(attempt?: ReviewAttemptTrace) {
+    const resolvedReads = new Set(
+      materialized && attempt
+        ? attempt.successfulReads.map((path) => resolve(materialized!.cwd, path))
+        : []
+    );
+    const attachmentsRead: string[] = [];
+    const unreadAttachments: string[] = [];
+    initialInput?.attachments.forEach((path, index) => {
+      const read = materialized && resolvedReads.has(resolve(materialized.cwd, materialized.readPaths[index]!));
+      (read ? attachmentsRead : unreadAttachments).push(path);
+    });
+    return { attachmentsRead, unreadAttachments };
+  }
+
+  function withDiagnostics(error: ReviewUnavailableError): ReviewUnavailableError {
+    error.diagnostics = {
+      status: "incomplete",
+      recorded: false,
+      stage,
+      reason: error.message,
+      nodeId,
+      ...(inputFingerprint ? { inputFingerprint } : {}),
+      ...(attempts[0] ? { requestId: attempts[0].requestId } : {}),
+      attempts: attempts.map((attempt) => ({
+        requestId: attempt.requestId,
+        attempt: attempt.attempt,
+        model: attempt.model,
+        status: attempt.status,
+        ...(attempt.error ? { error: attempt.error } : {}),
+        ...readCoverage(attempt),
+      })),
+      ...readCoverage(attempts.at(-1)),
+      candidateFindings,
+      rejected: rejectedFindings,
+      candidateNotice: "Candidates passed only local F1–F4 mechanical checks. They are not formal findings and cannot be dismissed. They do not establish complete attachment reading, current input, or scientific truth.",
+    };
+    return error;
+  }
+
   if (!config || !config.enabled) {
-    throw new ReviewUnavailableError(
+    throw withDiagnostics(new ReviewUnavailableError(
       "No review model is configured, so this proposition was not reviewed. " +
         "Start the server with --review-config <file.json>, where the file holds at least " +
         '{"apiKey": "...", "model": "..."} (add "baseUrl" if you route through a proxy). ' +
         "Structural checks need no configuration and are already running."
-    );
+    ));
   }
 
   const reviewContext = ctx ?? { root: reviewCwd(config) };
-  const initialInput = buildReviewInput(db, nodeId);
-  let materialized: ReturnType<typeof materializeReviewAttachments>;
+  initialInput = buildReviewInput(db, nodeId);
+  stage = "snapshot";
   try {
     materialized = materializeReviewAttachments(reviewContext, initialInput);
   } catch (error) {
-    throw new ReviewUnavailableError(
+    throw withDiagnostics(new ReviewUnavailableError(
       `Review of #${nodeId} could not create an immutable snapshot of every attachment: ${error}. Nothing was recorded.`
-    );
+    ));
   }
 
   const started = snapshotReviewInput(initialInput, materialized.snapshots);
+  inputFingerprint = started.inputFingerprint;
   try {
+    stage = "input_freshness";
     // The graph and mutable source files must still describe the exact view just copied.
     const afterMaterialize = captureReviewSnapshot(db, reviewContext, nodeId);
     if (afterMaterialize.inputFingerprint !== started.inputFingerprint) {
@@ -144,10 +200,10 @@ export async function runReview(
     const protocol = protocolHash(prompt);
 
     const denied: string[] = [];
-    const attempts: import("./review-llm.ts").ReviewAttemptTrace[] = [];
     let parsed: Record<string, unknown>;
     const t0 = Date.now();
     log("review", "OK", 0, `START review: #${nodeId}`);
+    stage = "execution";
     try {
       parsed = await callAndParse(
         config,
@@ -166,7 +222,16 @@ export async function runReview(
       throw new ReviewUnavailableError(`Review of #${nodeId} did not run: ${e}`);
     }
 
+    // Local validation is independent of completion: preserve candidates before any
+    // boundary, coverage, consistency or final freshness guard can reject this attempt.
+    const outcome = parsed._parseFailed ? undefined : collectResponse(input, parsed);
+    if (outcome) {
+      candidateFindings = outcome.accepted;
+      rejectedFindings = outcome.rejected;
+    }
+
     // Any denied tool means the reviewer tried to leave its declared, immutable input boundary.
+    stage = "boundary";
     if (denied.length > 0) {
       throw new ReviewUnavailableError(
         `Review of #${nodeId} had ${denied.length} tool call(s) denied (${denied.join(", ")}), ` +
@@ -176,7 +241,15 @@ export async function runReview(
 
     // callAndParse 内部已经重试过一次(换 fallbackModel)。到这里还没解析出来,就是
     // 这个模型交不出协议要求的形状——记一个空壳 review 事件比不记更糟。
+    stage = "parse";
     if (parsed._parseFailed) {
+      const failedAttempt = attempts.at(-1);
+      if (failedAttempt?.status === "error") {
+        stage = "execution";
+        throw new ReviewUnavailableError(
+          `Review of #${nodeId} retry with model ${failedAttempt.model} did not run: ${failedAttempt.error}. Nothing was recorded.`
+        );
+      }
       log("review", "ERR", Date.now() - t0, `#${nodeId}: unparseable response`);
       throw new ReviewUnavailableError(
         `Review of #${nodeId} did not return JSON, on the first attempt or the retry. ` +
@@ -185,17 +258,14 @@ export async function runReview(
     }
 
     const verdictAttempt = attempts.at(-1);
+    stage = "execution";
     if (!verdictAttempt) {
       throw new ReviewUnavailableError(
         `Review of #${nodeId} produced no auditable model attempt. Nothing was recorded.`
       );
     }
-    const resolvedReads = new Set(
-      verdictAttempt.successfulReads.map((path) => resolve(materialized.cwd, path))
-    );
-    const unreadAttachments = input.attachments.filter((_, index) =>
-      !resolvedReads.has(resolve(materialized.cwd, materialized.readPaths[index]!))
-    );
+    stage = "read";
+    const { unreadAttachments } = readCoverage(verdictAttempt);
     if (unreadAttachments.length > 0) {
       throw new ReviewUnavailableError(
         `Review of #${nodeId} did not successfully Read every attachment ` +
@@ -203,12 +273,20 @@ export async function runReview(
       );
     }
 
-    const { accepted, rejected, Q1, Q2 } = interpretResponse(input, parsed);
+    stage = "protocol";
+    const { accepted, rejected, Q1, Q2 } = outcome!;
+    assertVerdictFindingConsistency({ Q1, Q2, findings: accepted, rejected });
+    if (Q1 === "n/a" && input.attachments.length > 0) {
+      throw new ReviewUnavailableError(
+        `Review of #${nodeId} has Q1=n/a, which does not match whether attachments exist. Nothing was recorded.`
+      );
+    }
 
     // recordReview performs the final synchronous fingerprint check inside the write
     // transaction. Repeating the same full attachment scan here would only double
     // post-model I/O without closing a race that the transactional guard does not
     // already cover.
+    stage = "input_freshness";
     const { eventId, findings } = svc.recordReview(db, {
       nodeId,
       Q1,
@@ -219,6 +297,7 @@ export async function runReview(
       inputFingerprint: started.inputFingerprint,
       ...(rejected.length > 0 ? { rejected } : {}),
     }, { ctx: reviewContext, expectedInputFingerprint: started.inputFingerprint });
+    recorded = true;
 
     log(
       "review",
@@ -237,6 +316,16 @@ export async function runReview(
       // Keep the public result in declared-path space; audit retains the actual snapshot paths.
       attachmentsRead: input.attachments.map((path) => resolve(reviewContext.root, path)),
     };
+  } catch (error) {
+    // Diagnostics describe an unrecorded attempt; post-commit errors cannot use that shape.
+    if (recorded) throw error;
+    if (error instanceof ReviewUnavailableError) throw withDiagnostics(error);
+    if (stage === "input_freshness" && error instanceof NotFoundError) {
+      throw withDiagnostics(new ReviewUnavailableError(
+        `Review input for #${nodeId} no longer exists: ${error.message}. Nothing was recorded.`
+      ));
+    }
+    throw error;
   } finally {
     materialized.cleanup();
   }

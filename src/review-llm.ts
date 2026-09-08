@@ -263,6 +263,9 @@ export async function callAgent(
       }
     }
   } finally {
+    // Preserve observed coverage and denials even when the SDK produces no final result.
+    successfulReadsOut?.push(...successfulReads);
+    deniedOut?.push(...deniedTools);
     releasePermit();
   }
   if (deniedTools.length > 0) {
@@ -270,13 +273,11 @@ export async function callAgent(
     // names are also handed back to the caller, which is what lets a denied
     // review be reported as "not reviewed" rather than counted as a pass.
     console.warn(`[review-llm] ${deniedTools.length} tool call(s) denied under dontAsk: ${deniedTools.join(", ")}`);
-    deniedOut?.push(...deniedTools);
   }
 
   if (!finalResult) {
     throw new Error("Agent returned no result");
   }
-  successfulReadsOut?.push(...successfulReads);
 
   // 写入审计日志（失败时静默忽略）
   if (config.auditDir) {
@@ -317,7 +318,11 @@ export async function callAgent(
 }
 
 export interface ReviewAttemptTrace {
+  requestId: string;
+  attempt: number;
   model: string;
+  status: "parsed" | "unparseable" | "error";
+  error?: string;
   /** Paths with complete Read coverage; multiple text-line Reads may contribute. */
   successfulReads: string[];
 }
@@ -452,39 +457,30 @@ export async function callAndParse(
   auditMetadata?: ReviewAuditMetadata
 ): Promise<Record<string, unknown>> {
   const requestId = crypto.randomUUID();
-  const successfulReads: string[] = [];
-  const raw = await callAgent(
-    config,
-    prompt,
-    attachments,
-    cwd,
-    requestId,
-    deniedOut,
-    successfulReads,
-    auditMetadata,
-  );
-  const parsed = parseLLMResponse(raw);
-  if (!parsed._parseFailed) {
-    traceOut?.push({ model: config.model, successfulReads });
-    return parsed;
+  async function callAttempt(attemptConfig: ReviewConfig, attempt: number): Promise<Record<string, unknown>> {
+    const trace: ReviewAttemptTrace = {
+      requestId, attempt, model: attemptConfig.model, status: "error", successfulReads: [],
+    };
+    traceOut?.push(trace);
+    try {
+      const raw = await callAgent(
+        attemptConfig, prompt, attachments, cwd, requestId, deniedOut, trace.successfulReads, auditMetadata,
+      );
+      const parsed = parseLLMResponse(raw);
+      trace.status = parsed._parseFailed ? "unparseable" : "parsed";
+      return parsed;
+    } catch (error) {
+      trace.error = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
   }
+  const parsed = await callAttempt(config, 1);
+  if (!parsed._parseFailed) return parsed;
 
   // 解析失败 → 重试一次（同一 requestId，便于关联）
   const retryConfig: ReviewConfig = { ...config, model: config.fallbackModel ?? config.model };
   try {
-    const retrySuccessfulReads: string[] = [];
-    const retryRaw = await callAgent(
-      retryConfig,
-      prompt,
-      attachments,
-      cwd,
-      requestId,
-      deniedOut,
-      retrySuccessfulReads,
-      auditMetadata,
-    );
-    traceOut?.push({ model: retryConfig.model, successfulReads: retrySuccessfulReads });
-    return parseLLMResponse(retryRaw);
+    return await callAttempt(retryConfig, 2);
   } catch (e) {
     return {
       _parseFailed: true,

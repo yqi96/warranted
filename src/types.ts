@@ -216,6 +216,38 @@ export interface RejectedFinding {
   raw: unknown;
 }
 
+/** A completed model attempt, including attempts that cannot support a formal review. */
+export interface ReviewAttemptDiagnostic {
+  requestId: string;
+  /** One-based within this request; a parse retry is a separate attempt. */
+  attempt: number;
+  model: string;
+  status: "parsed" | "unparseable" | "error";
+  error?: string;
+  /** Declared attachment paths, never private snapshot aliases. */
+  attachmentsRead: string[];
+  unreadAttachments: string[];
+}
+
+/** Failure feedback only: it neither records nor supersedes a review or finding. */
+export interface ReviewIncompleteDiagnostics {
+  status: "incomplete";
+  recorded: false;
+  stage: "configuration" | "snapshot" | "input_freshness" | "execution" | "boundary" | "parse" | "read" | "protocol";
+  reason: string;
+  nodeId: number;
+  inputFingerprint?: string;
+  requestId?: string;
+  attempts: ReviewAttemptDiagnostic[];
+  /** Coverage in the last attempt; empty if no input/attempt was available. */
+  attachmentsRead: string[];
+  unreadAttachments: string[];
+  /** F1–F4-valid drafts only, without formal IDs or any claim of semantic validity. */
+  candidateFindings: FindingDraft[];
+  rejected: RejectedFinding[];
+  candidateNotice: string;
+}
+
 /** review 事件的载荷。答"是"也留痕:没有这一层,"从没 review 过"与"review 过且没问题"分不开。 */
 export interface ReviewOutcome {
   nodeId: number;

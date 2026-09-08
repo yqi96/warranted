@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The primary research agent now connects material evidence to hypothesis revision and the next discriminating test, checks experiment validity, and reconciles central deliverable claims with completed results and their implementation. Repeated graph-cadence instructions are consolidated; scientific judgments remain with the main agent.
+- Incomplete reviews return structured failure diagnostics and candidate findings for verification without recording a verdict, replacing prior findings, or changing credibility.
 - Review is now an explicit, optional `review` call. It records independent semantic findings but neither runs automatically on writes nor decides a proposition's qualifier.
 - The visualizer selection hook now renders proposition credibility from `qualifier` instead of the retired node `type`, and no longer writes its own operation log.
 - Public documentation now describes the current Proposition API and marks the former Claim/Statement/Warrant, compile, status/verification, and `.toulmin/argument.db` contracts as historical.

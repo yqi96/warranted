@@ -21,7 +21,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as service from "./service.ts";
 import { runReview } from "./review-run.ts";
-import { ToulminError } from "./errors.ts";
+import { ReviewUnavailableError, ToulminError } from "./errors.ts";
 import { checkContext, type CheckContext } from "./structural-check.ts";
 import type { FindingView, PropositionView, StructuralWarning } from "./types.ts";
 import { QUALIFIERS } from "./types.ts";
@@ -61,6 +61,12 @@ function ok(payload: unknown, banner?: string): ToolResult {
 }
 
 function fail(e: unknown): ToolResult {
+  if (e instanceof ReviewUnavailableError && e.diagnostics) {
+    return {
+      ...text(JSON.stringify(e.diagnostics, null, 2), true),
+      structuredContent: e.diagnostics,
+    };
+  }
   if (e instanceof ToulminError) return text(e.message, true);
   if (e instanceof Error) return text(e.message, true);
   return text(String(e), true);

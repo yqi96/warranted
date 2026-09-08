@@ -6,6 +6,8 @@
  * StatusTransitionError 随 cascade、节点类型、状态机一并消失。
  */
 
+import type { ReviewIncompleteDiagnostics } from "./types.ts";
+
 export class ToulminError extends Error {
   constructor(message: string) {
     super(message);
@@ -42,7 +44,7 @@ export class ValidationError extends ToulminError {
  * 一条"忠实性已核实"的假象,而这正是旧 `compiledWithoutReviewModel` 的病(api.md §4.1)。
  */
 export class ReviewUnavailableError extends ToulminError {
-  constructor(message: string) {
+  constructor(message: string, public diagnostics?: ReviewIncompleteDiagnostics) {
     super(message);
     this.name = "ReviewUnavailableError";
   }

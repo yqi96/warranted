@@ -164,7 +164,7 @@ benchmarks/paperbench_selected/
   rubric_obligations.jsonl
   run_outputs/
   rubric_scores.csv
-  claim_rubric_alignment.csv
+  proposition_rubric_alignment.csv
 ```
 
 Obligation format:
@@ -175,7 +175,7 @@ Obligation format:
   "obligation_id": "leaf_013",
   "rubric_text": "...",
   "expected_artifact": "metrics/log/table/figure",
-  "agent_claimed_status": null,
+  "agent_claimed_completion": null,
   "rubric_score": null
 }
 ```
@@ -230,10 +230,11 @@ Manual:
    - 40 no-information
 3. Prompt the agent to decide whether the claim is supported, refuted, or not
    sufficiently supported, and to cite evidence.
-4. For Warranted, map:
-   - claim text to Claim
-   - evidence abstract or passage to Ground
-   - inference rule to Warrant
+4. For Warranted, map into one node type and its slots:
+   - claim text to the target proposition's `content` (initially `unestablished`)
+   - an evidence abstract or passage to an evidence proposition referenced in `evidence.nodes`, or to a local file in `evidence.attachments`
+   - the inference rule to the target proposition's inline `warrant`
+   - the final judgment to the target proposition's `qualifier`
 5. Compare final label with gold label and record false-supported cases.
 
 Expected files:
@@ -290,9 +291,10 @@ Manual:
    - conclusion
    - limitations
 3. For Warranted:
-   - hypothesis becomes Claim
-   - analysis result becomes Ground
-   - statistical or semantic inference becomes Warrant
+   - the hypothesis or conclusion becomes the target proposition's `content`
+   - each independently judgeable analysis result becomes a proposition referenced in the target's `evidence.nodes`; raw outputs remain attachments
+   - the statistical or semantic inference becomes the target's `warrant`
+   - material limitations or counterevidence become rebuttal propositions
 4. Use the original faceted evaluator.
 5. Add extra labels for:
    - over-strong hypothesis
@@ -306,7 +308,7 @@ benchmarks/discoverybench_pilot/
   selected_tasks.jsonl
   hypotheses.jsonl
   original_facet_scores.csv
-  claim_evidence_alignment.csv
+  proposition_evidence_alignment.csv
 ```
 
 ## Benchmarks Not Recommended for the First Pilot
@@ -379,7 +381,7 @@ After the pilot, answer four questions:
 
 ```text
 Q1: Does an existing benchmark provide reliable final scoring?
-Q2: Can the task be mapped to claim/evidence obligations?
+Q2: Can the task be mapped to proposition/evidence obligations?
 Q3: Can the run expose Warranted-specific process variables?
 Q4: Does the task cover contradiction, insufficient evidence, and uncertainty?
 ```
@@ -403,15 +405,15 @@ Manual:
 1. Build 50 tasks.
 2. Each task gives initial supporting evidence, then introduces counterevidence.
 3. Score whether the agent:
-   - preserves the original claim
+   - preserves the original proposition
    - records the counterevidence
-   - downgrades or disputes the claim
+   - lowers the proposition's qualifier when warranted, or records a rebuttal without silently rewriting it
    - reports the conflict in the final answer
 
 Expected file:
 
 ```csv
-task_id,system,claim_preserved,rebuttal_recorded,status_downgraded,conflict_reported
+task_id,system,proposition_preserved,rebuttal_recorded,qualifier_lowered,conflict_reported
 ```
 
 ### Stress Set 2: Insufficient-Evidence Exposure
@@ -423,7 +425,7 @@ Manual:
 
 1. Build 50 tasks where the correct behavior is not to conclude.
 2. Score whether the agent:
-   - refuses to mark the claim supported
+   - refuses to give the target proposition a positive qualifier without sufficient evidence
    - identifies missing evidence
    - proposes a valid next verification step
 
@@ -465,4 +467,3 @@ The recommended route is:
 4. Only then build small custom stress sets for contradiction handling,
    insufficient-evidence exposure, and auditability.
 5. Freeze the confirmatory protocol after the pilot, not before.
-

@@ -11,6 +11,8 @@
     "eval:scifact:audit-labels": "bun experiments/evaluation/scifact/audit-labels.ts",
     "eval:scifact:run": "bun experiments/evaluation/scifact/run-reviews.ts",
     "eval:scifact:score": "bun experiments/evaluation/scifact/score-reviews.ts",
+    "eval:vitaminc:prepare": "bun experiments/evaluation/vitaminc/prepare.ts",
+    "eval:vitaminc:run": "bun experiments/evaluation/vitaminc/run.ts",
     "viz": "bun visualizer/server.ts",
     "viz:dev": "bun --watch visualizer/server.ts"
   },

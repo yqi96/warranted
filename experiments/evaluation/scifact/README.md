@@ -163,6 +163,11 @@ primary model.
 Each case runs from a fresh private database copy. Success requires exactly one
 new review event, unchanged evidence, a complete attachment-read trace, an audit
 record, and agreement between the return value, event payload, and archived DB.
+New runs also seal `auditProvenanceVersion: 1`: every audit attempt must bind its
+exact prompt, protocol version/hash, review-input fingerprint, declared attachment
+byte hashes, and private-snapshot Read trace to the final review event and fixture.
+Runs created before this marker existed remain scoreable under the legacy checks;
+the scorer never silently treats a marked provenance-aware run as legacy.
 
 ## Score
 
@@ -205,3 +210,7 @@ arm.
 
 Generated fixtures, databases, audits, and scores live under
 `experiments/evaluation/outputs/` by default and are ignored by Git.
+
+## Recorded experiment reports
+
+- [2026-09-02 full `deepseek-v4-flash` review run](../reports/scifact/2026-09-02-deepseek-v4-flash-full-review.zh-CN.md)

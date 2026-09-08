@@ -1,8 +1,8 @@
 # Warranted 工具面契约
 
-> 状态:草案 v0.1(与 `docs/design.md` v0.4 配套)。
+> 状态:当前 dev 接口契约(与 `docs/design.md` 配套)。
 > 本文是 `docs/design.md` 在**接口面**上的投影。判据、姿态、认识论分工都在 design.md,改规则先改那边;本文只回答三个问题:**有哪些工具、每个参数怎么填、21 个旧工具各自去哪了**。
-> 本文推导过程中反向暴露出的 design.md 缺口,集中列在 §8——那几条需要拍板后回写事实源。
+> §8 保留接口推导记录;其中列出的约束已经回写事实源,不是未决待办。
 
 ---
 
@@ -93,7 +93,7 @@
 
 副作用(三件,都在同一事务内):
 
-1. **落基线快照**:对每条直接引用的节点快照 `(content hash, qualifier)`,作为这次判断的基线(design.md §3.1c)。content hash 复用现成的 `computeNodeHash`(`src/merkle-hash.ts`,只哈希 content,与"命题对外只暴露 (content, qualifier)"完全对齐)。
+1. **落基线快照**:对每条直接引用的节点快照 `(content hash, qualifier)`,并对每个附件快照 `(path, byte SHA-256)`,作为这次判断的基线(design.md §3.1c)。引用 content hash 使用 `contentHash`;附件按原始字节哈希,不先按文本解码。
 2. **跑结构检查并返回结果**:按 design.md §3.1 的四档判据。违反**不拦截**,返回警告 + 标红。
 3. **未处理 finding 提示**:qualifier 落到非 `unestablished` 且该命题仍有未处理 finding 时,返回醒目 warning(design.md §2.5)。
 
@@ -137,7 +137,7 @@
 
 ### 3.1 `get_argument`
 
-**description**:读一条命题的完整状态:五个槽位、结构检查警告、未处理意见,以及可选深度的邻域。
+**description**:读一条命题的完整状态:五个槽位、结构检查警告、未处理意见、最近 review 的 freshness,以及可选深度的邻域。
 
 **与最近邻的判别**:已知 id 用本工具;不知道 id 先 `find_propositions`。
 
@@ -146,7 +146,9 @@
 | `id` | 命题 id |
 | `depth` | 默认 1(自己 + 直接证据 / 反驳 / 晋升后的理由)。`0` = 只读这一条 |
 
-返回每条命题:`content` / `qualifier` / `warrant`(内联文本或 `{ promoted_to: id }`)/ `evidence`(attachments + nodes)/ `rebuttals` / `warnings[]` / `findings[]`。
+返回每条命题:`content` / `qualifier` / `warrant`(内联文本或 promoted 引用)/ `evidence`(attachments + nodes)/ `rebuttals` / `warnings[]` / `findings[]` / `review`。
+
+`review` 是判别联合:`{status:"never"}`;或 latest review 的 `{status:"current", eventId, at, Q1, Q2, model, protocol}`;或同样元数据加 `{status:"stale", reason}`。`reason ∈ {input_changed, protocol_changed, legacy_unfingerprinted, invalid_record}`。它只回答最近 review 是否覆盖**当前局部输入**,不回答 finding 是否已处理。
 
 `get_node` 由 `depth=0` 吸收。两个工具的差别只是深度,而"该用哪个"的判别成本要付在常驻上下文里,一个参数默认值就够了。
 
@@ -173,11 +175,11 @@
 
 ### 3.3 `get_stats`
 
-**description**:全图结算摘要——红点清单:未处理 finding、结构检查违反、待重查警告,以及各档位的命题计数。
+**description**:全图记录状态摘要——各 qualifier 的命题计数、未处理 finding、待处理结构警告、附件总数与缺失附件,以及 review 的 current/stale/never 覆盖。
 
-**与最近邻的判别**:交付/报告前扫全图用本工具;看单条用 `get_argument`。
+**与最近邻的判别**:实质性交付前扫全图用本工具;看单条用 `get_argument`。
 
-无必填参数。persona 约定交付前扫一遍并处理(design.md §4)。
+无必填参数。`reviewCoverage` 分三组返回 `{count,nodeIds}`;`never` 只是覆盖率信息,不自动成为 warning。persona 约定交付前扫一遍并处理(design.md §4)。本工具只汇总已记录状态,**不证明命题为真、不证明图已覆盖全部重要主张、也不证明对外文案与图一致**。
 
 ### 3.4 `get_history`
 
@@ -200,7 +202,7 @@
 
 ### 4.1 `review`
 
-**description**:请一个独立的第三方 LLM 审查这条命题:证据有没有真的说它声称的事(Q1),证据即便为真是否推得出它(Q2)。慢且贵,按需调用。
+**description**:请一个独立的第三方 LLM 审查这条命题的当前局部视图:附件是否真正支撑它(Q1),直接证据即便为真是否推得出它(Q2)。慢且贵,按需调用。
 
 **与最近邻的判别**:结构性问题(证据空了、附件没了、引用掉档)是免费自动查的,不需要调本工具;本工具查的是语义。
 
@@ -214,18 +216,18 @@
 
 ```ts
 type Finding =
-  | { id: string; node_id: number; confidence: "high" | "low";
+  | { id: string; nodeId: number; confidence: "high" | "low";
       question: "Q1"; content: string;
       citation: { attachment: string; locator: string; quote: string } }
-  | { id: string; node_id: number; confidence: "high" | "low";
+  | { id: string; nodeId: number; confidence: "high" | "low";
       question: "Q2"; content: string;
-      citation: { node_id: number; slot: "content" | "warrant"; quote: string } }
+      citation: { nodeId: number; slot: "content" | "warrant"; quote: string } }
 ```
 
 | 字段 | 说明 |
 | --- | --- |
 | `id` | `f_<review_event_id>_<序号>`。**不含重查指纹**——finding 不随图变化过期(§4.2),而且 id 天然带着"哪次 review 产的",查历史直接定位 |
-| `node_id` | 被审查的命题 |
+| `nodeId` | 被审查的命题 |
 | `question` | `Q1` 忠实性 / `Q2` 有效性。它**唯一决定 citation 的形态**,所以是判别联合的判别式:Q1 只能引附件、Q2 只能引图内文本,在类型层面无法违反 |
 | `content` | 断点陈述:哪里断了。不是"这个论证不够好" |
 | `citation` | 必填,无例外 |
@@ -233,25 +235,35 @@ type Finding =
 | `citation.quote` | 两种形态都必须有,**逐字**片段 |
 | `confidence` | `high` / `low` 两档,不设 medium(中间档是垃圾桶)。这是"我这条判断有多大把握",**不是**"这个问题有多严重"——后者要看到局部之外,审查器无权判 |
 
-**落库前的机械校验**(不通过 = 该条 finding 不合格,拒收并记一次协议违规;不是拒绝 `review` 整体):
+**落库前的机械校验**(不通过 = 该条 finding 不合格,拒收并记一次协议违规):
 
 | 编号 | 校验 | 为什么可验 |
 | --- | --- | --- |
 | F1 | `citation.quote` 非空 | —— |
 | F2 | Q1:`citation.attachment` ∈ 被审查命题的附件槽 | 附件清单在图里 |
-| F3 | Q2:`citation.node_id` ∈ {被审查命题} ∪ {其证据槽里的命题} | 同上 |
-| F4 | Q2:`citation.quote` 是 `citation.node_id` 该 `slot` 内容的**逐字子串** | 两侧都在图里,字符串比对即可。**验不过 = 审查器在编** |
+| F3 | Q2:`citation.nodeId` ∈ {被审查命题} ∪ {其证据槽里的命题} | 同上 |
+| F4 | Q2:`citation.quote` 是 `citation.nodeId` 该 `slot` 内容的**逐字子串** | 两侧都在图里,字符串比对即可。**验不过 = 审查器在编** |
 
 F4 是把 §2.3"强制引证"从措辞变成可执行判据的地方——Q1 的引证真伪要读 PDF 才知道(留给人),Q2 的引证真伪机器当场就能验。
+
+拒收通常是逐条的,但最终 verdict 必须满足 `Q1=fail ⇔ 至少一条有效 Q1 finding`、`Q2=fail ⇔ 至少一条有效 Q2 finding`;`pass/n/a` 不得报告对应 finding,即使那条 finding 随后被机械拒收也不能把矛盾答复洗成 clean pass。若拒收后破坏了这项一致性,整次 review 作为协议失败不落事件、不落 finding。
 
 **review 事件本身记每个问题的结论**,而不只是记 findings:
 
 ```ts
-{ node_id, Q1: "pass" | "fail" | "n/a", Q2: "pass" | "fail", findings: Finding[],
-  model, protocol_hash, at }
+{ nodeId, op: "review", by: "tool", at,
+  payload: { Q1: "pass" | "fail" | "n/a", Q2: "pass" | "fail",
+    findings: FindingDraft[], model, protocol, inputFingerprint,
+    attachmentSnapshots: Array<{path, sha256}> } }
 ```
 
+事件写入时的 `FindingDraft` 与上方 finding 形状相同,但尚无 `id`;工具返回前才按 review 事件 id 生成 `f_<event_id>_<序号>`。
+
 `n/a` 专给"该命题没有附件型证据、Q1 无所施力"。记成 `pass` 会造出"忠实性已核实"的假象。没有这一层,"从没 review 过"与"review 过且没问题"在图上分不开。
+
+`inputFingerprint` 覆盖 reviewer 实际收到的目标 content、解析后的 warrant、声明附件路径及其私有不可变副本字节 SHA-256、直接证据节点的 content+qualifier;明确不含目标自己的 qualifier、rebuttals、模型。`protocol` 哈希最终实际发送的 prompt 全文,包括 JSON-only 后缀和附件副本读取映射。读取时两者与当前输入和当前协议比较,派生 `never/current/stale`。旧 review 没有指纹时是 `stale:legacy_unfingerprinted`,不是 `never`。
+
+review 先把声明附件用同一字节流复制并哈希到私有只读目录;reviewer 不接触可变项目树。副本完成后先复核一次输入,模型返回后由写事件的同步事务 guard 作最终复核;任一次变化都返回 `ReviewUnavailableError`,什么也不落库。事务 guard 不再前后紧邻地重复读取同一批大附件。即使源文件 A→B→A,reviewer 仍只读绑定在事件指纹上的 A,不会把中间态 B 登记成 A。当前 `recordReview` API 强制要求 input fingerprint 与事务 guard,附件快照由 guard 内重读生成而不信任 caller;无指纹的兼容对象只能是既有历史事件。最新**结构有效**的 review 即使 findings 为空,也会取代上一批 findings;损坏事件保留在 history 并显示 `invalid_record`,但没有资格遮掉上一批有效意见。
 
 **没有 `status` 字段。** finding 的"未处理 / 已阅"不落在 finding 上,由事件流里有没有对应 id 的 `dismiss` 事件算出来——与警告一致,零可变状态(design.md §3.1c"永不更新、永不删除")。在 findings 表上加一列 `status` 就破了 I8。
 
@@ -261,7 +273,7 @@ F4 是把 §2.3"强制引证"从措辞变成可执行判据的地方——Q1 的
 - **被审查命题自己的 qualifier 不进**——那是待判的结论。
 - 检查点在 prompt 构建函数的入参类型:越界的修法是**删字段**,不是在 prompt 里加禁令。
 
-审查器带只读工具(Read/Glob/Grep),`temperature=0`,模型与 prompt 版本钉死,协议 hash 入库(design.md §2.3)。未配置审查模型时拒绝执行并说明如何配置——旧 `compiledWithoutReviewModel` 是"没审查但记为 passed"的补丁,而新系统里 review 不产出 passed,所以这里应当直接失败而不是发警告(§7)。
+审查器只开放 Read,并用 PreToolUse 将路径限制到本次声明附件的私有不可变副本;Glob/Grep 因可能返回未挂载文件内容而禁用。用户 settings、skills、plugins 与 MCP 也被隔离。它只看当前单条局部视图,**不看历史、命令轨迹、未挂载文件或整张图**,因此不能单独证明过程顺序。agent 自写的说明文档只是底层证据的索引,不能自证其断言。`out-of-sample/held-out/independent` 要求评价规则在结果揭示前固定,且评价数据、场景、结果或标签没有参与被检验对象的拟合、选择、调参或修订;事后重跑/缩放只能称 sensitivity/robustness,但不要求高层假设本身也预注册。review 事件和 audit 记录实际模型、最终协议、输入指纹及附件哈希,但不记录凭据。未配置审查模型时拒绝执行并说明如何配置。
 
 ### 4.2 `dismiss`
 
@@ -282,7 +294,7 @@ F4 是把 §2.3"强制引证"从措辞变成可执行判据的地方——Q1 的
 | | 复燃 |
 | --- | --- |
 | **结构检查警告** | 自动。判据 = 重查触发条件(design.md §3.1b),由 §5 的 id 派生免费得到 |
-| **finding** | 不自动过期。一条 finding 只能被"驳回并写理由"或"新一次 review 取代"结算 |
+| **finding** | 不自动过期。一条 finding 只能被"驳回并写理由"或"新一次结构有效的 review 取代"结算 |
 
 理由:警告是从当前状态**算出来**的,所以它永远说的是现在;finding 是一条历史意见,算不出来。若让 finding 随指纹变化自动失效,改一个逗号就能清掉一条"你的论据推不出结论"——那是一条洗白通道,正是 design.md §0 要消灭的东西。
 
@@ -299,6 +311,7 @@ recheck_fingerprint = hash(
   content,
   内联 warrant 文本 或 晋升后 warrant 的 id,
   证据成员清单(排序),
+  附件清单(按 path 排序,每项含 byte SHA-256 或 unreadable 标记),
   反驳成员清单(排序),
   每个直接引用节点的 (content hash, qualifier)
 )
@@ -320,11 +333,11 @@ design.md §1.4 把旧"类型"承担的写作引导转移到参数描述。以�
 
 | 参数 | 引导要点 |
 | --- | --- |
-| `content` | 写一句可独立判定的陈述:什么被确立、被观察、被发表。**不写产生它的方法与过程,不写活动流水。** 保持原子:一个节点一个可独立判定的命题 |
-| `warrant` | 写让这些证据得以支撑这个内容的**领域通用推理原则**。它要解释"为什么这类证据可以支撑这类结论",且必须在本论证之外也成立。不复述内容、不总结证据、不引用来源、**不写就事论事的 if-then 桥**。反例:"如果气温升高了,那么发生了气候变化"(就事论事的桥);正例:"多个独立数据集上持续的气温升高表明系统性气候变化"(推理原则) |
-| `evidence.attachments` | 支撑本命题的文件路径。引用文献时把文献本身作为附件,文献即说明文档;其余情况给一份说明文档(如 `statement-<topic>.md`)加上必要的代码、结果、日志、数据,说明文档要能独立解释这条命题记录了什么、这些文件怎么支撑它 |
+| `content` | 写一句可独立判定的陈述。已有证据时写什么被确立、观察或发表,不写活动流水;证据尚未产生时可事前记录假设、模型前提、验收判据,或改写成陈述句的开放命题(如“X 是否成立仍未确定”),但必须保持 `unestablished`,不得把裸问句或未运行/未读取的结果写成已观察。原子性以判断边界为准:不同证据、范围、不确定性或 qualifier 的测量/解释/外推/外部比较应拆开 |
+| `warrant` | 写让这些证据得以支撑这个内容的推理桥,并说明适用条件。它可以是领域原则、测量/决策规则或明确的模型机制;必须承担真实推理负荷,但不要求脱离条件后仍普遍成立。不复述内容、不总结证据、不引用来源,也不写把目标结果换个说法放进前件的同义 if-then。反例:“如果本次运行得到期望结果,方法就有效”;正例:“在所述仿真假设下,独立参数扫描的一致结果支持测试范围内的数值稳健性” |
+| `evidence.attachments` | 支撑本命题的文件路径。引用文献时把文献本身作为附件;其余情况给一份说明文档(如 `statement-<topic>.md`)加上必要的代码、结果、日志、数据。说明文档负责解释并索引底层证物,不是自身断言的独立佐证 |
 | `evidence.nodes` | 挂进来的是**引用不是副本**,上游看到的永远是那条命题当下的 content。挂 `refuted` 的命题是合法的——那时你依赖的是"它已被推翻"为真,此时应在 `warrant` 里显式写明"因为 X 已被推翻",别把语义反转留在读者脑子里 |
-| `qualifier` | 单条有序标尺 `refuted → unestablished → possibly → probably → certainly`。**不要把方法论局限写在这里,那属于反驳** |
+| `qualifier` | 单条有序标尺 `refuted → unestablished → possibly → probably → certainly`。一个 qualifier 覆盖整条命题;需要不同确信度的成分应拆开。局限不编码进 qualifier 标签:应缩窄 content/scope 或另立命题;只有当局限本身构成对 content 或 warrant 的具体反例、例外或矛盾时才挂作反驳 |
 | `attacks` | 只在这条命题确实构成反例、例外或矛盾时用;普通的观察记录不是反驳。`slot` 选 `content`(攻击结论)还是 `warrant`(攻击推理原则) |
 | `note` | 什么证据逼的这次变更。变更已定案的命题时建议写(C4,不强制) |
 | `dismiss.reason` | 为什么这条意见不成立或无需处理 |
@@ -363,9 +376,10 @@ design.md §1.4 把旧"类型"承担的写作引导转移到参数描述。以�
 | `attachmentsReplaced` | **删除**。接口改成 add/remove 后这件事不可能发生(§2.2) |
 | `paperTagObservedSource` | **删除**(`source` 字段与 tag 体系一并废除) |
 | `attachmentOutOfRoot` | **保留**。它查的是可移植性,与 V3 无关(V3 只查存在),两者都要 |
+| `attachmentUnreadable` | **新增(S6)**。路径存在但不能作为文件完整读取时标红;否则附件可进入基线却无法哈希或 review |
 | `compiledWithoutReviewModel` | **改为失败**。它原本是"没审查却记为 passed"的补丁,而 review 不产出 passed,缺配置时应直接拒绝执行(§4.1) |
 
-新增的警告类别只有一族:**结构检查警告 / 该重查警告**,按 design.md §3.1 的四档判据派生,带触发点与 id(§5)。
+新增的警告类别只有一族:**结构检查警告 / 该重查警告**,按 design.md §3.1 的四档判据派生,带触发点与 id(§5)。其中 `S6` 指出路径存在但附件不可完整读取;`R4` 精确指出同一路径附件的字节内容已经偏离 set_qualifier 时的基线;整体 `R0` 同时说明原判断所依据的自身状态已变。
 
 ---
 

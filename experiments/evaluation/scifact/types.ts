@@ -257,10 +257,38 @@ export interface AuditAttempt {
   rawSha256: string;
   successfulReads: string[];
   file: string;
+  /**
+   * Present for runs produced by the provenance-aware runner. Optional so sealed
+   * runs created before this field existed remain scoreable.
+   */
+  provenance?: AuditProvenance;
+}
+
+export interface AuditAttachmentSnapshot {
+  path: string;
+  sha256: string;
+}
+
+export interface AuditProvenance {
+  schemaVersion: 1;
+  /** Version mixed into the review protocol hash when this run was produced. */
+  protocolVersion: string;
+  /** Hash of the exact prompt string stored in the audit record. */
+  promptSha256: string;
+  /** Hash of protocolVersion + exact prompt; must equal the review event protocol. */
+  protocolHash: string;
+  inputFingerprint: string;
+  attachmentSnapshots: AuditAttachmentSnapshot[];
+  /** Private aliases supplied to the reviewer, in prompt order. */
+  attachmentPaths: string[];
+  /** Canonical subset of attachmentPaths whose Read calls completed. */
+  snapshotReads: string[];
 }
 
 export interface ReviewRunManifest {
   schemaVersion: 1;
+  /** Missing means a legacy run; new runs require provenance on every audit attempt. */
+  auditProvenanceVersion?: 1;
   createdAt: string;
   fixtureManifest: string;
   fixtureManifestSha256: string;

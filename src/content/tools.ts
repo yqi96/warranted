@@ -53,7 +53,7 @@ export const TOOLS = {
   get_argument: {
     title: "Get argument",
     description:
-      "Read a proposition in full — five slots, structural warnings, unresolved findings — plus its neighbours to the requested depth. " +
+      "Read a proposition in full — five slots, structural warnings, unresolved findings, and whether its latest review is current — plus its neighbours to the requested depth. " +
       "Use this when you know the id; when you do not, find_propositions first.",
   },
 
@@ -67,8 +67,8 @@ export const TOOLS = {
   get_stats: {
     title: "Get stats",
     description:
-      "Whole-graph settlement summary: unresolved findings, structural-check violations, propositions flagged for re-check, and counts per credence band. " +
-      "Use this to sweep the graph before reporting or handing off; to look at one proposition, use get_argument.",
+      "Whole-graph recorded-state summary: unresolved findings, structural-check violations, review freshness/coverage, and counts per credence band. " +
+      "It does not prove truth, completeness, or alignment of an outward answer. Use it before a substantive handoff; to inspect one proposition, use get_argument.",
   },
 
   get_history: {
@@ -83,8 +83,10 @@ export const TOOLS = {
   review: {
     title: "Review proposition",
     description:
-      "Ask an independent third-party model to check one proposition: whether its attachments really say what it claims (Q1), and whether the evidence, even granting it, gets you to the content (Q2). " +
-      "Slow and expensive, so call it deliberately. Structural problems — empty evidence, missing attachments, references that dropped a band — are checked for free and automatically; this tool is for the semantic ones.",
+      "Ask an independent third-party model to check one proposition's current local view: whether its attachments substantiate what it claims (Q1), and whether the direct evidence, even granting it, gets you to the content (Q2). " +
+      "It sees no history, command trace, omitted file, or wider graph, so it cannot by itself establish chronology or provenance. " +
+      "Reviews may take several minutes and are expensive; use them deliberately for consequential semantic risks. " +
+      "If the runtime supports background or asynchronous tool calls, prefer that mode, but keep the reviewed proposition and attachments unchanged, do not submit a duplicate while one is pending, and do not rely on a verdict until the result returns. Structural checks remain automatic.",
   },
 
   dismiss: {

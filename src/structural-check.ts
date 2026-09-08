@@ -1,15 +1,16 @@
 /**
  * Warranted — 结构检查(L1)
  *
- * design.md §3.1 的判据在这里落地。**每次读取时重算**,不落库、不是一个可跑的动作
- * (旧 `compile_state` 已废)。它只发现"该重查"并标出触发点,不替查、不替改、不下结论。
+ * design.md §3.1 的判据在这里落地。**按需重算**并随相关读写结果返回,不落库、
+ * 不是一个可跑的动作(旧 `compile_state` 已废)。它只发现"该重查"并标出触发点,
+ * 不替查、不替改、不下结论。
  *
  * 两族判据,派生方式不同:
  *
  * - **S/A 族(当前状态)**:只看图现在长什么样,按命题**自己的** qualifier 分档启用。
  *   S = 支撑侧,A = 攻击侧。
- * - **R 族(基线比对)**:拿当前值与"设 qualifier 那一刻的快照"比,回答"我判断时
- *   依据的东西还是不是这个"(§3.1c)。
+ * - **R 族(基线比对)**:拿当前值与"设 qualifier 那一刻的引用与附件快照"比,
+ *   回答"我判断时依据的东西还是不是这个"(§3.1c)。
  *
  * R 族**不按档位放宽**,只跳过 `unestablished`(它没有基线)。§3.1 给 `possibly` 的
  * 放宽针对的是**可信度要求**("引用链得多可信"),而 R 族问的是**事实变没变**:
@@ -27,11 +28,18 @@ import type { Database } from "bun:sqlite";
 import { existsSync } from "fs";
 import { dirname, resolve, sep } from "path";
 import * as repo from "./repo.ts";
-import { contentHash, recheckFingerprint, selfFingerprint, warningId } from "./hash.ts";
+import {
+  contentHash,
+  fileHash,
+  recheckFingerprint,
+  selfFingerprint,
+  warningId,
+} from "./hash.ts";
 import { WARNINGS } from "./content/warnings.ts";
 import {
   CheckCode,
   POSITIVE_QUALIFIERS,
+  type AttachmentSnapshot,
   type Qualifier,
   type RefRole,
   type StructuralWarning,
@@ -67,6 +75,29 @@ export function resolveAttachment(ctx: CheckContext, path: string): string {
 
 export function attachmentExists(ctx: CheckContext, path: string): boolean {
   return existsSync(resolveAttachment(ctx, path));
+}
+
+/**
+ * 读取附件的原始字节快照。失败记为 null 而不抛:结构检查是只读通道,一份坏附件
+ * 不应让整张图无法读取。调用方每次需要新鲜状态时都应重新捕获,不要跨调用缓存。
+ */
+export function snapshotAttachments(
+  ctx: CheckContext,
+  paths: readonly string[],
+  cache?: Map<string, string | null>
+): AttachmentSnapshot[] {
+  return paths.map((path) => {
+    const resolved = resolveAttachment(ctx, path);
+    if (cache?.has(resolved)) return { path, sha256: cache.get(resolved)! };
+    try {
+      const sha256 = fileHash(resolved);
+      cache?.set(resolved, sha256);
+      return { path, sha256 };
+    } catch {
+      cache?.set(resolved, null);
+      return { path, sha256: null };
+    }
+  });
 }
 
 /** 解析结果是否落在 root 之内。用前缀比较,补上分隔符防止 `/a/bc` 冒充 `/a/b`。 */
@@ -159,23 +190,30 @@ export function loadRefStates(db: Database, state: NodeState): RefState[] {
 }
 
 /** 指纹函数要的那份 self 形状。 */
-function selfInput(state: NodeState) {
+function selfInput(state: NodeState, attachments: AttachmentSnapshot[]) {
   return {
     content: state.content,
     warrant: state.warrant,
     evidenceNodes: state.evidenceNodes,
-    attachments: state.attachments,
+    attachments,
     rebuttals: state.rebuttals,
   };
 }
 
 /** 重查指纹 = 触发条件① + ②(api.md §5)。所有 warning id 都挂在它上面。 */
-export function fingerprintOf(state: NodeState, refs: RefState[]): string {
-  return recheckFingerprint(selfInput(state), refs);
+export function fingerprintOf(
+  state: NodeState,
+  refs: RefState[],
+  attachments: AttachmentSnapshot[]
+): string {
+  return recheckFingerprint(selfInput(state, attachments), refs);
 }
 
-export function selfFingerprintOf(state: NodeState): string {
-  return selfFingerprint(selfInput(state));
+export function selfFingerprintOf(
+  state: NodeState,
+  attachments: AttachmentSnapshot[]
+): string {
+  return selfFingerprint(selfInput(state, attachments));
 }
 
 // =============================================================================
@@ -205,7 +243,8 @@ function refTrigger(role: RefRole, id: number): string {
 function currentStateChecks(
   ctx: CheckContext,
   state: NodeState,
-  refs: RefState[]
+  refs: RefState[],
+  attachments: AttachmentSnapshot[]
 ): RawWarning[] {
   const out: RawWarning[] = [];
   const q = state.qualifier;
@@ -221,6 +260,7 @@ function currentStateChecks(
     }
 
     // S2 / S5 附件:写硬读软。写入时 V3 查过存在,之后被删/被移出根在这里标红。
+    const readable = new Map(attachments.map((item) => [item.path, item.sha256 !== null]));
     for (const path of state.attachments) {
       if (!attachmentExists(ctx, path)) {
         out.push({
@@ -229,6 +269,14 @@ function currentStateChecks(
           message: WARNINGS.attachmentMissing(state.id, path),
         });
         // 文件都不在了,再说一句"它不可移植"是噪音。
+        continue;
+      }
+      if (readable.get(path) === false) {
+        out.push({
+          code: CheckCode.AttachmentUnreadable,
+          trigger: path,
+          message: WARNINGS.attachmentUnreadable(state.id, path),
+        });
         continue;
       }
       if (!isInsideRoot(ctx, path)) {
@@ -299,7 +347,12 @@ function currentStateChecks(
  * (从没判过),或库是手工改出来的。**不为"缺基线"另发一条警告**——那不是图的断点,
  * 是不该存在的状态,发一条 agent 无从处理的警告只会稀释真警告。
  */
-function baselineChecks(db: Database, state: NodeState, refs: RefState[]): RawWarning[] {
+function baselineChecks(
+  db: Database,
+  state: NodeState,
+  refs: RefState[],
+  attachments: AttachmentSnapshot[]
+): RawWarning[] {
   if (state.qualifier === "unestablished") return [];
   const head = repo.getBaselineHead(db, state.id);
   if (!head) return [];
@@ -307,12 +360,27 @@ function baselineChecks(db: Database, state: NodeState, refs: RefState[]): RawWa
   const out: RawWarning[] = [];
 
   // R0 自己变了(content / 理由 / 证据成员 / 反驳成员任一)。
-  if (head.selfFingerprint !== selfFingerprintOf(state)) {
+  if (head.selfFingerprint !== selfFingerprintOf(state, attachments)) {
     out.push({
       code: CheckCode.SelfChanged,
       trigger: null,
       message: WARNINGS.selfChanged(state.id, head.qualifier, head.at),
     });
+  }
+
+  // R4 给 R0 的整体失配补上精确路径。旧库没有附件基线时不伪造比较结果;
+  // 它仍会因新版 self fingerprint 与旧基线不同而得到保守的 R0。
+  const currentAttachments = new Map(attachments.map((a) => [a.path, a.sha256]));
+  for (const base of repo.getBaselineAttachments(db, state.id)) {
+    const now = currentAttachments.get(base.path);
+    if (base.sha256 === null || now === undefined || now === null) continue;
+    if (now !== base.sha256) {
+      out.push({
+        code: CheckCode.AttachmentContentChanged,
+        trigger: base.path,
+        message: WARNINGS.attachmentContentChanged(state.id, base.path),
+      });
+    }
   }
 
   // R1–R3 逐条引用比。以**基线**为准遍历,不是以当前引用清单:引用被删掉之后
@@ -387,14 +455,16 @@ export function computeWarningsFor(
   db: Database,
   ctx: CheckContext,
   state: NodeState,
-  refs?: RefState[]
+  refs?: RefState[],
+  capturedAttachments?: AttachmentSnapshot[]
 ): StructuralWarning[] {
   const refStates = refs ?? loadRefStates(db, state);
-  const fingerprint = fingerprintOf(state, refStates);
+  const attachments = capturedAttachments ?? snapshotAttachments(ctx, state.attachments);
+  const fingerprint = fingerprintOf(state, refStates, attachments);
 
   const raw = [
-    ...currentStateChecks(ctx, state, refStates),
-    ...baselineChecks(db, state, refStates),
+    ...currentStateChecks(ctx, state, refStates, attachments),
+    ...baselineChecks(db, state, refStates, attachments),
   ];
   if (raw.length === 0) return [];
 

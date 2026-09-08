@@ -7,6 +7,8 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { mkdirSync } from "fs";
+import { join } from "path";
 import * as repo from "../src/repo.ts";
 import {
   computeWarnings,
@@ -15,6 +17,7 @@ import {
   attachmentExists,
 } from "../src/structural-check.ts";
 import { CheckCode } from "../src/types.ts";
+import { byteHash } from "../src/hash.ts";
 import {
   createTestDb,
   cleanupDb,
@@ -71,27 +74,27 @@ describe("unestablished", () => {
 describe("possibly", () => {
   test("S1 证据槽两边都空才算空", () => {
     const id = makeProposition(db);
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     expect(codes(id)).toContain(CheckCode.EvidenceEmpty);
   });
 
   test("S1 只挂了附件也算非空", () => {
     const id = makeProposition(db, { attachments: [root.file("a.md")] });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     expect(codes(id)).not.toContain(CheckCode.EvidenceEmpty);
   });
 
   test("S1 只挂了命题也算非空", () => {
     const ev = makeProposition(db);
     const id = makeProposition(db, { evidence: [ev] });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     expect(codes(id)).not.toContain(CheckCode.EvidenceEmpty);
   });
 
   test("S2 写硬读软:写入时在,之后被删,读时标红并指出是哪个文件", () => {
     const path = root.file("gone.md");
     const id = makeProposition(db, { attachments: [path] });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     expect(codes(id)).not.toContain(CheckCode.AttachmentMissing);
 
     root.unlink(path);
@@ -103,15 +106,26 @@ describe("possibly", () => {
 
   test("S2 命中时不再叠一条 S5:文件都不在了,说它不可移植是噪音", () => {
     const id = makeProposition(db, { attachments: ["../outside-and-missing.md"] });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     const c = codes(id);
     expect(c).toContain(CheckCode.AttachmentMissing);
     expect(c).not.toContain(CheckCode.AttachmentOutOfRoot);
   });
 
+  test("S6 路径存在但不是可完整读取的文件时标红", () => {
+    mkdirSync(join(root.root, "directory-attachment"));
+    const id = makeProposition(db, { attachments: ["directory-attachment"] });
+    settle(db, root, id, "possibly");
+    const warning = computeWarnings(db, root, id).find(
+      (item) => item.code === CheckCode.AttachmentUnreadable
+    );
+    expect(warning?.trigger).toBe("directory-attachment");
+    expect(warning?.message).toContain("cannot be read as a complete file");
+  });
+
   test("S3 理由为空(曾经的 V4,现在是表内判据)", () => {
     const id = makeProposition(db, { warrant: "", attachments: [root.file("a.md")] });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     expect(codes(id)).toContain(CheckCode.WarrantEmpty);
   });
 
@@ -119,21 +133,21 @@ describe("possibly", () => {
     const w = makeProposition(db, { content: "The promoted warrant" });
     const id = makeProposition(db, { warrant: "", attachments: [root.file("a.md")] });
     pointWarrantAt(db, id, w);
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     expect(codes(id)).not.toContain(CheckCode.WarrantEmpty);
   });
 
   test("S4 不在 possibly 上跑:引用链的可信度要求实质起点在 probably", () => {
     const ev = makeProposition(db); // unestablished
     const id = makeProposition(db, { evidence: [ev] });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     expect(codes(id)).not.toContain(CheckCode.EvidenceUnestablished);
   });
 
   test("空理由、unestablished 的证据撑一条 possibly,全程不标红(design.md §3.1 认下的代价)", () => {
     const ev = makeProposition(db, { warrant: "" });
     const id = makeProposition(db, { evidence: [ev] });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     expect(codes(id)).toEqual([]);
   });
 });
@@ -146,7 +160,7 @@ describe("probably / certainly", () => {
   test("S4 引用一条 unestablished 的证据要标红,并指出是哪一条", () => {
     const ev = makeProposition(db);
     const id = makeProposition(db, { evidence: [ev] });
-    settle(db, id, "probably");
+    settle(db, root, id, "probably");
     const w = computeWarnings(db, root, id).find(
       (x) => x.code === CheckCode.EvidenceUnestablished
     );
@@ -156,9 +170,9 @@ describe("probably / certainly", () => {
 
   test("S4 refuted 的命题可以当证据——用的是'它被推翻'这个事实", () => {
     const ev = makeProposition(db, { rebuttals: [makeProposition(db)] });
-    settle(db, ev, "refuted");
+    settle(db, root, ev, "refuted");
     const id = makeProposition(db, { evidence: [ev] });
-    settle(db, id, "certainly");
+    settle(db, root, id, "certainly");
     expect(codes(id)).not.toContain(CheckCode.EvidenceUnestablished);
   });
 
@@ -166,7 +180,7 @@ describe("probably / certainly", () => {
     const w = makeProposition(db, { content: "System-promoted warrant" });
     const id = makeProposition(db, { attachments: [root.file("a.md")] });
     pointWarrantAt(db, id, w);
-    settle(db, id, "probably");
+    settle(db, root, id, "probably");
     const hit = computeWarnings(db, root, id).find(
       (x) => x.code === CheckCode.EvidenceUnestablished
     );
@@ -177,15 +191,15 @@ describe("probably / certainly", () => {
   test("S4 不看反驳:攻击侧走 A2 的正向三档,不走这个闸", () => {
     const reb = makeProposition(db); // unestablished
     const id = makeProposition(db, { attachments: [root.file("a.md")], rebuttals: [reb] });
-    settle(db, id, "certainly");
+    settle(db, root, id, "certainly");
     expect(codes(id)).not.toContain(CheckCode.EvidenceUnestablished);
   });
 
   test("正向命题带正向三档的反驳不标红:力度归 L3 判", () => {
     const reb = makeProposition(db, { attachments: [root.file("r.md")] });
-    settle(db, reb, "certainly");
+    settle(db, root, reb, "certainly");
     const id = makeProposition(db, { attachments: [root.file("a.md")], rebuttals: [reb] });
-    settle(db, id, "probably");
+    settle(db, root, id, "probably");
     expect(codes(id)).toEqual([]);
   });
 });
@@ -197,14 +211,14 @@ describe("probably / certainly", () => {
 describe("refuted", () => {
   test("A1 反驳槽为空", () => {
     const id = makeProposition(db);
-    settle(db, id, "refuted");
+    settle(db, root, id, "refuted");
     expect(codes(id)).toContain(CheckCode.RebuttalEmpty);
   });
 
   test("A2 反驳自己没落在正向三档", () => {
     const reb = makeProposition(db); // unestablished
     const id = makeProposition(db, { rebuttals: [reb] });
-    settle(db, id, "refuted");
+    settle(db, root, id, "refuted");
     const w = computeWarnings(db, root, id).find(
       (x) => x.code === CheckCode.RebuttalNotPositive
     );
@@ -214,17 +228,17 @@ describe("refuted", () => {
 
   test("A2 被推翻的反驳打不动人:攻击力随它自己被推翻一起消解", () => {
     const inner = makeProposition(db, { rebuttals: [makeProposition(db)] });
-    settle(db, inner, "refuted");
+    settle(db, root, inner, "refuted");
     const id = makeProposition(db, { rebuttals: [inner] });
-    settle(db, id, "refuted");
+    settle(db, root, id, "refuted");
     expect(codes(id)).toContain(CheckCode.RebuttalNotPositive);
   });
 
   test("refuted 不查支撑侧:空证据、空理由都不响", () => {
     const reb = makeProposition(db);
-    settle(db, reb, "possibly");
+    settle(db, root, reb, "possibly");
     const id = makeProposition(db, { warrant: "", rebuttals: [reb] });
-    settle(db, id, "refuted");
+    settle(db, root, id, "refuted");
     expect(codes(id)).toEqual([]);
   });
 });
@@ -234,9 +248,38 @@ describe("refuted", () => {
 // =============================================================================
 
 describe("基线比对", () => {
+  test("R4 同一路径附件改字节会触发 R0+R4,改回原字节则恢复", () => {
+    const path = root.file("mutable.md", "version one");
+    const id = makeProposition(db, { attachments: [path] });
+    settle(db, root, id, "probably");
+
+    root.file(path, "version two");
+    const changed = computeWarnings(db, root, id);
+    expect(changed.map((w) => w.code)).toEqual(
+      expect.arrayContaining([CheckCode.SelfChanged, CheckCode.AttachmentContentChanged])
+    );
+    expect(changed.find((w) => w.code === CheckCode.AttachmentContentChanged)!.trigger).toBe(path);
+
+    root.file(path, "version one");
+    expect(codes(id)).toEqual([]);
+  });
+
+  test("重新定档会把当前附件字节写成新基线", () => {
+    const path = root.file("mutable.md", "v1");
+    const id = makeProposition(db, { attachments: [path] });
+    settle(db, root, id, "probably");
+    root.file(path, "v2");
+    expect(codes(id)).toContain(CheckCode.AttachmentContentChanged);
+
+    settle(db, root, id, "probably");
+    expect(codes(id)).toEqual([]);
+    expect(repo.getBaselineAttachments(db, id)).toEqual([
+      { nodeId: id, path, sha256: byteHash(new TextEncoder().encode("v2")) },
+    ]);
+  });
   test("R0 判断之后改 content", () => {
     const id = makeProposition(db, { attachments: [root.file("a.md")] });
-    settle(db, id, "probably");
+    settle(db, root, id, "probably");
     expect(codes(id)).toEqual([]);
 
     repo.updatePropositionFields(db, id, { content: "Rewritten" });
@@ -245,14 +288,14 @@ describe("基线比对", () => {
 
   test("R0 成员清单变化也算自己变了", () => {
     const id = makeProposition(db, { attachments: [root.file("a.md")] });
-    settle(db, id, "probably");
+    settle(db, root, id, "probably");
     repo.addAttachments(db, id, [root.file("b.md")]);
     expect(codes(id)).toContain(CheckCode.SelfChanged);
   });
 
   test("R0 改了又改回来,判为未变(比的是状态,不是有没有发生过写事件)", () => {
     const id = makeProposition(db, { content: "Original", attachments: [root.file("a.md")] });
-    settle(db, id, "probably");
+    settle(db, root, id, "probably");
     repo.updatePropositionFields(db, id, { content: "Detour" });
     repo.updatePropositionFields(db, id, { content: "Original" });
     expect(codes(id)).toEqual([]);
@@ -260,9 +303,9 @@ describe("基线比对", () => {
 
   test("R1 判断时依据的引用被删了", () => {
     const ev = makeProposition(db, { attachments: [root.file("e.md")] });
-    settle(db, ev, "certainly");
+    settle(db, root, ev, "certainly");
     const id = makeProposition(db, { evidence: [ev] });
-    settle(db, id, "probably");
+    settle(db, root, id, "probably");
 
     repo.deleteProposition(db, ev);
     const w = computeWarnings(db, root, id);
@@ -272,9 +315,9 @@ describe("基线比对", () => {
 
   test("R2 引用的 content 被改写", () => {
     const ev = makeProposition(db, { attachments: [root.file("e.md")] });
-    settle(db, ev, "certainly");
+    settle(db, root, ev, "certainly");
     const id = makeProposition(db, { evidence: [ev] });
-    settle(db, id, "probably");
+    settle(db, root, id, "probably");
 
     repo.updatePropositionFields(db, ev, { content: "Different claim entirely" });
     expect(codes(id)).toContain(CheckCode.RefContentChanged);
@@ -282,11 +325,11 @@ describe("基线比对", () => {
 
   test("R3 引用从 certainly 掉到 refuted:闸放行,基线比对抓", () => {
     const ev = makeProposition(db, { attachments: [root.file("e.md")] });
-    settle(db, ev, "certainly");
+    settle(db, root, ev, "certainly");
     const id = makeProposition(db, { evidence: [ev] });
-    settle(db, id, "probably");
+    settle(db, root, id, "probably");
 
-    settle(db, ev, "refuted");
+    settle(db, root, ev, "refuted");
     const c = codes(id);
     expect(c).toContain(CheckCode.RefQualifierChanged);
     // 闸只问"能不能用",refuted 能用,所以 S4 不响——同一件事不判两次。
@@ -295,9 +338,9 @@ describe("基线比对", () => {
 
   test("R 族不按档位放宽:possibly 的引用被改写照样标红", () => {
     const ev = makeProposition(db, { attachments: [root.file("e.md")] });
-    settle(db, ev, "possibly");
+    settle(db, root, ev, "possibly");
     const id = makeProposition(db, { evidence: [ev] });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     expect(codes(id)).toEqual([]);
 
     repo.updatePropositionFields(db, ev, { content: "Rewritten" });
@@ -306,9 +349,9 @@ describe("基线比对", () => {
 
   test("R 族在 refuted 上照跑:反驳被改写要重看", () => {
     const reb = makeProposition(db, { attachments: [root.file("r.md")] });
-    settle(db, reb, "certainly");
+    settle(db, root, reb, "certainly");
     const id = makeProposition(db, { rebuttals: [reb] });
-    settle(db, id, "refuted");
+    settle(db, root, id, "refuted");
     expect(codes(id)).toEqual([]);
 
     repo.updatePropositionFields(db, reb, { content: "Not actually a counterexample" });
@@ -324,12 +367,12 @@ describe("基线比对", () => {
 
   test("R2 与 R3 各说各的事,可以同时成立", () => {
     const ev = makeProposition(db, { attachments: [root.file("e.md")] });
-    settle(db, ev, "certainly");
+    settle(db, root, ev, "certainly");
     const id = makeProposition(db, { evidence: [ev] });
-    settle(db, id, "probably");
+    settle(db, root, id, "probably");
 
     repo.updatePropositionFields(db, ev, { content: "Rewritten" });
-    settle(db, ev, "possibly");
+    settle(db, root, ev, "possibly");
     const c = codes(id);
     expect(c).toContain(CheckCode.RefContentChanged);
     expect(c).toContain(CheckCode.RefQualifierChanged);
@@ -341,9 +384,27 @@ describe("基线比对", () => {
 // =============================================================================
 
 describe("警告 id 与复燃", () => {
+  test("附件字节改变会让已阅警告生成新 id 并复燃", () => {
+    const path = root.file("mutable.md", "v1");
+    const id = makeProposition(db, { warrant: "", attachments: [path] });
+    settle(db, root, id, "possibly");
+    const first = pending(id).find((w) => w.code === CheckCode.WarrantEmpty)!;
+    dismiss(db, first.id);
+    expect(computeWarnings(db, root, id).find((w) => w.id === first.id)!.state).toBe("acknowledged");
+
+    root.file(path, "v2");
+    const second = pending(id).find((w) => w.code === CheckCode.WarrantEmpty)!;
+    expect(second.id).not.toBe(first.id);
+  });
+
+  test("byteHash 按原始二进制字节计算 SHA-256", () => {
+    expect(byteHash(Uint8Array.from([0, 255, 1, 128]))).toBe(
+      "edc81f7e4ee358fb91e94bd9bd74079c3dcba36f40f2c8a36e7ae0567afecc8f"
+    );
+  });
   test("id 稳定:同一状态重复计算得到同一个 id", () => {
     const id = makeProposition(db);
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     const a = computeWarnings(db, root, id).map((w) => w.id);
     const b = computeWarnings(db, root, id).map((w) => w.id);
     expect(a).toEqual(b);
@@ -352,14 +413,14 @@ describe("警告 id 与复燃", () => {
 
   test("同一命题上不同判据的 id 不同", () => {
     const id = makeProposition(db, { warrant: "" });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     const ids = computeWarnings(db, root, id).map((w) => w.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
 
   test("dismiss 把警告降为 acknowledged,附理由与时间,不删除", () => {
     const id = makeProposition(db);
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     const target = computeWarnings(db, root, id)[0]!;
     dismiss(db, target.id, "evidence lives in the ticket system, deliberately not attached");
 
@@ -371,7 +432,7 @@ describe("警告 id 与复燃", () => {
 
   test("复燃:本命题一变,已阅警告全部回到 pending", () => {
     const id = makeProposition(db, { warrant: "" });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     for (const w of computeWarnings(db, root, id)) dismiss(db, w.id);
     expect(pending(id)).toHaveLength(0);
 
@@ -384,17 +445,17 @@ describe("警告 id 与复燃", () => {
   test("复燃:引用节点改判,已阅警告一样复燃", () => {
     const ev = makeProposition(db);
     const id = makeProposition(db, { evidence: [ev], warrant: "" });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     for (const w of computeWarnings(db, root, id)) dismiss(db, w.id);
     expect(pending(id)).toHaveLength(0);
 
-    settle(db, ev, "certainly");
+    settle(db, root, ev, "certainly");
     expect(pending(id).length).toBeGreaterThan(0);
   });
 
   test("驳回一条只降级一条", () => {
     const id = makeProposition(db, { warrant: "" });
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     const all = computeWarnings(db, root, id);
     expect(all.length).toBeGreaterThan(1);
     dismiss(db, all[0]!.id);
@@ -406,7 +467,7 @@ describe("警告 id 与复燃", () => {
 
   test("同一 id 被驳回多次,理由以最新一条为准", () => {
     const id = makeProposition(db);
-    settle(db, id, "possibly");
+    settle(db, root, id, "possibly");
     const target = computeWarnings(db, root, id)[0]!;
     dismiss(db, target.id, "first reason");
     dismiss(db, target.id, "second reason");

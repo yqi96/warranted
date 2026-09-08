@@ -7,6 +7,12 @@
 
 import { writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
+import type { AttachmentSnapshot } from "./types.ts";
+
+export interface ReviewAuditMetadata {
+  inputFingerprint: string;
+  attachmentSnapshots: AttachmentSnapshot[];
+}
 
 export interface AuditRecord {
   timestamp: string;
@@ -24,12 +30,16 @@ export interface AuditRecord {
     prompt: string;
     attachmentPaths: string[];
     cwd: string | undefined;
+    inputFingerprint?: string;
+    attachmentSnapshots?: AttachmentSnapshot[];
   };
   output: {
     raw: string;
     durationMs: number;
-    /** Attachment paths whose Read tool calls completed successfully in this attempt. */
+    /** Declared attachments with complete coverage (one full Read or cumulative text Reads). */
     successfulReads: string[];
+    /** Actual private snapshot paths with complete coverage; retained for low-level audit. */
+    snapshotReads?: string[];
   };
 }
 

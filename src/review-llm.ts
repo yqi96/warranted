@@ -7,10 +7,78 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
+import { resolve } from "path";
 import type { ReviewConfig } from "./review-config.ts";
-import { writeAuditRecord } from "./review-audit.ts";
+import { writeAuditRecord, type ReviewAuditMetadata } from "./review-audit.ts";
 
 const DEFAULT_MAX_CONCURRENCY = 4;
+
+interface TextReadCoverage {
+  totalLines: number;
+  intervals: Array<[startLine: number, endLine: number]>;
+  invalid: boolean;
+}
+
+function isSafeIntegerAtLeast(value: unknown, minimum: number): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
+}
+
+/**
+ * Merge the line interval reported by one successful SDK Read into the coverage
+ * already observed for the same resolved path. The hook response is the source
+ * of truth: tool-input offset/limit describe the request, not what was returned.
+ */
+function recordTextCoverage(
+  coverageByPath: Map<string, TextReadCoverage>,
+  resolvedPath: string,
+  file: Record<string, unknown>
+): boolean {
+  const { startLine, numLines, totalLines } = file;
+  if (
+    !isSafeIntegerAtLeast(startLine, 1) ||
+    !isSafeIntegerAtLeast(numLines, 0) ||
+    !isSafeIntegerAtLeast(totalLines, 0) ||
+    file.truncatedByTokenCap === true
+  ) {
+    // A token-truncated response may end in the middle of a line. Line metadata
+    // alone cannot prove that final line was fully observed, so fail closed.
+    return false;
+  }
+
+  if (totalLines === 0) {
+    return startLine === 1 && numLines === 0;
+  }
+  if (numLines === 0 || startLine > totalLines) return false;
+
+  const linesRemaining = totalLines - startLine + 1;
+  const endLine = numLines >= linesRemaining
+    ? totalLines
+    : startLine + numLines - 1;
+  let coverage = coverageByPath.get(resolvedPath);
+  if (!coverage) {
+    coverage = { totalLines, intervals: [], invalid: false };
+    coverageByPath.set(resolvedPath, coverage);
+  }
+  // Immutable snapshots cannot legitimately change totalLines. Once the hook
+  // contradicts itself, do not let a later smaller total reset the evidence and
+  // manufacture complete coverage.
+  if (coverage.totalLines !== totalLines) coverage.invalid = true;
+  if (coverage.invalid) return false;
+
+  const ordered = [...coverage.intervals, [startLine, endLine] as [number, number]]
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged: Array<[number, number]> = [];
+  for (const interval of ordered) {
+    const previous = merged.at(-1);
+    if (!previous || interval[0] > previous[1] + 1) {
+      merged.push([...interval]);
+    } else {
+      previous[1] = Math.max(previous[1], interval[1]);
+    }
+  }
+  coverage.intervals = merged;
+  return merged.length === 1 && merged[0]![0] === 1 && merged[0]![1] >= totalLines;
+}
 
 /**
  * 全局并发上限信号量。所有 callAgent 调用共享同一个模块级实例，而不是让每条命题
@@ -36,7 +104,7 @@ function releasePermit(): void {
 
 /**
  * 调用 Agent 执行审查。
- * Agent 拥有 Read/Glob/Grep 工具，可以读取附件文件。
+ * Agent 只拥有 Read,且 PreToolUse 把它限制到本次传入的不可变附件快照。
  * 返回最终文本结果（期望是 JSON）。
  */
 export async function callAgent(
@@ -46,18 +114,40 @@ export async function callAgent(
   cwd?: string,
   requestId?: string,
   deniedOut?: string[],
-  successfulReadsOut?: string[]
+  successfulReadsOut?: string[],
+  auditMetadata?: ReviewAuditMetadata
 ): Promise<string> {
-  // 构建完整 prompt：审查指令 + 附件路径列表
-  const fullPrompt = attachmentPaths.length > 0
-    ? `${prompt}\n\n## Attachment files to read\nPlease read and analyze the following files before responding:\n${attachmentPaths.map(p => `- ${p}`).join("\n")}`
-    : prompt;
+  // 调用方递进来的已经是最终 prompt。它与 protocol hash 必须逐字相同。
+  const fullPrompt = prompt;
 
   const t0 = Date.now();
   await acquirePermit(config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
   let finalResult = "";
   const deniedTools: string[] = [];
   const successfulReads: string[] = [];
+  const successfulReadPaths = new Set<string>();
+  const textCoverageByPath = new Map<string, TextReadCoverage>();
+  const readRoot = cwd ?? process.cwd();
+  const allowedReadPaths = new Set(attachmentPaths.map((path) => resolve(readRoot, path)));
+  const authorizeRead: HookCallback = async (input) => {
+    if (input.hook_event_name !== "PreToolUse" || input.tool_name !== "Read") return {};
+    const raw = input.tool_input;
+    const path = raw && typeof raw === "object" && "file_path" in raw &&
+      typeof raw.file_path === "string"
+      ? raw.file_path
+      : null;
+    const allowed = path !== null && allowedReadPaths.has(resolve(readRoot, path));
+    if (!allowed) deniedTools.push(path ? `Read:${path}` : "Read");
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: allowed ? "allow" : "deny",
+        permissionDecisionReason: allowed
+          ? "Declared immutable review attachment"
+          : "Only declared immutable review attachments may be read",
+      },
+    };
+  };
   const recordSuccessfulRead: HookCallback = async (input) => {
     if (
       input.hook_event_name === "PostToolUse" &&
@@ -68,6 +158,7 @@ export async function callAgent(
       typeof input.tool_input.file_path === "string"
     ) {
       const path = input.tool_input.file_path;
+      const resolvedPath = resolve(readRoot, path);
       const response = input.tool_response;
       const complete = (() => {
         if (!response || typeof response !== "object" || !("type" in response)) return false;
@@ -78,16 +169,15 @@ export async function callAgent(
           typeof response.file === "object"
         ) {
           const file = response.file as Record<string, unknown>;
-          return (
-            file.startLine === 1 &&
-            typeof file.numLines === "number" &&
-            typeof file.totalLines === "number" &&
-            file.numLines >= file.totalLines &&
-            file.truncatedByTokenCap !== true
-          );
+          return recordTextCoverage(textCoverageByPath, resolvedPath, file);
         }
-        if (response.type === "file_unchanged") return successfulReads.includes(path);
-        if ("pages" in input.tool_input && input.tool_input.pages !== undefined) return false;
+        if (response.type === "file_unchanged") return successfulReadPaths.has(resolvedPath);
+        if ("pages" in input.tool_input && input.tool_input.pages !== undefined) {
+          // SDK 0.3.201 reports paginated PDFs as parts.file.count (pages
+          // extracted), but exposes no totalPages. Even several successful page
+          // ranges therefore cannot prove whole-document coverage.
+          return false;
+        }
         return (
           response.type === "image" ||
           response.type === "notebook" ||
@@ -95,7 +185,10 @@ export async function callAgent(
           response.type === "parts"
         );
       })();
-      if (complete) successfulReads.push(path);
+      if (complete && !successfulReadPaths.has(resolvedPath)) {
+        successfulReadPaths.add(resolvedPath);
+        successfulReads.push(path);
+      }
     }
     return {};
   };
@@ -141,10 +234,10 @@ export async function callAgent(
         // 实测一个项目的审查工作量留下 300 个文件、144MB —— 是 reviews+audit+log
         // 三者合计（3MB）的 48 倍。审查器的会话没人要恢复，不需要留。
         persistSession: false,
-        // 只给只读工具
-        allowedTools: ["Read", "Glob", "Grep"],
-        // 禁止写操作
-        disallowedTools: ["Edit", "Write", "Bash", "MultiEdit"],
+        // 只给 Read,且下面的 PreToolUse 再把路径收窄到本次不可变快照。
+        allowedTools: ["Read"],
+        // 搜索工具也能返回未声明文件内容,因此与写操作一起禁用。
+        disallowedTools: ["Edit", "Write", "Bash", "MultiEdit", "Glob", "Grep"],
         // 从不询问：未预批准的操作直接拒绝，不会因为无 TTY 而卡死
         permissionMode: "dontAsk",
         // 工作目录（agent 在此目录下搜索和读取文件）
@@ -155,6 +248,7 @@ export async function callAgent(
         // the model to read, or observing no permission denial, is not evidence
         // that an attachment was actually opened.
         hooks: {
+          PreToolUse: [{ matcher: "Read", hooks: [authorizeRead] }],
           PostToolUse: [{ matcher: "Read", hooks: [recordSuccessfulRead] }],
         },
       },
@@ -187,17 +281,34 @@ export async function callAgent(
   // 写入审计日志（失败时静默忽略）
   if (config.auditDir) {
     const rid = requestId ?? crypto.randomUUID();
+    const successfulResolved = new Set(
+      successfulReads.map((path) => resolve(readRoot, path))
+    );
+    const declaredReads =
+      auditMetadata?.attachmentSnapshots.length === attachmentPaths.length
+        ? attachmentPaths.flatMap((path, index) =>
+            successfulResolved.has(resolve(readRoot, path))
+              ? [auditMetadata.attachmentSnapshots[index]!.path]
+              : []
+          )
+        : successfulReads;
     writeAuditRecord(config.auditDir, {
       timestamp: new Date().toISOString(),
       requestId: rid,
       model: config.model,
       maxTurns: config.maxTurns ?? 10,
       ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
-      input: { prompt: fullPrompt, attachmentPaths, cwd },
+      input: {
+        prompt: fullPrompt,
+        attachmentPaths,
+        cwd,
+        ...(auditMetadata ?? {}),
+      },
       output: {
         raw: finalResult,
         durationMs: Date.now() - t0,
-        successfulReads,
+        successfulReads: declaredReads,
+        snapshotReads: successfulReads,
       },
     });
   }
@@ -207,6 +318,7 @@ export async function callAgent(
 
 export interface ReviewAttemptTrace {
   model: string;
+  /** Paths with complete Read coverage; multiple text-line Reads may contribute. */
   successfulReads: string[];
 }
 
@@ -330,26 +442,26 @@ export function parseLLMResponse(raw: string): Record<string, unknown> {
  * 而那个模型名不是用户选的。轮数同理：解析失败的原因是"输出不是 JSON"，
  * 不是"轮数太多"，没有理由借这个机会把 20 轮改成 3 轮 —— 附件都可能读不完。
  */
-const NO_FENCES_SUFFIX = "\n\nCRITICAL: Output ONLY a raw JSON object. Do NOT wrap in markdown code fences (```)." as const;
-
 export async function callAndParse(
   config: ReviewConfig,
   prompt: string,
   attachments: string[],
   cwd: string,
   deniedOut?: string[],
-  traceOut?: ReviewAttemptTrace[]
+  traceOut?: ReviewAttemptTrace[],
+  auditMetadata?: ReviewAuditMetadata
 ): Promise<Record<string, unknown>> {
   const requestId = crypto.randomUUID();
   const successfulReads: string[] = [];
   const raw = await callAgent(
     config,
-    prompt + NO_FENCES_SUFFIX,
+    prompt,
     attachments,
     cwd,
     requestId,
     deniedOut,
     successfulReads,
+    auditMetadata,
   );
   const parsed = parseLLMResponse(raw);
   if (!parsed._parseFailed) {
@@ -363,12 +475,13 @@ export async function callAndParse(
     const retrySuccessfulReads: string[] = [];
     const retryRaw = await callAgent(
       retryConfig,
-      prompt + NO_FENCES_SUFFIX,
+      prompt,
       attachments,
       cwd,
       requestId,
       deniedOut,
       retrySuccessfulReads,
+      auditMetadata,
     );
     traceOut?.push({ model: retryConfig.model, successfulReads: retrySuccessfulReads });
     return parseLLMResponse(retryRaw);

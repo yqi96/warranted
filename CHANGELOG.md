@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Replaced the released three-node argument model with one `Proposition` carrying five slots: `content`, `evidence`, `warrant`, `rebuttals`, and `qualifier`. The current MCP surface has 11 tools, stores new work in `.toulmin/graph.db`, and exposes structural problems as non-blocking warnings.
+- Added the bundled browser MCP and its `browser` and `paper-download-browser` skills. Literature work now has bounded `literature-scout` and `paper-reader` agents alongside the graph-writing agents.
+
+### Changed
+
+- Review is now an explicit, optional `review` call. It records independent semantic findings but neither runs automatically on writes nor decides a proposition's qualifier.
+- The visualizer selection hook now renders proposition credibility from `qualifier` instead of the retired node `type`, and no longer writes its own operation log.
+- Public documentation now describes the current Proposition API and marks the former Claim/Statement/Warrant, compile, status/verification, and `.toulmin/argument.db` contracts as historical.
+
+### Deprecated
+
+- `hooks/toulmin-guard.sh` is explicitly deprecated and retained only as a side-effect-free compatibility placeholder.
+
+> Entries in 0.5.0 and earlier describe the historical released model; they are not instructions for the current development branch.
+
 ## [0.5.0] - 2026-08-12
 
 ### Added
@@ -26,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed — behavior changes that affect existing graphs and existing call sites
 
-See the [Upgrading to 0.5.0](README.md#upgrading-to-050) section for the three actions that surface these.
+The three upgrade action classes for this historical release are recorded below.
 
 **Graph-state changes (a full `compile_arguments` after upgrading surfaces them):**
 

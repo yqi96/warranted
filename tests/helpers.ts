@@ -21,6 +21,7 @@ import {
   loadNodeState,
   loadRefStates,
   selfFingerprintOf,
+  snapshotAttachments,
 } from "../src/structural-check.ts";
 
 // =============================================================================
@@ -111,20 +112,27 @@ export function pointWarrantAt(db: Database, id: number, warrantNodeId: number):
  * 测试里必须走这一条而不是直接 UPDATE:R 族判据全靠基线,少写基线的夹具会让
  * R 族在测试里永远静默,而那正是最需要被测的一族。
  */
-export function settle(db: Database, id: number, qualifier: Qualifier): void {
+export function settle(
+  db: Database,
+  ctx: CheckContext,
+  id: number,
+  qualifier: Qualifier
+): void {
   repo.writeQualifier(db, id, qualifier);
   const state = loadNodeState(db, id);
   if (!state) throw new Error(`settle: proposition ${id} not found`);
   const refs = loadRefStates(db, state);
+  const attachments = snapshotAttachments(ctx, state.attachments);
   repo.writeBaseline(
     db,
-    { nodeId: id, qualifier, selfFingerprint: selfFingerprintOf(state) },
+    { nodeId: id, qualifier, selfFingerprint: selfFingerprintOf(state, attachments) },
     refs.map((r) => ({
       refId: r.id,
       refRole: r.role,
       contentHash: r.contentHash,
       qualifier: r.qualifier,
-    }))
+    })),
+    attachments
   );
 }
 

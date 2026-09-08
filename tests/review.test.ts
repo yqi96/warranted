@@ -9,7 +9,11 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
 import * as svc from "../src/service.ts";
 import { buildInput, interpretResponse, runReview } from "../src/review-run.ts";
-import { buildReviewPrompt, protocolHash } from "../src/review-prompts.ts";
+import {
+  buildReviewPrompt,
+  buildReviewRequestPrompt,
+  protocolHash,
+} from "../src/review-prompts.ts";
 import { validateFindings } from "../src/review-validate.ts";
 import { ReviewUnavailableError } from "../src/errors.ts";
 import { createTestDb, cleanupDb, makeTempRoot, type TempRoot } from "./helpers.ts";
@@ -86,6 +90,15 @@ describe("输入边界", () => {
     const b = buildReviewPrompt(buildInput(db, create("B")));
     expect(protocolHash(a)).not.toBe(protocolHash(b));
     expect(protocolHash(a)).toBe(protocolHash(a));
+  });
+
+  test("最终协议文本包含 JSON 后缀与不可变附件读取映射", () => {
+    const path = root.file("paper.md");
+    const input = buildInput(db, create("A", { evidence: { attachments: [path] } }));
+    const request = buildReviewRequestPrompt(input);
+    expect(request).toContain("Output ONLY a raw JSON object");
+    expect(request).toContain(`\"${path}\" -> attachments/0001.md`);
+    expect(protocolHash(request)).not.toBe(protocolHash(buildReviewPrompt(input)));
   });
 });
 
@@ -287,9 +300,53 @@ describe("interpretResponse", () => {
   test("有附件时答非所问倒向 fail:说不清自己结论的审查器不该记成通过", () => {
     const id = create("With attachment", { evidence: { attachments: [root.file("a.md")] } });
     const input = buildInput(db, id);
-    const r = interpretResponse(input, { Q1: "probably fine", Q2: undefined });
-    expect(r.Q1).toBe("fail");
-    expect(r.Q2).toBe("fail");
+    expect(() =>
+      interpretResponse(input, { Q1: "probably fine", Q2: undefined })
+    ).toThrow(ReviewUnavailableError);
+  });
+
+  test("fail 必须有对应的有效 finding;被机械拒收的 finding 不能支撑 verdict", () => {
+    const path = root.file("paper.md");
+    const input = buildInput(
+      db,
+      create("A claim", { evidence: { attachments: [path] } })
+    );
+    expect(() =>
+      interpretResponse(input, {
+        Q1: "fail",
+        Q2: "pass",
+        findings: [
+          {
+            question: "Q1",
+            confidence: "high",
+            content: "unsupported",
+            citation: { attachment: "not-attached.md", locator: "1", quote: "x" },
+          },
+        ],
+      })
+    ).toThrow(ReviewUnavailableError);
+  });
+
+  test("pass 不能与同题被拒 finding 并存,否则不是干净通过", () => {
+    const path = root.file("paper.md");
+    const input = buildInput(
+      db,
+      create("A claim", { evidence: { attachments: [path] } })
+    );
+    expect(() =>
+      interpretResponse(input, {
+        Q1: "pass",
+        Q2: "pass",
+        findings: [
+          {
+            question: "Q1",
+            confidence: "high",
+            content: "unsupported",
+            citation: { attachment: "not-attached.md", locator: "1", quote: "x" },
+          },
+        ],
+      })
+    ).toThrow(ReviewUnavailableError);
   });
 
   test("findings 缺失或不是数组,当空处理,不当解析失败", () => {

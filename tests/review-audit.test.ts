@@ -74,6 +74,29 @@ describe("writeAuditRecord", () => {
     expect(content.requestId).toBe("abc12345-0000-0000-0000-000000000000");
   });
 
+  test("可以把 review 输入指纹与附件哈希写进审计,不需要记录凭据", () => {
+    const dir = TEST_DIR + "/audit";
+    const fingerprint = "a".repeat(64);
+    const record = makeRecord({
+      input: {
+        prompt: "Review this argument.",
+        attachmentPaths: ["evidence.bin"],
+        cwd: "/project",
+        inputFingerprint: fingerprint,
+        attachmentSnapshots: [{ path: "evidence.bin", sha256: "b".repeat(64) }],
+      },
+    });
+    writeAuditRecord(dir, record);
+
+    const filename = readdirSync(dir)[0]!;
+    const content = JSON.parse(readFileSync(dir + "/" + filename, "utf-8"));
+    expect(content.input.inputFingerprint).toBe(fingerprint);
+    expect(content.input.attachmentSnapshots).toEqual([
+      { path: "evidence.bin", sha256: "b".repeat(64) },
+    ]);
+    expect(JSON.stringify(content)).not.toContain("apiKey");
+  });
+
   test("文件名包含 timestamp 和 requestId 前缀", () => {
     const dir = TEST_DIR + "/audit";
     writeAuditRecord(dir, makeRecord());

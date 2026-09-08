@@ -1,24 +1,14 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook — injects selected Toulmin nodes into Claude prompts
+# UserPromptSubmit hook — injects selected propositions into Claude prompts
 # Reads selection state from the running visualizer server (localhost:3456)
 
-PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LOG=".toulmin/operation.log"
 VIZ_BASE="http://localhost:3456"
-TS=$(date '+%Y-%m-%d %H:%M:%S')
 
-log() { echo "[$TS] viz-hook: $*" >> "$LOG"; }
-
-log "hook fired (pwd=$(pwd))"
-
-# Fetch current selection; if server is not running, log and exit silently
+# Fetch current selection; if server is not running, exit silently
 selection=$(curl -sf "${VIZ_BASE}/viz/selection" 2>/dev/null)
 if [ $? -ne 0 ]; then
-  log "server not reachable at ${VIZ_BASE} — skipping"
   exit 0
 fi
-
-log "selection response: $selection"
 
 # Count selected nodes
 node_count=$(echo "$selection" | python3 -c "
@@ -29,12 +19,9 @@ try:
 except Exception as e:
     import sys; print(0, file=sys.stderr)
     print(0)
-" 2>>"$LOG")
-
-log "node_count=$node_count"
+" 2>/dev/null)
 
 if [ "$node_count" = "0" ]; then
-  log "no nodes selected — skipping injection"
   exit 0
 fi
 
@@ -51,16 +38,16 @@ except Exception:
     print('')
 " 2>/dev/null)
 
-# Build node list
+# Build proposition list
 node_lines=$(echo "$selection" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
     lines = []
     for n in d.get('nodes', []):
-        ntype = str(n.get('type', '')).upper()
+        qualifier = str(n.get('qualifier', 'unestablished')).upper()
         content = str(n.get('content', ''))[:80]
-        lines.append(f\"  Node #{n['id']} [{ntype}]: {content}\")
+        lines.append(f\"  Proposition #{n['id']} [{qualifier}]: {content}\")
     print('\n'.join(lines))
 except Exception:
     pass
@@ -80,5 +67,4 @@ print(json.dumps({
 }))
 " "$project_path" "$node_lines")
 
-log "output: $output"
 echo "$output"

@@ -33,6 +33,11 @@ export const WARNINGS = {
     `#${nodeId}: attachment "${path}" resolves outside the project root. ` +
     `It is not portable, and whether a review session can read it depends on the runtime environment.`,
 
+  /** S6 附件存在但不能完整读取 */
+  attachmentUnreadable: (nodeId: number, path: string) =>
+    `#${nodeId}: attachment "${path}" exists but cannot be read as a complete file. ` +
+    `Its bytes cannot be checked or presented to an independent reviewer.`,
+
   /** S3 理由为空 */
   warrantEmpty: (nodeId: number, qualifier: Qualifier) =>
     `#${nodeId} is "${qualifier}", but its warrant slot is empty — nothing states why this ` +
@@ -75,6 +80,11 @@ export const WARNINGS = {
     was: Qualifier,
     now: Qualifier
   ) => `#${nodeId} was judged when #${refId} (${role}) was "${was}"; it is now "${now}".`,
+
+  /** R4 同一路径附件的字节内容已变 */
+  attachmentContentChanged: (nodeId: number, path: string) =>
+    `#${nodeId}: attachment "${path}" no longer has the same file content it had when this ` +
+    `proposition was judged. The path is unchanged, but the evidence at that path is not.`,
 } as const;
 
 /**
@@ -116,4 +126,3 @@ export function deleteAffected(nodeId: number, affected: number[]): string {
     `flagged for re-check — their acknowledged warnings have all re-armed.`
   );
 }
-

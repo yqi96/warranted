@@ -72,7 +72,7 @@ async function main() {
   }
 
   if (noPersist) {
-    console.error("[Warranted] --no-persist: log/review/audit writes disabled");
+    console.error("[Warranted] --no-persist: operation log and review audit writes disabled");
   }
 
   // 创建 MCP Server

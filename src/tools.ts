@@ -88,19 +88,20 @@ function bannerFor(warnings: StructuralWarning[] = [], findings: FindingView[] =
   if (f > 0) parts.push(`${f} unresolved review finding(s)`);
   // 措辞刻意是"标出",不是"你必须修":标红是提示不是拒绝(CLAUDE.md),
   // 驳回其中一条是正常动作。
-  return `⚑ ${parts.join(", ")} on this proposition — read them below; settle each by fixing it or by dismiss with a reason.`;
+  return `⚑ ${parts.join(", ")} on this proposition — read them below. Structural warnings clear when their cause is fixed; findings require a later review or dismiss with a reason.`;
 }
 
 /** 多条命题时把 banner 汇总成一行,并点名是哪几条——不点名就没法行动。 */
 function bannerForMany(views: PropositionView[]): string | undefined {
   const flagged = views.filter((v) => {
     const { w, f } = pendingCounts(v.warnings, v.findings);
-    return w > 0 || f > 0;
+    return w > 0 || f > 0 || v.review.status === "stale";
   });
   if (flagged.length === 0) return undefined;
-  return `⚑ ${flagged.length} of ${views.length} proposition(s) have something unresolved: ${flagged
+  const stale = flagged.filter((v) => v.review.status === "stale").length;
+  return `⚑ ${flagged.length} of ${views.length} proposition(s) need attention: ${flagged
     .map((v) => `#${v.id}`)
-    .join(", ")}`;
+    .join(", ")}${stale > 0 ? ` (${stale} with a stale latest review)` : ""}`;
 }
 
 // =============================================================================
@@ -390,11 +391,15 @@ export function registerTools(
     withLog("get_stats", () => {
       try {
         const s = service.getStats(db, ctx);
-        const red = s.unresolvedFindings.length + s.unresolvedWarnings.length;
+        const staleReviews = s.reviewCoverage.stale.count;
+        const red = s.unresolvedFindings.length + s.unresolvedWarnings.length + staleReviews;
         const banner =
           red > 0
             ? `⚑ ${s.unresolvedWarnings.length} proposition(s) with structural warnings, ` +
               `${s.unresolvedFindings.length} with unresolved findings.` +
+              (staleReviews > 0
+                ? ` ${staleReviews} proposition(s) have a stale latest review.`
+                : "") +
               (s.attachments.missing.length > 0
                 ? ` ${s.attachments.missing.length} attachment path(s) no longer resolve.`
                 : "")
@@ -447,12 +452,12 @@ export function registerTools(
       try {
         // 没配模型、子进程失败、只读工具被拒 → ReviewUnavailableError,不降级。
         // 记一次没跑成的审查为 pass 会在图上造出"已核实"的假象。
-        const r = await runReview(reviewConfig, db, input.id);
+        const r = await runReview(reviewConfig, db, input.id, ctx);
         const pending = r.findings.length;
         const banner =
           pending > 0 || r.Q1 === "fail" || r.Q2 === "fail"
             ? `⚑ Q1=${r.Q1} Q2=${r.Q2}, ${pending} finding(s). ` +
-              `Findings do not expire on their own — settle each by fixing it or by dismiss with a reason.`
+              `Findings do not expire on their own — they remain pending until a later review replaces them or dismiss records a reason.`
             : undefined;
         return ok(r, banner);
       } catch (e) {

@@ -5,8 +5,8 @@
  * 输出目标：stderr（不影响 MCP stdout JSON-RPC 协议）。
  *
  * 日志格式（单行，便于 grep）：
- *   [Warranted] 2025-01-15T10:30:00.123Z | create_claim | OK  | 3ms | content="xxx"
- *   [Warranted] 2025-01-15T10:30:00.456Z | create_ground | ERR | 1ms | Error: validation failed
+ *   [Warranted] 2026-08-20T10:30:00.123Z | create_propositions | OK  | 3ms | items=1
+ *   [Warranted] 2026-08-20T10:30:00.456Z | set_qualifier      | ERR | 1ms | Error: validation failed
  */
 
 import { appendFileSync } from "fs";

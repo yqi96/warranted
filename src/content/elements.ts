@@ -16,8 +16,9 @@ export const ELEMENTS = {
   /** 命题本身。V1 硬拒空值,其余一概不拦。 */
   content: [
     "What this proposition records. Write one declarative statement that can be independently judged.",
-    "State the fact — what is established, observed, or published — not the method or context that produced it.",
-    "Keep it atomic: one independently judgeable proposition per node.",
+    "When evidence exists, state what is established, observed, or published — not merely the activity that produced it.",
+    "Before evidence exists, a hypothesis, assumption, acceptance criterion, or declarative open proposition ('Whether X holds remains unestablished') may be recorded prospectively, but a bare question is not a proposition and an unrun or unread result must not sound observed; leave it 'unestablished'.",
+    "Keep it atomic at the judgment boundary: split statements that need different evidence, scope, uncertainty, or qualifiers.",
   ].join(" "),
 
   /**
@@ -25,11 +26,11 @@ export const ELEMENTS = {
    * (design.md §3.1 表注)。所以措辞里不能出现"必填"。
    */
   warrant: [
-    "The domain-general inference-licensing principle that makes this evidence relevant to this content.",
-    "It should explain why this kind of evidence is allowed to support this kind of conclusion, and must hold beyond this specific argument.",
-    "Do not restate the content, summarize the evidence, cite a source, or write a case-specific if-then bridge.",
-    "Wrong: 'If temperature increased, then climate change occurred' (case-specific bridge).",
-    "Right: 'Sustained temperature increases across multiple independent datasets indicate systematic climate change' (inference-licensing principle).",
+    "The inferential bridge explaining why this evidence supports this content within its stated scope.",
+    "It may be a domain principle, measurement or decision rule, or an explicit model mechanism, with the conditions under which it applies.",
+    "It must carry real inferential load: do not restate the content, summarize the evidence, cite a source, or encode the desired outcome in a tautological case-specific if-then.",
+    "Wrong: 'If this run produced the desired result, then the method works' (desired conclusion restated as a condition).",
+    "Right: 'Under the stated simulation assumptions, agreement across independent parameter sweeps supports numerical robustness within the tested range' (conditional inference rule).",
     "May be left empty while the proposition is still 'unestablished'; taking it to 'possibly' or above is when the structural check asks for it.",
   ].join(" "),
 
@@ -37,7 +38,7 @@ export const ELEMENTS = {
     "File paths supporting this proposition.",
     "When citing published work, attach the reference files themselves (e.g. the paper PDF) — the reference is its own description document, no separate markdown needed.",
     "Otherwise provide a description document (e.g. `statement-<topic>.md`) plus whatever substantiates the proposition: code, result files, execution logs, data.",
-    "The description document should independently explain what this proposition records and how the files support it.",
+    "The description document should explain what this proposition records and index how the files support it; it is not independent corroboration of its own assertions.",
   ].join(" "),
 
   /**
@@ -55,7 +56,8 @@ export const ELEMENTS = {
     "refuted → unestablished → possibly → probably → certainly.",
     "'unestablished' is the honest starting point, not a failure state — it says no judgment has been made yet.",
     "'refuted' means the graph records what defeated it, so it sits at the far end of the same scale rather than off it.",
-    "Do not write methodological limitations here — those are rebuttals.",
+    "One qualifier covers the whole proposition; split measured results, interpretations, generalizations, and external comparisons when they merit different credence.",
+    "Do not encode a limitation in the qualifier label. Narrow the content or scope, or record the limitation as its own proposition; attach it as a rebuttal only when it is itself a specific counter-example, exception, or contradiction to the content or warrant.",
   ].join(" "),
 
   attacks: [

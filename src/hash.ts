@@ -5,7 +5,7 @@
  *
  * - `contentHash`:基线里存的那份 content 快照。只哈希 content,与"对外只暴露
  *   content 与 qualifier"完全对齐——改 warrant 不该让上游的基线失配。
- * - `selfFingerprint`:重查触发条件①(自己变了)的可比较形式。
+ * - `selfFingerprint`:重查触发条件①(自己或同路径附件字节变了)的可比较形式。
  * - `recheckFingerprint`:警告 id 的组成部分,字段清单**逐字对应**两条触发条件,
  *   于是"复燃"是 id 派生的自动结果,不需要可变的警告状态表(api.md §5)。
  *
@@ -14,10 +14,42 @@
  */
 
 import { createHash } from "crypto";
-import type { Qualifier, WarrantSlot } from "./types.ts";
+import { closeSync, constants, fstatSync, openSync, readSync } from "fs";
+import type { AttachmentSnapshot, Qualifier, WarrantSlot } from "./types.ts";
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
+}
+
+/** 原始字节的 SHA-256。附件不能先解码成文本,否则二进制证据会被改写。 */
+export function byteHash(input: Uint8Array): string {
+  return createHash("sha256").update(input).digest("hex");
+}
+
+/**
+ * 文件原始字节的 SHA-256。同步分块读取,避免结构检查为了哈希一个大附件而把整份
+ * 文件同时放进内存。调用方仍应把 I/O 失败当成“不可读”,不要在这里吞异常。
+ */
+export function fileHash(path: string): string {
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(`Not a regular file: ${path}`);
+    while (true) {
+      const count = readSync(fd, buffer, 0, buffer.length, null);
+      if (count === 0) break;
+      hash.update(buffer.subarray(0, count));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest("hex");
+}
+
+/** Locale-independent string order for persistent fingerprints. */
+export function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** 一条命题 content 的哈希。基线存的就是它。 */
@@ -48,7 +80,7 @@ export function selfFingerprint(self: {
   content: string;
   warrant: WarrantSlot;
   evidenceNodes: number[];
-  attachments: string[];
+  attachments: AttachmentSnapshot[];
   rebuttals: number[];
 }): string {
   return sha256(
@@ -56,8 +88,34 @@ export function selfFingerprint(self: {
       content: self.content,
       warrant: warrantKey(self.warrant),
       evidence_nodes: [...self.evidenceNodes].sort((a, b) => a - b),
-      attachments: [...self.attachments].sort(),
+      attachments: [...self.attachments]
+        .sort((a, b) => compareText(a.path, b.path))
+        .map((a) => [a.path, a.sha256]),
       rebuttals: [...self.rebuttals].sort((a, b) => a - b),
+    })
+  );
+}
+
+/** 审查器声明输入的局部视图,不含目标命题自己的 qualifier、反驳或模型配置。 */
+export function reviewInputFingerprint(input: {
+  id: number;
+  content: string;
+  warrant: string | null;
+  attachments: AttachmentSnapshot[];
+  evidenceNodes: Array<{ id: number; content: string; qualifier: Qualifier }>;
+}): string {
+  return sha256(
+    JSON.stringify({
+      version: "review-input/1",
+      id: input.id,
+      content: input.content,
+      warrant: input.warrant,
+      attachments: [...input.attachments]
+        .sort((a, b) => compareText(a.path, b.path))
+        .map((a) => [a.path, a.sha256]),
+      evidence_nodes: [...input.evidenceNodes]
+        .sort((a, b) => a.id - b.id)
+        .map((n) => [n.id, n.content, n.qualifier]),
     })
   );
 }

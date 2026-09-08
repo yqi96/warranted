@@ -7,7 +7,15 @@ import { writeAuditRecord } from "../src/review-audit.ts";
 import type { ReviewConfig } from "../src/review-config.ts";
 import { reviewCwd } from "../src/review-config.ts";
 import { buildInput } from "../src/review-run.ts";
+import { captureReviewSnapshot } from "../src/review-snapshot.ts";
+import {
+  REVIEW_PROTOCOL_VERSION,
+  buildReviewRequestPrompt,
+  protocolHash,
+  reviewAttachmentReadPaths,
+} from "../src/review-prompts.ts";
 import * as service from "../src/service.ts";
+import type { ReviewOutcome } from "../src/types.ts";
 import { copyFixtureProject } from "../experiments/evaluation/common/graph-fixture.ts";
 import {
   readJson,
@@ -42,6 +50,7 @@ import {
   scoreReviewCases,
   validateGraphVerdictOverlay,
   validateFixtureManifest,
+  verifyRunCaseArtifacts,
   writeScoreArtifacts,
 } from "../experiments/evaluation/scifact/score-reviews.ts";
 import type {
@@ -61,6 +70,73 @@ import type {
 } from "../experiments/evaluation/scifact/types.ts";
 
 let root: string;
+
+function recordCurrentReview(
+  db: ReturnType<typeof openDatabase>,
+  projectRoot: string,
+  outcome: Omit<ReviewOutcome, "inputFingerprint">
+) {
+  const ctx = { root: projectRoot };
+  const snapshot = captureReviewSnapshot(db, ctx, outcome.nodeId);
+  return service.recordReview(
+    db,
+    { ...outcome, inputFingerprint: snapshot.inputFingerprint },
+    { ctx, expectedInputFingerprint: snapshot.inputFingerprint }
+  );
+}
+
+function writeCurrentReviewAudit(
+  config: ReviewConfig,
+  db: ReturnType<typeof openDatabase>,
+  nodeId: number,
+  model: string,
+  readIndexes?: number[],
+  overrides: {
+    prompt?: string;
+    inputFingerprint?: string;
+    attachmentSnapshots?: Array<{ path: string; sha256: string }>;
+    successfulReads?: string[];
+    snapshotReads?: string[];
+  } = {},
+) {
+  const projectRoot = reviewCwd(config);
+  const snapshot = captureReviewSnapshot(db, { root: projectRoot }, nodeId);
+  const prompt = overrides.prompt ?? buildReviewRequestPrompt(snapshot.input);
+  const attachmentPaths = reviewAttachmentReadPaths(snapshot.input.attachments);
+  const selected = readIndexes ?? attachmentPaths.map((_, index) => index);
+  const successfulReads = overrides.successfulReads ?? selected.map(
+    (index) => snapshot.attachmentSnapshots[index]!.path,
+  );
+  const snapshotReads = overrides.snapshotReads ?? selected.map(
+    (index) => attachmentPaths[index]!,
+  );
+  writeAuditRecord(config.auditDir!, {
+    timestamp: "2026-09-01T00:00:00.000Z",
+    requestId: "11111111-1111-1111-1111-111111111111",
+    model,
+    maxTurns: config.maxTurns,
+    input: {
+      prompt,
+      attachmentPaths,
+      cwd: join(projectRoot, ".private-review"),
+      inputFingerprint: overrides.inputFingerprint ?? snapshot.inputFingerprint,
+      attachmentSnapshots: overrides.attachmentSnapshots ?? snapshot.attachmentSnapshots,
+    },
+    output: {
+      raw: '{"Q1":"pass","Q2":"pass","findings":[]}',
+      durationMs: 1,
+      successfulReads,
+      snapshotReads,
+    },
+  });
+  return {
+    protocol: protocolHash(prompt),
+    sourceReads: selected.map((index) =>
+      join(projectRoot, snapshot.attachmentSnapshots[index]!.path)
+    ),
+    snapshot,
+  };
+}
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "scifact-eval-test-"));
@@ -336,6 +412,61 @@ describe("SciFact adapter", () => {
 });
 
 describe("graph fixtures and runner", () => {
+  async function runSyntheticAuditedCase(options: {
+    eventProtocol?: string;
+    auditOverrides?: (
+      snapshot: ReturnType<typeof captureReviewSnapshot>,
+    ) => {
+      prompt?: string;
+      inputFingerprint?: string;
+      attachmentSnapshots?: Array<{ path: string; sha256: string }>;
+      successfulReads?: string[];
+      snapshotReads?: string[];
+    };
+  } = {}) {
+    const candidate = selectCandidates(pairs(), ["primary"], null, 7)[0]!;
+    const fixtureRoot = join(root, "fixtures");
+    mkdirSync(fixtureRoot, { recursive: true });
+    const fixture = buildFixtureCase(fixtureRoot, candidate, "primary-000001");
+    const runDir = join(root, "run");
+    mkdirSync(runDir, { recursive: true });
+    const result = await executeCase({
+      fixture,
+      fixtureManifestDir: fixtureRoot,
+      runDir,
+      baseConfig: fakeConfig(),
+      reviewFn: async (config, db, nodeId) => {
+        const projectRoot = reviewCwd(config!);
+        const snapshot = captureReviewSnapshot(db, { root: projectRoot }, nodeId);
+        const audit = writeCurrentReviewAudit(
+          config!,
+          db,
+          nodeId,
+          "test-reviewer",
+          undefined,
+          options.auditOverrides?.(snapshot),
+        );
+        const recorded = recordCurrentReview(db, projectRoot, {
+          nodeId,
+          Q1: "pass",
+          Q2: "pass",
+          findings: [],
+          model: "test-reviewer",
+          protocolHash: options.eventProtocol ?? audit.protocol,
+        });
+        return {
+          ...recorded,
+          Q1: "pass" as const,
+          Q2: "pass" as const,
+          rejected: [],
+          actualModel: "test-reviewer",
+          attachmentsRead: audit.sourceReads,
+        };
+      },
+    });
+    return { fixture, runDir, result };
+  }
+
   test("builds production-format primary and source-grounded q2-oracle graphs", () => {
     const candidates = selectCandidates(pairs(), ["primary", "q2-oracle"], null, 7);
     const primaryCandidate = candidates.find(
@@ -405,7 +536,7 @@ describe("graph fixtures and runner", () => {
 
     const dbAPath = join(copyA, ".toulmin", "graph.db");
     const dbA = openDatabase(dbAPath);
-    service.recordReview(dbA, {
+    recordCurrentReview(dbA, copyA, {
       nodeId: fixture.targetId,
       Q1: "pass",
       Q2: "pass",
@@ -465,30 +596,14 @@ describe("graph fixtures and runner", () => {
       runDir,
       baseConfig: fakeConfig(),
       reviewFn: async (config, db, nodeId) => {
-        const onlyRead = join(reviewCwd(config!), fixture.attachments[0]!.path);
-        writeAuditRecord(config!.auditDir!, {
-          timestamp: "2026-09-01T00:00:00.000Z",
-          requestId: "22222222-2222-2222-2222-222222222222",
-          model: "test-reviewer",
-          maxTurns: config!.maxTurns,
-          input: {
-            prompt: "test",
-            attachmentPaths: fixture.attachments.map((item) => item.path),
-            cwd: reviewCwd(config!),
-          },
-          output: {
-            raw: '{"Q1":"pass","Q2":"pass","findings":[]}',
-            durationMs: 1,
-            successfulReads: [onlyRead],
-          },
-        });
-        const recorded = service.recordReview(db, {
+        const audit = writeCurrentReviewAudit(config!, db, nodeId, "test-reviewer", [0]);
+        const recorded = recordCurrentReview(db, reviewCwd(config!), {
           nodeId,
           Q1: "pass",
           Q2: "pass",
           findings: [],
           model: "test-reviewer",
-          protocolHash: "protocol",
+          protocolHash: audit.protocol,
         });
         return {
           ...recorded,
@@ -496,7 +611,7 @@ describe("graph fixtures and runner", () => {
           Q2: "pass",
           rejected: [],
           actualModel: "test-reviewer",
-          attachmentsRead: [onlyRead],
+          attachmentsRead: audit.sourceReads,
         };
       },
     });
@@ -519,31 +634,14 @@ describe("graph fixtures and runner", () => {
       baseConfig: fakeConfig(),
       reviewFn: async (config, db, nodeId) => {
         const actualModel = "test-fallback";
-        const attachmentPaths = fixture.attachments.map((item) => item.path);
-        const successfulReads = attachmentPaths.map((path) => join(reviewCwd(config!), path));
-        writeAuditRecord(config!.auditDir!, {
-          timestamp: "2026-09-01T00:00:00.000Z",
-          requestId: "11111111-1111-1111-1111-111111111111",
-          model: actualModel,
-          maxTurns: config!.maxTurns,
-          input: {
-            prompt: "test",
-            attachmentPaths,
-            cwd: reviewCwd(config!),
-          },
-          output: {
-            raw: '{"Q1":"pass","Q2":"pass","findings":[]}',
-            durationMs: 1,
-            successfulReads,
-          },
-        });
-        const recorded = service.recordReview(db, {
+        const audit = writeCurrentReviewAudit(config!, db, nodeId, actualModel);
+        const recorded = recordCurrentReview(db, reviewCwd(config!), {
           nodeId,
           Q1: "pass",
           Q2: "pass",
           findings: [],
           model: actualModel,
-          protocolHash: "protocol",
+          protocolHash: audit.protocol,
         });
         return {
           ...recorded,
@@ -551,7 +649,7 @@ describe("graph fixtures and runner", () => {
           Q2: "pass",
           rejected: [],
           actualModel,
-          attachmentsRead: successfulReads,
+          attachmentsRead: audit.sourceReads,
         };
       },
     });
@@ -559,12 +657,125 @@ describe("graph fixtures and runner", () => {
     if (result.status !== "ok") throw new Error("expected success");
     expect(result.actualModel).toBe("test-fallback");
     expect(result.auditAttempts).toHaveLength(1);
+    expect(result.auditAttempts[0]!.provenance).toMatchObject({
+      schemaVersion: 1,
+      protocolVersion: REVIEW_PROTOCOL_VERSION,
+      protocolHash: result.protocolHash,
+    });
     expect(result.attachmentsRead).toEqual(fixture.attachments.map((item) => item.path));
     expect(result.graphSha256).toBe(sha256File(join(runDir, result.graphPath)));
     expect(reviewCount(join(runDir, result.graphPath), fixture.targetId)).toBe(1);
     expect(
       reviewCount(join(fixtureRoot, fixture.projectDir, ".toulmin", "graph.db"), fixture.targetId),
     ).toBe(0);
+  });
+
+  test("provenance-aware runner accepts the q2-oracle empty-attachment boundary", async () => {
+    const candidate = selectCandidates(pairs(), ["q2-oracle"], null, 7)[0]!;
+    const fixtureRoot = join(root, "fixtures");
+    mkdirSync(fixtureRoot, { recursive: true });
+    const fixture = buildFixtureCase(fixtureRoot, candidate, "q2-oracle-000001");
+    const runDir = join(root, "run");
+    mkdirSync(runDir, { recursive: true });
+    const result = await executeCase({
+      fixture,
+      fixtureManifestDir: fixtureRoot,
+      runDir,
+      baseConfig: fakeConfig(),
+      reviewFn: async (config, db, nodeId) => {
+        const audit = writeCurrentReviewAudit(config!, db, nodeId, "test-reviewer");
+        const recorded = recordCurrentReview(db, reviewCwd(config!), {
+          nodeId,
+          Q1: "n/a",
+          Q2: "pass",
+          findings: [],
+          model: "test-reviewer",
+          protocolHash: audit.protocol,
+        });
+        return {
+          ...recorded,
+          Q1: "n/a" as const,
+          Q2: "pass" as const,
+          rejected: [],
+          actualModel: "test-reviewer",
+          attachmentsRead: [],
+        };
+      },
+    });
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") throw new Error("expected runner success");
+    expect(result.auditAttempts[0]!.provenance).toMatchObject({
+      attachmentSnapshots: [],
+      attachmentPaths: [],
+      snapshotReads: [],
+    });
+  });
+
+  test("runner links the review event protocol to the exact audited prompt", async () => {
+    const { result } = await runSyntheticAuditedCase({
+      eventProtocol: "0000000000000000",
+    });
+    expect(result.status).toBe("error");
+    if (result.status !== "error") throw new Error("expected runner failure");
+    expect(result.error).toContain("review event disagrees with audit input provenance");
+  });
+
+  test("runner rejects an audit input fingerprint that differs from the event", async () => {
+    const { result } = await runSyntheticAuditedCase({
+      auditOverrides: () => ({ inputFingerprint: "f".repeat(64) }),
+    });
+    expect(result.status).toBe("error");
+    if (result.status !== "error") throw new Error("expected runner failure");
+    expect(result.error).toContain("review event disagrees with audit input provenance");
+  });
+
+  test("runner binds audit and event attachment hashes to the fixture", async () => {
+    const { result } = await runSyntheticAuditedCase({
+      auditOverrides: (snapshot) => ({
+        attachmentSnapshots: snapshot.attachmentSnapshots.map((item, index) => ({
+          path: item.path,
+          sha256: index === 0 ? "f".repeat(64) : item.sha256!,
+        })),
+      }),
+    });
+    expect(result.status).toBe("error");
+    if (result.status !== "error") throw new Error("expected runner failure");
+    expect(result.error).toContain("review event disagrees with audit input provenance");
+  });
+
+  test("runner does not accept declared reads without matching private snapshot reads", async () => {
+    const { result } = await runSyntheticAuditedCase({
+      auditOverrides: (snapshot) => ({
+        successfulReads: snapshot.attachmentSnapshots.map((item) => item.path),
+        snapshotReads: [],
+      }),
+    });
+    expect(result.status).toBe("error");
+    if (result.status !== "error") throw new Error("expected runner failure");
+    expect(result.error).toContain("successfulReads disagree with private snapshotReads");
+  });
+
+  test("scorer rechecks provenance-aware audits while legacy results remain compatible", async () => {
+    const { fixture, runDir, result } = await runSyntheticAuditedCase();
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") throw new Error("expected runner success");
+
+    expect(() => verifyRunCaseArtifacts(result, fixture, runDir, true)).not.toThrow();
+
+    const legacy = structuredClone(result);
+    for (const attempt of legacy.auditAttempts) delete attempt.provenance;
+    expect(() => verifyRunCaseArtifacts(legacy, fixture, runDir, false)).not.toThrow();
+    expect(() => verifyRunCaseArtifacts(legacy, fixture, runDir, true)).toThrow(
+      "missing required review provenance",
+    );
+
+    const auditPath = join(runDir, result.auditAttempts[0]!.file);
+    const audit = readJson<Record<string, any>>(auditPath);
+    audit.input.prompt += "\ntampered";
+    writeJson(auditPath, audit);
+    expect(() => verifyRunCaseArtifacts(result, fixture, runDir, true)).toThrow(
+      "provenance disagrees with its audit file",
+    );
   });
 });
 

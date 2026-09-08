@@ -9,8 +9,10 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
 import * as svc from "../src/service.ts";
 import * as repo from "../src/repo.ts";
-import { ValidationError, NotFoundError } from "../src/errors.ts";
-import { CheckCode } from "../src/types.ts";
+import { ValidationError, NotFoundError, ReviewUnavailableError } from "../src/errors.ts";
+import { CheckCode, type ReviewOutcome } from "../src/types.ts";
+import { captureReviewSnapshot } from "../src/review-snapshot.ts";
+import { buildReviewRequestPrompt, protocolHash } from "../src/review-prompts.ts";
 import { createTestDb, cleanupDb, makeTempRoot, type TempRoot } from "./helpers.ts";
 
 let db: Database;
@@ -453,6 +455,7 @@ describe("读取", () => {
     const view = svc.propositionView(db, root, id);
     expect(Array.isArray(view.warnings)).toBe(true);
     expect(Array.isArray(view.findings)).toBe(true);
+    expect(view.review).toEqual({ status: "never" });
   });
 
   test("find_propositions 按档位筛", () => {
@@ -558,9 +561,30 @@ describe("dismiss", () => {
 // =============================================================================
 
 describe("recordReview", () => {
+  function recordGuarded(outcome: Omit<ReviewOutcome, "inputFingerprint">) {
+    const snapshot = captureReviewSnapshot(db, root, outcome.nodeId);
+    return svc.recordReview(
+      db,
+      { ...outcome, inputFingerprint: snapshot.inputFingerprint },
+      { ctx: root, expectedInputFingerprint: snapshot.inputFingerprint }
+    );
+  }
+
+  function recordCurrent(id: number) {
+    const snapshot = captureReviewSnapshot(db, root, id);
+    return recordGuarded({
+      nodeId: id,
+      Q1: snapshot.input.attachments.length > 0 ? "pass" : "n/a",
+      Q2: "pass",
+      findings: [],
+      model: "test-model",
+      protocolHash: protocolHash(buildReviewRequestPrompt(snapshot.input)),
+    });
+  }
+
   test("答'是'也留痕:findings 为空照样写事件", () => {
     const id = create();
-    const res = svc.recordReview(db, {
+    const res = recordGuarded({
       nodeId: id,
       Q1: "n/a",
       Q2: "pass",
@@ -575,7 +599,7 @@ describe("recordReview", () => {
 
   test("finding id 在落库那一刻生成,含 review 事件 id", () => {
     const id = create();
-    const res = svc.recordReview(db, {
+    const res = recordGuarded({
       nodeId: id,
       Q1: "n/a",
       Q2: "fail",
@@ -605,7 +629,7 @@ describe("recordReview", () => {
       citation: { nodeId: id, slot: "content" as const, quote: "A proposition" },
     });
 
-    svc.recordReview(db, {
+    recordGuarded({
       nodeId: id,
       Q1: "n/a",
       Q2: "fail",
@@ -613,7 +637,7 @@ describe("recordReview", () => {
       model: "m",
       protocolHash: "h",
     });
-    svc.recordReview(db, {
+    recordGuarded({
       nodeId: id,
       Q1: "n/a",
       Q2: "fail",
@@ -629,9 +653,325 @@ describe("recordReview", () => {
     expect(ops(id).filter((o) => o === "review")).toHaveLength(2);
   });
 
+  test("新一次零 finding 的 pass 会取代旧 failure 的 findings", () => {
+    const id = create();
+    recordGuarded({
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "fail",
+      findings: [
+        {
+          nodeId: id,
+          question: "Q2",
+          confidence: "high",
+          content: "first review found a broken inference",
+          citation: { nodeId: id, slot: "content", quote: "A proposition" },
+        },
+      ],
+      model: "m",
+      protocolHash: "old",
+    });
+    recordGuarded({
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "pass",
+      findings: [],
+      model: "m",
+      protocolHash: "new",
+    });
+
+    expect(svc.propositionView(db, root, id).findings).toEqual([]);
+    expect(svc.getStats(db, root).unresolvedFindings).toEqual([]);
+    expect(ops(id).filter((op) => op === "review")).toHaveLength(2);
+  });
+
+  test("结构无效的最新 review 不会清空上一批有效 findings", () => {
+    const id = create();
+    recordGuarded({
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "fail",
+      findings: [{
+        nodeId: id,
+        question: "Q2",
+        confidence: "high",
+        content: "valid earlier finding",
+        citation: { nodeId: id, slot: "content", quote: "A proposition" },
+      }],
+      model: "m",
+      protocolHash: "h",
+    });
+    repo.appendEvent(db, {
+      nodeId: id,
+      op: "review",
+      actor: "tool",
+      payload: {
+        Q1: "n/a",
+        Q2: "not-a-verdict",
+        findings: [],
+        model: "m",
+        protocol: "h",
+      },
+    });
+
+    expect(svc.propositionView(db, root, id).findings.map((item) => item.content)).toEqual([
+      "valid earlier finding",
+    ]);
+    expect(svc.propositionView(db, root, id).review).toMatchObject({
+      status: "stale",
+      reason: "invalid_record",
+    });
+  });
+
+  test("结构有效但无指纹的 legacy review 仍取代 findings,同时标为 stale", () => {
+    const id = create();
+    recordGuarded({
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "fail",
+      findings: [{
+        nodeId: id,
+        question: "Q2",
+        confidence: "high",
+        content: "old finding",
+        citation: { nodeId: id, slot: "content", quote: "A proposition" },
+      }],
+      model: "m",
+      protocolHash: "h",
+    });
+    repo.appendEvent(db, {
+      nodeId: id,
+      op: "review",
+      actor: "tool",
+      payload: {
+        Q1: "n/a",
+        Q2: "pass",
+        findings: [],
+        model: "legacy-model",
+        protocol: "legacy-protocol",
+      },
+    });
+
+    const view = svc.propositionView(db, root, id);
+    expect(view.findings).toEqual([]);
+    expect(view.review).toMatchObject({
+      status: "stale",
+      reason: "legacy_unfingerprinted",
+    });
+  });
+
+  test("recordReview 拒绝 verdict 与 findings 不一致,且不留空壳事件", () => {
+    const id = create();
+    expect(() =>
+      recordGuarded({
+        nodeId: id,
+        Q1: "n/a",
+        Q2: "fail",
+        findings: [],
+        model: "m",
+        protocolHash: "h",
+      })
+    ).toThrow(ReviewUnavailableError);
+    expect(ops(id).filter((op) => op === "review")).toEqual([]);
+  });
+
+  test("recordReview 运行时严格拒绝非法 Q1/Q2 枚举", () => {
+    const id = create();
+    const base = {
+      nodeId: id,
+      Q1: "n/a",
+      Q2: "pass",
+      findings: [],
+      model: "m",
+      protocolHash: "h",
+    };
+
+    expect(() => recordGuarded({ ...base, Q1: "unknown" } as any)).toThrow(
+      ReviewUnavailableError
+    );
+    expect(() => recordGuarded({ ...base, Q2: "unknown" } as any)).toThrow(
+      ReviewUnavailableError
+    );
+    expect(ops(id).filter((op) => op === "review")).toEqual([]);
+  });
+
+  test("recordReview 拒绝属于另一节点的 finding", () => {
+    const id = create("Target");
+    const other = create("Other");
+    expect(() =>
+      recordGuarded({
+        nodeId: id,
+        Q1: "n/a",
+        Q2: "fail",
+        findings: [{
+          nodeId: other,
+          question: "Q2",
+          confidence: "high",
+          content: "wrong target",
+          citation: { nodeId: id, slot: "content", quote: "Target" },
+        }],
+        model: "m",
+        protocolHash: "h",
+      })
+    ).toThrow(ReviewUnavailableError);
+    expect(ops(id).filter((op) => op === "review")).toEqual([]);
+  });
+
+  test("当前写入 API 不接受无 guard 的 review", () => {
+    const id = create();
+    const snapshot = captureReviewSnapshot(db, root, id);
+    expect(() =>
+      (svc.recordReview as any)(db, {
+        nodeId: id,
+        Q1: "n/a",
+        Q2: "pass",
+        findings: [],
+        model: "m",
+        protocolHash: "h",
+        inputFingerprint: snapshot.inputFingerprint,
+      })
+    ).toThrow(ReviewUnavailableError);
+    expect(ops(id).filter((op) => op === "review")).toEqual([]);
+  });
+
+  test("附件快照由 guard 内重读生成,不信任 caller 的同名额外字段", () => {
+    const path = root.file("source.md", "real bytes");
+    const id = create("Target", { evidence: { attachments: [path] } });
+    const snapshot = captureReviewSnapshot(db, root, id);
+    svc.recordReview(db, {
+      nodeId: id,
+      Q1: "pass",
+      Q2: "pass",
+      findings: [],
+      model: "m",
+      protocolHash: "h",
+      inputFingerprint: snapshot.inputFingerprint,
+      attachmentSnapshots: [{ path, sha256: "0".repeat(64) }],
+    } as any, { ctx: root, expectedInputFingerprint: snapshot.inputFingerprint });
+    const event = svc.getHistory(db, { id }).events.find((item) => item.op === "review")!;
+    expect(event.payload.attachmentSnapshots).toEqual(snapshot.attachmentSnapshots);
+  });
+
+  test("review freshness:目标 qualifier/反驳不在局部输入内,内容与 warrant 在", () => {
+    const id = create("Target");
+    recordCurrent(id);
+    expect(svc.propositionView(db, root, id).review.status).toBe("current");
+
+    svc.setQualifier(db, root, [{ id, qualifier: "probably" }]);
+    const rebuttal = create("Counterexample");
+    svc.updateProposition(db, root, { id, rebuttals: { add: [rebuttal] } });
+    expect(svc.propositionView(db, root, id).review.status).toBe("current");
+
+    svc.updateProposition(db, root, { id, warrant: "A changed inferential bridge" });
+    expect(svc.propositionView(db, root, id).review).toMatchObject({
+      status: "stale",
+      reason: "input_changed",
+    });
+  });
+
+  test("review freshness:目标内容、附件字节、证据内容和证据 qualifier 都会使其 stale", () => {
+    const contentId = create("Target content");
+    recordCurrent(contentId);
+    svc.updateProposition(db, root, { id: contentId, content: "Changed target content" });
+    expect(svc.propositionView(db, root, contentId).review.status).toBe("stale");
+
+    const path = root.file("reviewed.md", "v1");
+    const attachmentId = create("Attachment target", {
+      evidence: { attachments: [path] },
+    });
+    recordCurrent(attachmentId);
+    root.file(path, "v2");
+    expect(svc.propositionView(db, root, attachmentId).review.status).toBe("stale");
+
+    const evidenceId = create("Direct evidence");
+    svc.setQualifier(db, root, [{ id: evidenceId, qualifier: "probably" }]);
+    const conclusionId = create("Conclusion", { evidence: { nodes: [evidenceId] } });
+    recordCurrent(conclusionId);
+    svc.updateProposition(db, root, { id: evidenceId, content: "Rewritten evidence" });
+    expect(svc.propositionView(db, root, conclusionId).review.status).toBe("stale");
+
+    recordCurrent(conclusionId);
+    svc.setQualifier(db, root, [{ id: evidenceId, qualifier: "refuted" }]);
+    expect(svc.propositionView(db, root, conclusionId).review.status).toBe("stale");
+  });
+
+  test("review freshness 区分 never、旧事件 stale、协议变化 stale", () => {
+    const never = create("Never reviewed");
+    expect(svc.propositionView(db, root, never).review).toEqual({ status: "never" });
+
+    const legacy = create("Legacy review");
+    repo.appendEvent(db, {
+      nodeId: legacy,
+      op: "review",
+      actor: "tool",
+      payload: {
+        Q1: "n/a",
+        Q2: "pass",
+        findings: [],
+        model: "m",
+        protocol: "old",
+      },
+    });
+    expect(svc.propositionView(db, root, legacy).review).toMatchObject({
+      status: "stale",
+      reason: "legacy_unfingerprinted",
+    });
+
+    const protocolChanged = create("Protocol changed");
+    recordGuarded({
+      nodeId: protocolChanged,
+      Q1: "n/a",
+      Q2: "pass",
+      findings: [],
+      model: "m",
+      protocolHash: "not-the-current-protocol",
+    });
+    expect(svc.propositionView(db, root, protocolChanged).review).toMatchObject({
+      status: "stale",
+      reason: "protocol_changed",
+    });
+  });
+
+  test("带指纹却缺附件快照的手工 review 是 invalid_record", () => {
+    const id = create("Malformed review");
+    const snapshot = captureReviewSnapshot(db, root, id);
+    repo.appendEvent(db, {
+      nodeId: id,
+      op: "review",
+      actor: "tool",
+      payload: {
+        Q1: "n/a",
+        Q2: "pass",
+        findings: [],
+        model: "m",
+        protocol: protocolHash(buildReviewRequestPrompt(snapshot.input)),
+        inputFingerprint: snapshot.inputFingerprint,
+      },
+    });
+    expect(svc.propositionView(db, root, id).review).toMatchObject({
+      status: "stale",
+      reason: "invalid_record",
+    });
+  });
+
+  test("get_stats 汇总 current/stale/never review coverage", () => {
+    const current = create("Current review");
+    const stale = create("Stale review");
+    const never = create("Never review");
+    recordCurrent(current);
+    recordCurrent(stale);
+    svc.updateProposition(db, root, { id: stale, content: "Changed after review" });
+
+    expect(svc.getStats(db, root).reviewCoverage).toEqual({
+      current: { count: 1, nodeIds: [current] },
+      stale: { count: 1, nodeIds: [stale] },
+      never: { count: 1, nodeIds: [never] },
+    });
+  });
+
   test("finding 不随图变化过期:改 content 之后仍然待处理", () => {
     const id = create();
-    svc.recordReview(db, {
+    recordGuarded({
       nodeId: id,
       Q1: "n/a",
       Q2: "fail",
@@ -656,7 +996,7 @@ describe("recordReview", () => {
 
   test("finding 可以被驳回,理由与时间留痕", () => {
     const id = create();
-    const res = svc.recordReview(db, {
+    const res = recordGuarded({
       nodeId: id,
       Q1: "n/a",
       Q2: "fail",
@@ -685,7 +1025,7 @@ describe("recordReview", () => {
 
   test("带未处理 finding 判档:醒目提示,但不拦截", () => {
     const id = create();
-    svc.recordReview(db, {
+    recordGuarded({
       nodeId: id,
       Q1: "n/a",
       Q2: "fail",

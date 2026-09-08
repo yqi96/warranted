@@ -9,7 +9,8 @@
  * 1. **姿态原则零例外**(design.md §3.1)。抛 `ValidationError` 的地方只有三处成因:
  *    content 空、引用悬空、写入时附件不存在。认识论要求(证据非空、理由非空、
  *    引用链可用)**一律不在这里拦**,它们由结构检查在读时标红。
- * 2. **基线只有一个写入者**(§3.1c)。`repo.writeBaseline` 在本文件里只被
+ * 2. **基线只有一个写入者**(§3.1c)。引用值与附件字节的 `repo.writeBaseline`
+ *    在本文件里只被
  *    `setQualifier` 调用;`createPropositions` / `updateProposition` 都不接受
  *    qualifier 入参,连"顺手落一档"的机会都不给。
  * 3. **一次操作一条事件,写在同一个事务里**(I8)。事件不是日志,是过期检测与
@@ -19,7 +20,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync } from "fs";
 import * as repo from "./repo.ts";
-import { NotFoundError, ValidationError } from "./errors.ts";
+import { NotFoundError, ReviewUnavailableError, ValidationError } from "./errors.ts";
 import {
   checkContext,
   computeWarningsFor,
@@ -27,10 +28,15 @@ import {
   loadRefStates,
   resolveAttachment,
   selfFingerprintOf,
+  snapshotAttachments,
   warrantSlotOf,
   type CheckContext,
   type NodeState,
 } from "./structural-check.ts";
+import { buildReviewRequestPrompt, protocolHash } from "./review-prompts.ts";
+import { compareText } from "./hash.ts";
+import { assertVerdictFindingConsistency } from "./review-consistency.ts";
+import { captureReviewSnapshot } from "./review-snapshot.ts";
 import { suggestNote, deleteAffected, unresolvedFindingsOnSettle } from "./content/warnings.ts";
 import type {
   ArgumentResult,
@@ -51,6 +57,7 @@ import type {
   PropositionRow,
   PropositionView,
   Qualifier,
+  ReviewFreshness,
   ReviewOutcome,
   SetQualifierItem,
   SetQualifierResultItem,
@@ -135,16 +142,20 @@ function mustLoad(db: Database, id: number): PropositionRow {
 /**
  * 一条命题当前"算数"的 findings。
  *
- * 只取**最近一次 review** 的那批:design.md §3.1b 说 finding 由"驳回"或
- * "新一次 review 取代"结算,后者在这里落地。更早的批次不消失——它们还在事件流里,
- * `get_history` 读得到——只是不再算作待处理。
+ * 只取**最近一次结构有效的 review** 那批:design.md §3.1b 说 finding 由"驳回"或
+ * "新一次 review 取代"结算,后者在这里落地。格式损坏的事件仍留在 history、但没有
+ * 资格抹掉上一批意见。更早的批次不消失——`get_history` 仍读得到——只是不再算作待处理。
  */
 export function findingViews(db: Database, nodeId: number): FindingView[] {
+  const latestReview = repo
+    .reviewEventsNewestFirst(db, nodeId)
+    .find((event) => reviewEventCanSupersedeFindings(event));
+  if (!latestReview) return [];
+
   const rows = repo.listFindingsByNode(db, nodeId);
   if (rows.length === 0) return [];
-
-  const latest = Math.max(...rows.map((r) => r.review_event_id));
-  const current = rows.filter((r) => r.review_event_id === latest);
+  const current = rows.filter((r) => r.review_event_id === latestReview.id);
+  if (current.length === 0) return [];
 
   const dismissals = repo.findDismissals(
     db,
@@ -167,7 +178,175 @@ export function findingViews(db: Database, nodeId: number): FindingView[] {
   });
 }
 
-function viewOf(db: Database, ctx: CheckContext, state: NodeState, row: PropositionRow): PropositionView {
+/**
+ * Whether a review event is structurally sound enough to replace an earlier finding batch.
+ *
+ * A legacy Q1/Q2 event without an input fingerprint remains a valid superseder; freshness
+ * reports it as `legacy_unfingerprinted`. Once an event claims fingerprint provenance, the
+ * paired attachment snapshot must also be well formed. A malformed event stays visible in
+ * history and may be reported as `invalid_record`, but it cannot erase the last valid batch.
+ */
+function reviewEventCanSupersedeFindings(event: EventRow): boolean {
+  let payload: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(event.payload);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    payload = parsed as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+
+  if (
+    !isReviewQ1(payload.Q1) ||
+    !isReviewQ2(payload.Q2) ||
+    typeof payload.model !== "string" || payload.model.trim() === "" ||
+    typeof payload.protocol !== "string" || payload.protocol.trim() === "" ||
+    !Array.isArray(payload.findings) ||
+    (payload.rejected !== undefined && !Array.isArray(payload.rejected))
+  ) {
+    return false;
+  }
+
+  const questions: Array<"Q1" | "Q2"> = [];
+  for (const finding of payload.findings) {
+    if (!finding || typeof finding !== "object" || Array.isArray(finding)) return false;
+    const question = (finding as Record<string, unknown>).question;
+    if (question !== "Q1" && question !== "Q2") return false;
+    questions.push(question);
+  }
+  if ((payload.Q1 === "fail") !== questions.includes("Q1")) return false;
+  if ((payload.Q2 === "fail") !== questions.includes("Q2")) return false;
+
+  if ("inputFingerprint" in payload) {
+    if (
+      typeof payload.inputFingerprint !== "string" ||
+      !/^[0-9a-f]{64}$/.test(payload.inputFingerprint) ||
+      !Array.isArray(payload.attachmentSnapshots) ||
+      payload.attachmentSnapshots.some((item) =>
+        !item || typeof item !== "object" || Array.isArray(item) ||
+        !("path" in item) || typeof item.path !== "string" ||
+        !("sha256" in item) || typeof item.sha256 !== "string" ||
+        !/^[0-9a-f]{64}$/.test(item.sha256)
+      )
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function isReviewQ1(value: unknown): value is ReviewOutcome["Q1"] {
+  return value === "pass" || value === "fail" || value === "n/a";
+}
+
+function isReviewQ2(value: unknown): value is ReviewOutcome["Q2"] {
+  return value === "pass" || value === "fail";
+}
+
+/** 最近一次 review 是否仍覆盖当前局部输入。状态由事件和当前图按需派生。 */
+export function reviewFreshness(
+  db: Database,
+  ctx: CheckContext,
+  nodeId: number,
+  capturedAttachments?: import("./types.ts").AttachmentSnapshot[]
+): ReviewFreshness {
+  const event = repo.latestReviewEvent(db, nodeId);
+  if (!event) return { status: "never" };
+
+  let payload: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(event.payload);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("shape");
+    payload = parsed as Record<string, unknown>;
+  } catch {
+    return { status: "stale", reason: "invalid_record", eventId: event.id, at: event.at };
+  }
+
+  const summary: {
+    eventId: number;
+    at: string;
+    Q1?: "pass" | "fail" | "n/a";
+    Q2?: "pass" | "fail";
+    model?: string;
+    protocol?: string;
+  } = {
+    eventId: event.id,
+    at: event.at,
+    ...(payload.Q1 === "pass" || payload.Q1 === "fail" || payload.Q1 === "n/a"
+      ? { Q1: payload.Q1 }
+      : {}),
+    ...(payload.Q2 === "pass" || payload.Q2 === "fail" ? { Q2: payload.Q2 } : {}),
+    ...(typeof payload.model === "string" ? { model: payload.model } : {}),
+    ...(typeof payload.protocol === "string" ? { protocol: payload.protocol } : {}),
+  };
+
+  if (
+    summary.Q1 === undefined ||
+    summary.Q2 === undefined ||
+    summary.model === undefined ||
+    summary.protocol === undefined
+  ) {
+    return { status: "stale", reason: "invalid_record", ...summary };
+  }
+
+  if (!("inputFingerprint" in payload)) {
+    return { status: "stale", reason: "legacy_unfingerprinted", ...summary };
+  }
+  if (
+    typeof payload.inputFingerprint !== "string" ||
+    !/^[0-9a-f]{64}$/.test(payload.inputFingerprint)
+  ) {
+    return { status: "stale", reason: "invalid_record", ...summary };
+  }
+
+  if (
+    !Array.isArray(payload.attachmentSnapshots) ||
+    payload.attachmentSnapshots.some((item) =>
+      !item || typeof item !== "object" ||
+      !("path" in item) || typeof item.path !== "string" ||
+      !("sha256" in item) || typeof item.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(item.sha256)
+    )
+  ) {
+    return { status: "stale", reason: "invalid_record", ...summary };
+  }
+
+  const current = captureReviewSnapshot(db, ctx, nodeId, capturedAttachments);
+  if (payload.inputFingerprint !== current.inputFingerprint) {
+    return { status: "stale", reason: "input_changed", ...summary };
+  }
+  const recordedSnapshots = (payload.attachmentSnapshots as Array<{
+    path: string;
+    sha256: string;
+  }>).slice().sort((a, b) => compareText(a.path, b.path));
+  const currentSnapshots = current.attachmentSnapshots
+    .map((item) => ({ path: item.path, sha256: item.sha256 }))
+    .sort((a, b) => compareText(a.path, b.path));
+  if (JSON.stringify(recordedSnapshots) !== JSON.stringify(currentSnapshots)) {
+    return { status: "stale", reason: "input_changed", ...summary };
+  }
+
+  const currentProtocol = protocolHash(buildReviewRequestPrompt(current.input));
+  if (payload.protocol !== currentProtocol) {
+    return { status: "stale", reason: "protocol_changed", ...summary };
+  }
+  return { status: "current", ...summary };
+}
+
+function viewOf(
+  db: Database,
+  ctx: CheckContext,
+  state: NodeState,
+  row: PropositionRow,
+  attachmentCache?: Map<string, string | null>
+): PropositionView {
+  // 初始未判档、也从未 review 的命题没有任何基线或 review 指纹可比。此时读大附件
+  // 只会增加 MCP 延迟,不会改变任何返回字段;一旦判档或 review 过就必须读字节。
+  const needsWarningHashes = state.qualifier !== "unestablished";
+  const attachments = needsWarningHashes
+    ? snapshotAttachments(ctx, state.attachments, attachmentCache)
+    : [];
   return {
     id: state.id,
     content: state.content,
@@ -175,17 +354,25 @@ function viewOf(db: Database, ctx: CheckContext, state: NodeState, row: Proposit
     warrant: state.warrant,
     evidence: { attachments: state.attachments, nodes: state.evidenceNodes },
     rebuttals: state.rebuttals,
-    warnings: computeWarningsFor(db, ctx, state),
+    warnings: computeWarningsFor(db, ctx, state, undefined, attachments),
     findings: findingViews(db, state.id),
+    // For unestablished nodes, let reviewFreshness decide whether a legacy/invalid event can be
+    // classified without touching attachment bytes. Current fingerprints still hash on demand.
+    review: reviewFreshness(db, ctx, state.id, needsWarningHashes ? attachments : undefined),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-export function propositionView(db: Database, ctx: CheckContext, id: number): PropositionView {
+export function propositionView(
+  db: Database,
+  ctx: CheckContext,
+  id: number,
+  attachmentCache?: Map<string, string | null>
+): PropositionView {
   const row = mustLoad(db, id);
   const state = loadNodeState(db, id)!;
-  return viewOf(db, ctx, state, row);
+  return viewOf(db, ctx, state, row, attachmentCache);
 }
 
 function warningsOf(db: Database, ctx: CheckContext, id: number): StructuralWarning[] {
@@ -470,6 +657,7 @@ export function setQualifier(
 
   return db.transaction((): SetQualifierResultItem[] => {
     const out: SetQualifierResultItem[] = [];
+    const attachmentCache = new Map<string, string | null>();
 
     for (const u of updates) {
       const before = mustLoad(db, u.id);
@@ -481,15 +669,17 @@ export function setQualifier(
       // 顺序无关紧要(引用的值不受本次写入影响),但必须在同一事务里。
       const state = loadNodeState(db, u.id)!;
       const refs = loadRefStates(db, state);
+      const attachments = snapshotAttachments(ctx, state.attachments, attachmentCache);
       repo.writeBaseline(
         db,
-        { nodeId: u.id, qualifier, selfFingerprint: selfFingerprintOf(state) },
+        { nodeId: u.id, qualifier, selfFingerprint: selfFingerprintOf(state, attachments) },
         refs.map((r) => ({
           refId: r.id,
           refRole: r.role,
           contentHash: r.contentHash,
           qualifier: r.qualifier,
-        }))
+        })),
+        attachments
       );
 
       repo.appendEvent(db, {
@@ -510,7 +700,7 @@ export function setQualifier(
         id: u.id,
         qualifier,
         previous: before.qualifier,
-        warnings: computeWarningsFor(db, ctx, state, refs),
+        warnings: computeWarningsFor(db, ctx, state, refs, attachments),
         ...(notices.length > 0 ? { notices } : {}),
       });
     }
@@ -652,7 +842,8 @@ export function getArgument(
   ctx: CheckContext,
   params: { id: number; depth?: number }
 ): ArgumentResult {
-  const root = propositionView(db, ctx, params.id);
+  const attachmentCache = new Map<string, string | null>();
+  const root = propositionView(db, ctx, params.id, attachmentCache);
   const depth = params.depth ?? 1;
   if (depth <= 0) return { root, neighbors: [] };
 
@@ -671,7 +862,7 @@ export function getArgument(
       for (const id of linked) {
         if (seen.has(id)) continue;
         seen.add(id);
-        const view = propositionView(db, ctx, id);
+        const view = propositionView(db, ctx, id, attachmentCache);
         neighbors.push(view);
         next.push(view);
       }
@@ -694,6 +885,7 @@ export function findPropositions(
 ): FindResult {
   const limit = params.limit ?? 20;
   const offset = params.offset ?? 0;
+  const attachmentCache = new Map<string, string | null>();
 
   if (!params.has_unresolved) {
     const { rows, total } = repo.findPropositions(db, {
@@ -703,7 +895,9 @@ export function findPropositions(
       offset,
     });
     return {
-      items: rows.map((r) => viewOf(db, ctx, loadNodeState(db, r.id)!, r)),
+      items: rows.map((r) =>
+        viewOf(db, ctx, loadNodeState(db, r.id)!, r, attachmentCache)
+      ),
       total,
     };
   }
@@ -718,7 +912,7 @@ export function findPropositions(
   });
 
   const matched = rows
-    .map((r) => viewOf(db, ctx, loadNodeState(db, r.id)!, r))
+    .map((r) => viewOf(db, ctx, loadNodeState(db, r.id)!, r, attachmentCache))
     .filter(
       (v) =>
         v.warnings.some((w) => w.state === "pending") ||
@@ -746,6 +940,12 @@ export function getStats(db: Database, ctx: CheckContext): SettlementSummary {
   const unresolvedWarnings: SettlementSummary["unresolvedWarnings"] = [];
   const missing: string[] = [];
   let attachmentTotal = 0;
+  const reviewCoverage: SettlementSummary["reviewCoverage"] = {
+    current: { count: 0, nodeIds: [] },
+    stale: { count: 0, nodeIds: [] },
+    never: { count: 0, nodeIds: [] },
+  };
+  const attachmentCache = new Map<string, string | null>();
 
   for (const id of repo.allPropositionIds(db)) {
     const state = loadNodeState(db, id)!;
@@ -760,7 +960,11 @@ export function getStats(db: Database, ctx: CheckContext): SettlementSummary {
       unresolvedFindings.push({ nodeId: id, count: pendingFindings.length });
     }
 
-    const pendingWarnings = computeWarningsFor(db, ctx, state).filter(
+    const needsWarningHashes = state.qualifier !== "unestablished";
+    const attachments = needsWarningHashes
+      ? snapshotAttachments(ctx, state.attachments, attachmentCache)
+      : [];
+    const pendingWarnings = computeWarningsFor(db, ctx, state, undefined, attachments).filter(
       (w) => w.state === "pending"
     );
     if (pendingWarnings.length > 0) {
@@ -769,6 +973,10 @@ export function getStats(db: Database, ctx: CheckContext): SettlementSummary {
         codes: [...new Set(pendingWarnings.map((w) => w.code))],
       });
     }
+
+    const freshness = reviewFreshness(db, ctx, id, needsWarningHashes ? attachments : undefined);
+    reviewCoverage[freshness.status].count++;
+    reviewCoverage[freshness.status].nodeIds.push(id);
   }
 
   return {
@@ -777,6 +985,7 @@ export function getStats(db: Database, ctx: CheckContext): SettlementSummary {
     unresolvedFindings,
     unresolvedWarnings,
     attachments: { total: attachmentTotal, missing },
+    reviewCoverage,
   };
 }
 
@@ -828,10 +1037,70 @@ function toEventRecord(row: EventRow): EventRecord {
  * **答"是"也留痕**:Q1/Q2 全 pass、findings 为空的一次 review 照样写事件——
  * 没有这一层,"从没 review 过"与"review 过且没问题"分不开(design.md §2.2)。
  */
-export function recordReview(db: Database, outcome: ReviewOutcome): { eventId: number; findings: Finding[] } {
+export function recordReview(
+  db: Database,
+  outcome: ReviewOutcome,
+  guard: { ctx: CheckContext; expectedInputFingerprint: string }
+): { eventId: number; findings: Finding[] } {
   mustLoad(db, outcome.nodeId);
+  if (!guard || typeof guard.expectedInputFingerprint !== "string") {
+    throw new ReviewUnavailableError(
+      `Review of #${outcome.nodeId} has no guarded input provenance. Nothing was recorded.`
+    );
+  }
+  if (!isReviewQ1(outcome.Q1) || !isReviewQ2(outcome.Q2)) {
+    throw new ReviewUnavailableError(
+      `Review of #${outcome.nodeId} has an invalid Q1/Q2 verdict. Nothing was recorded.`
+    );
+  }
+  const wrongNode = outcome.findings.find((finding) => finding.nodeId !== outcome.nodeId);
+  if (wrongNode) {
+    throw new ReviewUnavailableError(
+      `Review of #${outcome.nodeId} contains a finding for #${wrongNode.nodeId}. Nothing was recorded.`
+    );
+  }
+  assertVerdictFindingConsistency({ ...outcome, rejected: outcome.rejected ?? [] });
+  const hasAttachments = repo.getAttachments(db, outcome.nodeId).length > 0;
+  if ((outcome.Q1 === "n/a") !== !hasAttachments) {
+    throw new ReviewUnavailableError(
+      `Review of #${outcome.nodeId} has Q1=${outcome.Q1}, which does not match whether attachments exist. Nothing was recorded.`
+    );
+  }
+  if (
+    typeof outcome.model !== "string" || outcome.model.trim() === "" ||
+    typeof outcome.protocolHash !== "string" || outcome.protocolHash.trim() === ""
+  ) {
+    throw new ReviewUnavailableError(
+      `Review of #${outcome.nodeId} is missing model or protocol identity. Nothing was recorded.`
+    );
+  }
+  if (!/^[0-9a-f]{64}$/.test(outcome.inputFingerprint)) {
+    throw new ReviewUnavailableError(
+      `Review of #${outcome.nodeId} has an invalid input fingerprint. Nothing was recorded.`
+    );
+  }
 
   return db.transaction((): { eventId: number; findings: Finding[] } => {
+    if (outcome.inputFingerprint !== guard.expectedInputFingerprint) {
+      throw new ReviewUnavailableError(
+        `Review of #${outcome.nodeId} has an inconsistent input fingerprint. Nothing was recorded.`
+      );
+    }
+    const current = captureReviewSnapshot(db, guard.ctx, outcome.nodeId);
+    if (current.inputFingerprint !== guard.expectedInputFingerprint) {
+      throw new ReviewUnavailableError(
+        `Review input for #${outcome.nodeId} changed before it could be recorded. Nothing was recorded.`
+      );
+    }
+    const unreadable = current.attachmentSnapshots
+      .filter((item) => item.sha256 === null)
+      .map((item) => item.path);
+    if (unreadable.length > 0) {
+      throw new ReviewUnavailableError(
+        `Review of #${outcome.nodeId} has unreadable attachment input (${unreadable.join(", ")}). Nothing was recorded.`
+      );
+    }
+
     const eventId = repo.appendEvent(db, {
       nodeId: outcome.nodeId,
       op: "review",
@@ -841,6 +1110,9 @@ export function recordReview(db: Database, outcome: ReviewOutcome): { eventId: n
         Q2: outcome.Q2,
         model: outcome.model,
         protocol: outcome.protocolHash,
+        inputFingerprint: outcome.inputFingerprint,
+        // Never trust caller-supplied attachment provenance: derive it again under the guard.
+        attachmentSnapshots: current.attachmentSnapshots,
         findings: outcome.findings,
         // 拒收记录进载荷不进表:它不是一条意见,是一次协议违规的证物。
         ...(outcome.rejected?.length ? { rejected: outcome.rejected } : {}),

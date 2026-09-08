@@ -187,8 +187,8 @@ export const SCHEMA_SQL = `
   -- ---------------------------------------------------------------------------
   --
   -- self_fingerprint 是判断当时**本命题自身**的指纹(content + warrant + 证据成员
-  -- 清单 + 反驳成员清单),对应重查触发条件①;baseline_refs 是当时每个直接引用的
-  -- (content hash, qualifier),对应触发条件②。
+  -- 清单 + 附件字节 + 反驳成员清单),对应重查触发条件①;baseline_refs 是当时每个
+  -- 直接引用的 (content hash, qualifier),对应触发条件②。
   --
   -- 只有 set_qualifier 写这两张表。这是接口面的硬约束:create / update 都不接受
   -- qualifier 入参,否则出现第二个写入者,基线就退化成旧 compile_state 那种谎话。
@@ -209,6 +209,15 @@ export const SCHEMA_SQL = `
     content_hash TEXT    NOT NULL,
     qualifier    TEXT    NOT NULL CHECK (qualifier IN (${qualifierCheck})),
     PRIMARY KEY (node_id, ref_id, ref_role)
+  );
+
+  -- qualifier 基线中的附件字节快照。允许 NULL:附件可能在挂载后、重新定档前
+  -- 变得不可读;这仍应由读时结构检查表达,不新增写入硬拒。
+  CREATE TABLE IF NOT EXISTS baseline_attachments (
+    node_id      INTEGER NOT NULL REFERENCES propositions(id) ON DELETE CASCADE,
+    path         TEXT    NOT NULL,
+    content_hash TEXT,
+    PRIMARY KEY (node_id, path)
   );
 `;
 

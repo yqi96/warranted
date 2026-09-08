@@ -13,16 +13,23 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { ReviewConfig } from "./review-config.ts";
 import { reviewCwd } from "./review-config.ts";
-import { buildReviewPrompt, protocolHash, type ReviewInput } from "./review-prompts.ts";
+import { buildReviewRequestPrompt, protocolHash, type ReviewInput } from "./review-prompts.ts";
 import { validateFindings } from "./review-validate.ts";
 import { callAndParse } from "./review-llm.ts";
-import { ReviewUnavailableError, NotFoundError } from "./errors.ts";
+import { ReviewUnavailableError } from "./errors.ts";
 import { log } from "./logger.ts";
-import * as repo from "./repo.ts";
 import * as svc from "./service.ts";
+import { assertVerdictFindingConsistency } from "./review-consistency.ts";
+import {
+  buildReviewInput,
+  captureReviewSnapshot,
+  snapshotReviewInput,
+} from "./review-snapshot.ts";
+import { materializeReviewAttachments } from "./review-materialize.ts";
+import type { CheckContext } from "./structural-check.ts";
 import type { Finding, FindingDraft, RejectedFinding } from "./types.ts";
 
 export interface ReviewRunResult {
@@ -34,7 +41,7 @@ export interface ReviewRunResult {
   rejected: RejectedFinding[];
   /** Model that produced the parsed verdict (may be the configured fallback). */
   actualModel: string;
-  /** Attachment paths whose Read calls completed in the verdict-producing attempt. */
+  /** Declared attachment paths whose immutable copies were fully read in the final attempt. */
   attachmentsRead: string[];
 }
 
@@ -44,27 +51,7 @@ export interface ReviewRunResult {
  * warrant 在这里就被解成一句话:内联文本,或晋升后那条命题的 content。审查器读的是
  * 同一句话,不需要知道它在图里是文本还是节点——那是存储形态,不是论证的一部分。
  */
-export function buildInput(db: Database, nodeId: number): ReviewInput {
-  const row = repo.getProposition(db, nodeId);
-  if (!row) throw new NotFoundError(nodeId);
-
-  let warrant: string | null = row.warrant_text;
-  if (row.warrant_node_id !== null) {
-    warrant = repo.getProposition(db, row.warrant_node_id)?.content ?? null;
-  }
-
-  const evidenceNodes = repo
-    .getPropositions(db, repo.getEvidenceNodes(db, nodeId))
-    .map((n) => ({ id: n.id, content: n.content, qualifier: n.qualifier }));
-
-  return {
-    id: row.id,
-    content: row.content,
-    warrant,
-    attachments: repo.getAttachments(db, nodeId),
-    evidenceNodes,
-  };
-}
+export { buildReviewInput as buildInput } from "./review-snapshot.ts";
 
 /** 结论字段的收口:审查器只能答这三个/两个值,别的一律当没答上来。 */
 function readQ1(v: unknown, hasAttachments: boolean): "pass" | "fail" | "n/a" {
@@ -95,12 +82,19 @@ export function interpretResponse(
     input,
     Array.isArray(parsed.findings) ? parsed.findings : []
   );
-  return {
+  const outcome = {
     Q1: readQ1(parsed.Q1, input.attachments.length > 0),
     Q2: readQ2(parsed.Q2),
     accepted,
     rejected,
   };
+  assertVerdictFindingConsistency({
+    Q1: outcome.Q1,
+    Q2: outcome.Q2,
+    findings: outcome.accepted,
+    rejected: outcome.rejected,
+  });
+  return outcome;
 }
 
 /**
@@ -112,7 +106,8 @@ export function interpretResponse(
 export async function runReview(
   config: ReviewConfig | null,
   db: Database,
-  nodeId: number
+  nodeId: number,
+  ctx?: CheckContext
 ): Promise<ReviewRunResult> {
   if (!config || !config.enabled) {
     throw new ReviewUnavailableError(
@@ -123,88 +118,126 @@ export async function runReview(
     );
   }
 
-  const input = buildInput(db, nodeId);
-  const prompt = buildReviewPrompt(input);
-  const protocol = protocolHash(prompt);
-
-  const denied: string[] = [];
-  const attempts: import("./review-llm.ts").ReviewAttemptTrace[] = [];
-  let parsed: Record<string, unknown>;
-  const cwd = reviewCwd(config);
-  const t0 = Date.now();
-  log("review", "OK", 0, `START review: #${nodeId}`);
+  const reviewContext = ctx ?? { root: reviewCwd(config) };
+  const initialInput = buildReviewInput(db, nodeId);
+  let materialized: ReturnType<typeof materializeReviewAttachments>;
   try {
-    parsed = await callAndParse(config, prompt, input.attachments, cwd, denied, attempts);
-  } catch (e) {
-    log("review", "ERR", Date.now() - t0, `#${nodeId}: ${e}`);
-    throw new ReviewUnavailableError(`Review of #${nodeId} did not run: ${e}`);
-  }
-
-  // 被拒的工具调用意味着它可能从没读到附件。一个没读证据的 Q1 结论,pass 与 fail
-  // 同样没有意义,所以整次作废而不是记下来。
-  if (denied.length > 0) {
+    materialized = materializeReviewAttachments(reviewContext, initialInput);
+  } catch (error) {
     throw new ReviewUnavailableError(
-      `Review of #${nodeId} had ${denied.length} tool call(s) denied (${denied.join(", ")}), ` +
-        "so the reviewer may never have read the attachments. Nothing was recorded."
+      `Review of #${nodeId} could not create an immutable snapshot of every attachment: ${error}. Nothing was recorded.`
     );
   }
 
-  // callAndParse 内部已经重试过一次(换 fallbackModel)。到这里还没解析出来,就是
-  // 这个模型交不出协议要求的形状——记一个空壳 review 事件比不记更糟。
-  if (parsed._parseFailed) {
-    log("review", "ERR", Date.now() - t0, `#${nodeId}: unparseable response`);
-    throw new ReviewUnavailableError(
-      `Review of #${nodeId} did not return JSON, on the first attempt or the retry. ` +
-        `Nothing was recorded. Last response began: ${String(parsed._raw ?? "").slice(0, 200)}`
+  const started = snapshotReviewInput(initialInput, materialized.snapshots);
+  try {
+    // The graph and mutable source files must still describe the exact view just copied.
+    const afterMaterialize = captureReviewSnapshot(db, reviewContext, nodeId);
+    if (afterMaterialize.inputFingerprint !== started.inputFingerprint) {
+      throw new ReviewUnavailableError(
+        `Review input for #${nodeId} changed while its attachment snapshot was being created. Nothing was recorded.`
+      );
+    }
+
+    const input = started.input;
+    const prompt = buildReviewRequestPrompt(input);
+    const protocol = protocolHash(prompt);
+
+    const denied: string[] = [];
+    const attempts: import("./review-llm.ts").ReviewAttemptTrace[] = [];
+    let parsed: Record<string, unknown>;
+    const t0 = Date.now();
+    log("review", "OK", 0, `START review: #${nodeId}`);
+    try {
+      parsed = await callAndParse(
+        config,
+        prompt,
+        materialized.readPaths,
+        materialized.cwd,
+        denied,
+        attempts,
+        {
+          inputFingerprint: started.inputFingerprint,
+          attachmentSnapshots: started.attachmentSnapshots,
+        }
+      );
+    } catch (e) {
+      log("review", "ERR", Date.now() - t0, `#${nodeId}: ${e}`);
+      throw new ReviewUnavailableError(`Review of #${nodeId} did not run: ${e}`);
+    }
+
+    // Any denied tool means the reviewer tried to leave its declared, immutable input boundary.
+    if (denied.length > 0) {
+      throw new ReviewUnavailableError(
+        `Review of #${nodeId} had ${denied.length} tool call(s) denied (${denied.join(", ")}), ` +
+          "so its input boundary was not respected. Nothing was recorded."
+      );
+    }
+
+    // callAndParse 内部已经重试过一次(换 fallbackModel)。到这里还没解析出来,就是
+    // 这个模型交不出协议要求的形状——记一个空壳 review 事件比不记更糟。
+    if (parsed._parseFailed) {
+      log("review", "ERR", Date.now() - t0, `#${nodeId}: unparseable response`);
+      throw new ReviewUnavailableError(
+        `Review of #${nodeId} did not return JSON, on the first attempt or the retry. ` +
+          `Nothing was recorded. Last response began: ${String(parsed._raw ?? "").slice(0, 200)}`
+      );
+    }
+
+    const verdictAttempt = attempts.at(-1);
+    if (!verdictAttempt) {
+      throw new ReviewUnavailableError(
+        `Review of #${nodeId} produced no auditable model attempt. Nothing was recorded.`
+      );
+    }
+    const resolvedReads = new Set(
+      verdictAttempt.successfulReads.map((path) => resolve(materialized.cwd, path))
     );
-  }
-
-  const verdictAttempt = attempts.at(-1);
-  if (!verdictAttempt) {
-    throw new ReviewUnavailableError(
-      `Review of #${nodeId} produced no auditable model attempt. Nothing was recorded.`
+    const unreadAttachments = input.attachments.filter((_, index) =>
+      !resolvedReads.has(resolve(materialized.cwd, materialized.readPaths[index]!))
     );
-  }
-  const resolvedReads = new Set(
-    verdictAttempt.successfulReads.map((path) => resolve(cwd, path))
-  );
-  const unreadAttachments = input.attachments.filter((path) => {
-    const expected = isAbsolute(path) ? resolve(path) : resolve(cwd, path);
-    return !resolvedReads.has(expected);
-  });
-  if (unreadAttachments.length > 0) {
-    throw new ReviewUnavailableError(
-      `Review of #${nodeId} did not successfully Read every attachment ` +
-        `(${unreadAttachments.join(", ")}). Nothing was recorded.`
+    if (unreadAttachments.length > 0) {
+      throw new ReviewUnavailableError(
+        `Review of #${nodeId} did not successfully Read every attachment ` +
+          `(${unreadAttachments.join(", ")}). Nothing was recorded.`
+      );
+    }
+
+    const { accepted, rejected, Q1, Q2 } = interpretResponse(input, parsed);
+
+    // recordReview performs the final synchronous fingerprint check inside the write
+    // transaction. Repeating the same full attachment scan here would only double
+    // post-model I/O without closing a race that the transactional guard does not
+    // already cover.
+    const { eventId, findings } = svc.recordReview(db, {
+      nodeId,
+      Q1,
+      Q2,
+      findings: accepted,
+      model: verdictAttempt.model,
+      protocolHash: protocol,
+      inputFingerprint: started.inputFingerprint,
+      ...(rejected.length > 0 ? { rejected } : {}),
+    }, { ctx: reviewContext, expectedInputFingerprint: started.inputFingerprint });
+
+    log(
+      "review",
+      "OK",
+      Date.now() - t0,
+      `END review: #${nodeId} → Q1=${Q1} Q2=${Q2}, ${findings.length} finding(s), ${rejected.length} rejected`
     );
+
+    return {
+      eventId,
+      Q1,
+      Q2,
+      findings,
+      rejected,
+      actualModel: verdictAttempt.model,
+      // Keep the public result in declared-path space; audit retains the actual snapshot paths.
+      attachmentsRead: input.attachments.map((path) => resolve(reviewContext.root, path)),
+    };
+  } finally {
+    materialized.cleanup();
   }
-
-  const { accepted, rejected, Q1, Q2 } = interpretResponse(input, parsed);
-
-  const { eventId, findings } = svc.recordReview(db, {
-    nodeId,
-    Q1,
-    Q2,
-    findings: accepted,
-    model: verdictAttempt.model,
-    protocolHash: protocol,
-    ...(rejected.length > 0 ? { rejected } : {}),
-  });
-
-  log(
-    "review",
-    "OK",
-    Date.now() - t0,
-    `END review: #${nodeId} → Q1=${Q1} Q2=${Q2}, ${findings.length} finding(s), ${rejected.length} rejected`
-  );
-
-  return {
-    eventId,
-    Q1,
-    Q2,
-    findings,
-    rejected,
-    actualModel: verdictAttempt.model,
-    attachmentsRead: verdictAttempt.successfulReads,
-  };
 }

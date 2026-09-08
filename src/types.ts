@@ -94,13 +94,15 @@ export const CheckCode = {
    * 分档会让"附件不见了"与"附件不可移植"在某些档位上一个响一个不响。
    */
   AttachmentOutOfRoot: "S5",
+  /** 附件路径存在但不能作为文件完整读取(possibly 及以上)。 */
+  AttachmentUnreadable: "S6",
   /** 引用的命题落 `unestablished`(probably / certainly)。`refuted` 不在此列。 */
   EvidenceUnestablished: "S4",
   /** 反驳槽为空(refuted)。 */
   RebuttalEmpty: "A1",
   /** 反驳自己没落在正向三档(refuted)。攻击力随它被推翻一起消解。 */
   RebuttalNotPositive: "A2",
-  /** 本命题自判断以来已变(content / 理由 / 证据成员 / 反驳成员)。 */
+  /** 本命题自判断以来已变(content / 理由 / 证据成员 / 附件字节 / 反驳成员)。 */
   SelfChanged: "R0",
   /** 判断时依据的引用已被删除。 */
   RefGone: "R1",
@@ -108,6 +110,8 @@ export const CheckCode = {
   RefContentChanged: "R2",
   /** 判断时依据的引用 qualifier 已变(证据从 certainly 掉到 refuted 在这里抓)。 */
   RefQualifierChanged: "R3",
+  /** 判断时挂载的同一路径附件,其文件内容已变。 */
+  AttachmentContentChanged: "R4",
 } as const;
 
 export type CheckCode = (typeof CheckCode)[keyof typeof CheckCode];
@@ -221,6 +225,8 @@ export interface ReviewOutcome {
   findings: FindingDraft[];
   model: string;
   protocolHash: string;
+  /** 审查器实际看到的局部输入指纹。当前写入 API 必填;无此字段的历史事件仍可读。 */
+  inputFingerprint: string;
   /** 本次被拒收的条目。进事件载荷,不进 findings 表。 */
   rejected?: RejectedFinding[];
 }
@@ -263,7 +269,7 @@ export type FieldDiff = Record<string, { old: unknown; new: unknown }>;
 export interface BaselineHead {
   nodeId: number;
   qualifier: Qualifier;
-  /** 判断当时本命题自身的指纹(content + 理由 + 证据成员 + 反驳成员)。 */
+  /** 判断当时本命题自身的指纹(content + 理由 + 证据成员 + 附件字节 + 反驳成员)。 */
   selfFingerprint: string;
   at: string;
 }
@@ -274,6 +280,19 @@ export interface BaselineRef {
   refRole: RefRole;
   contentHash: string;
   qualifier: Qualifier;
+}
+
+/** 一个附件在某个明确时刻的字节快照。null 表示当时无法读取。 */
+export interface AttachmentSnapshot {
+  path: string;
+  sha256: string | null;
+}
+
+/** 设 qualifier 时一并保存的附件内容基线。 */
+export interface BaselineAttachment {
+  nodeId: number;
+  path: string;
+  sha256: string | null;
 }
 
 // =============================================================================
@@ -350,9 +369,33 @@ export interface PropositionView {
   /** 对每条命题都出现,不需要开关——可选的醒目就不是醒目(design.md §2.5)。 */
   warnings: StructuralWarning[];
   findings: FindingView[];
+  /** 最近一次语义审查相对于当前局部输入是否仍然有效。 */
+  review: ReviewFreshness;
   createdAt: string;
   updatedAt: string;
 }
+
+interface ReviewFreshnessBase {
+  eventId: number;
+  at: string;
+  Q1?: "pass" | "fail" | "n/a";
+  Q2?: "pass" | "fail";
+  model?: string;
+  protocol?: string;
+}
+
+/** review 是否覆盖当前输入。它与 finding 是否已处理是两个独立维度。 */
+export type ReviewFreshness =
+  | { status: "never" }
+  | (ReviewFreshnessBase & { status: "current" })
+  | (ReviewFreshnessBase & {
+      status: "stale";
+      reason:
+        | "input_changed"
+        | "protocol_changed"
+        | "legacy_unfingerprinted"
+        | "invalid_record";
+    });
 
 export interface CreateResultItem {
   id: number;
@@ -420,4 +463,10 @@ export interface SettlementSummary {
   /** 有未处理结构检查警告的命题,按判据分组计数。 */
   unresolvedWarnings: Array<{ nodeId: number; codes: CheckCode[] }>;
   attachments: { total: number; missing: string[] };
+  /** review 是可选意见；never 是覆盖率信息,不会自动变成结构警告。 */
+  reviewCoverage: {
+    current: { count: number; nodeIds: number[] };
+    stale: { count: number; nodeIds: number[] };
+    never: { count: number; nodeIds: number[] };
+  };
 }

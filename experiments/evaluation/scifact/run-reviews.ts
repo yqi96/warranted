@@ -15,6 +15,7 @@ import { parseArgs } from "node:util";
 import { openDatabase } from "../../../src/db.ts";
 import { loadReviewConfig, type ReviewConfig } from "../../../src/review-config.ts";
 import { runReview } from "../../../src/review-run.ts";
+import { REVIEW_PROTOCOL_VERSION } from "../../../src/review-prompts.ts";
 import { closeFixtureDatabase, copyFixtureProject } from "../common/graph-fixture.ts";
 import {
   readJson,
@@ -25,6 +26,10 @@ import {
   writeJsonl,
 } from "../common/manifest.ts";
 import { validateFixtureManifest } from "./score-reviews.ts";
+import {
+  parseAuditProvenance,
+  verifyLinkedReviewProvenance,
+} from "./review-provenance.ts";
 import type {
   FailedReviewCaseResult,
   AuditAttempt,
@@ -141,7 +146,19 @@ function readAuditAttempts(path: string, runDir: string): AuditAttempt[] {
       const file = join(path, name);
       const record = readJson<{
         model?: unknown;
-        output?: { raw?: unknown; durationMs?: unknown; successfulReads?: unknown };
+        input?: {
+          prompt?: unknown;
+          attachmentPaths?: unknown;
+          cwd?: unknown;
+          inputFingerprint?: unknown;
+          attachmentSnapshots?: unknown;
+        };
+        output?: {
+          raw?: unknown;
+          durationMs?: unknown;
+          successfulReads?: unknown;
+          snapshotReads?: unknown;
+        };
       }>(file);
       if (
         typeof record.model !== "string" ||
@@ -152,12 +169,18 @@ function readAuditAttempts(path: string, runDir: string): AuditAttempt[] {
       ) {
         throw new Error(`Malformed review audit: ${file}`);
       }
+      const provenance = parseAuditProvenance(
+        record,
+        REVIEW_PROTOCOL_VERSION,
+        `Review audit ${file}`,
+      );
       return {
         model: record.model,
         durationMs: record.output.durationMs,
         rawSha256: sha256Text(record.output.raw),
         successfulReads: record.output.successfulReads as string[],
         file: relative(runDir, file),
+        provenance,
       };
     });
 }
@@ -268,6 +291,8 @@ export async function executeCase(options: ExecuteCaseOptions): Promise<ReviewCa
       Q2?: unknown;
       model?: unknown;
       protocol?: unknown;
+      inputFingerprint?: unknown;
+      attachmentSnapshots?: unknown;
       findings?: unknown;
       rejected?: unknown;
     };
@@ -287,6 +312,8 @@ export async function executeCase(options: ExecuteCaseOptions): Promise<ReviewCa
     if (auditAttempts.at(-1)?.model !== reviewed.actualModel) {
       throw new Error("review result model disagrees with its final audit attempt");
     }
+    const expectedReviewAttachments =
+      fixture.mode === "primary" ? fixture.attachments : [];
     const reviewedReads = new Set(
       reviewed.attachmentsRead.map((path) => (isAbsolute(path) ? resolve(path) : resolve(scratchProject, path))),
     );
@@ -295,14 +322,19 @@ export async function executeCase(options: ExecuteCaseOptions): Promise<ReviewCa
         .at(-1)!
         .successfulReads.map((path) => (isAbsolute(path) ? resolve(path) : resolve(scratchProject, path))),
     );
-    const expectedReviewAttachments =
-      fixture.mode === "primary" ? fixture.attachments : [];
     for (const metadata of expectedReviewAttachments) {
       const expectedRead = resolve(scratchProject, metadata.path);
       if (!reviewedReads.has(expectedRead) || !auditedReads.has(expectedRead)) {
         throw new Error(`review did not auditably read fixture attachment ${metadata.path}`);
       }
     }
+    verifyLinkedReviewProvenance({
+      attempts: auditAttempts,
+      eventPayload: payload as Record<string, unknown>,
+      expectedAttachments: expectedReviewAttachments.map(({ path, sha256 }) => ({ path, sha256 })),
+      requireProvenance: true,
+      label: `Case ${fixture.caseId}`,
+    });
     const afterEvents = reviewEventCount(db, fixture.targetId);
     if (afterEvents - beforeEvents !== 1) {
       throw new Error(`expected one new review event, observed ${afterEvents - beforeEvents}`);
@@ -515,6 +547,7 @@ async function main(): Promise<void> {
   }
   const runManifest: ReviewRunManifest = {
     schemaVersion: 1,
+    auditProvenanceVersion: 1,
     createdAt: new Date().toISOString(),
     fixtureManifest: fixtureManifestPath,
     fixtureManifestSha256,

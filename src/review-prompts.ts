@@ -15,10 +15,23 @@
  * 一个 prompt 拿不到的字段,措辞怎么写都泄不出去。
  */
 
+import { extname } from "path";
 import type { Qualifier } from "./types.ts";
 
 /** Prompt 版本。改动本文件的任何措辞都要跟着改它——协议 hash 由它与正文一起算。 */
-export const REVIEW_PROTOCOL_VERSION = "q1q2/1";
+export const REVIEW_PROTOCOL_VERSION = "q1q2/4";
+
+const RAW_JSON_SUFFIX =
+  "\n\nCRITICAL: Output ONLY a raw JSON object. Do NOT wrap it in markdown code fences.";
+
+/** Deterministic aliases used inside the reviewer's private attachment snapshot. */
+export function reviewAttachmentReadPaths(attachments: readonly string[]): string[] {
+  return attachments.map((path, index) => {
+    const rawExtension = extname(path);
+    const extension = /^\.[A-Za-z0-9]{1,12}$/.test(rawExtension) ? rawExtension : "";
+    return `attachments/${String(index + 1).padStart(4, "0")}${extension}`;
+  });
+}
 
 // =============================================================================
 // 输入
@@ -61,9 +74,10 @@ export interface ReviewInput {
  */
 const ANTIPATTERN_HINTS = [
   "The warrant restates the content in other words, so it carries no inferential load.",
-  "The warrant is an ad-hoc if-then bridge about this case only, not a principle that holds beyond this argument.",
+  "The warrant is a tautological if-then bridge tailored to the desired outcome, rather than a real inference rule under stated conditions.",
   "The evidence establishes correlation while the content asserts causation.",
   "The evidence is about a different population, period, or quantity than the content.",
+  "A post-hoc rerun or rescaled scenario is described as out-of-sample, held-out, or independent validation without prospective provenance.",
 ].join("\n");
 
 export function buildReviewPrompt(input: ReviewInput): string {
@@ -85,9 +99,13 @@ export function buildReviewPrompt(input: ReviewInput): string {
 
 Answer exactly two questions about the proposition below. Nothing else is in scope.
 
-**Q1 — Faithfulness.** Do the attachments actually say what this proposition claims, or are they fabricated, misread, or in direct contradiction? This question applies **only to attachment files**. You MUST use your Read tool to open every attachment listed; do not guess at their contents. If there are no attachments, Q1 is "n/a".
+**Q1 — Faithfulness.** Do the attachments actually substantiate what this proposition claims, or are they fabricated, misread, self-corroborating, or in direct contradiction? This question applies **only to attachment files**. You MUST use your Read tool to open every corresponding immutable snapshot named at the end of this request; do not guess at its contents. If there are no attachments, Q1 is "n/a".
 
 **Q2 — Validity.** Granting the evidence as true, does the warrant actually get you from the evidence to the content? Take each referenced proposition at its stated qualifier: a premise marked "refuted" enters as a refuted claim, not as a true one, and an argument that needs it to be true is broken.
+
+An agent-authored note, report, or description is an index to evidence, not independent corroboration of its own assertions. For empirical, computational, or process claims, inspect the underlying source, data, result, or execution record among the attachments. Repetition of the proposition in a description file does not make Q1 pass.
+
+Treat "out-of-sample", "held-out", "independent validation", and similar chronology-sensitive claims strictly. The evaluation rule must have been fixed before outcomes were revealed, and the evaluation data, scenario, outcomes, or labels must not have been inspected while fitting, selecting, tuning, or revising the claim, method, or bound being evaluated. This need not predate the high-level hypothesis; it must predate the decisions whose generalization it is claimed to test. A post-hoc rerun, rescaling, or selected scenario is a sensitivity check, not out-of-sample validation. Retrospective prose asserting independence is not prospective provenance.
 
 Do not assess how important a flaw is, do not suggest how to fix anything, and do not evaluate propositions other than this one. Referenced propositions are quoted by reference, not copied — do not review their evidence.
 
@@ -97,7 +115,7 @@ Do not assess how important a flaw is, do not suggest how to fix anything, and d
 
 **Warrant**: ${warrant}
 
-**Attachments** (Q1 acts on these):
+**Declared attachment paths** (Q1 acts on these; cite these names, then read their snapshot aliases below):
 ${attachments}
 
 **Referenced propositions** (premises for Q2, at their current standing):
@@ -146,6 +164,20 @@ Rules that are checked mechanically, and rejected findings are discarded:
 "confidence" is how sure you are of your own judgement — "high" when you can point at the exact words that break, "low" when something reads wrong but you cannot pin it. There is no middle value. It is not how severe the problem is; severity needs a view of the whole graph, which you do not have.
 
 If both questions pass, return them as "pass" with an empty findings array. Saying "nothing is broken here" is a real answer and is recorded as one.`;
+}
+
+/**
+ * The exact request text sent on every attempt. Protocol freshness hashes this whole string,
+ * including the JSON-only suffix and the immutable-snapshot read instructions.
+ */
+export function buildReviewRequestPrompt(input: ReviewInput): string {
+  const aliases = reviewAttachmentReadPaths(input.attachments);
+  const readInstructions = input.attachments.length === 0
+    ? ""
+    : `\n\n## Immutable attachment snapshots to read\nRead every snapshot path below before answering Q1. For a PDF snapshot, call Read once without a \`pages\` parameter so the entire PDF is read; do not split a PDF into page ranges. The left side is the declared attachment path that MUST be copied into citation.attachment; the right side is the private snapshot path to pass to Read. Do not read any other file.\n${input.attachments
+        .map((declared, index) => `- ${JSON.stringify(declared)} -> ${aliases[index]}`)
+        .join("\n")}`;
+  return buildReviewPrompt(input) + readInstructions + RAW_JSON_SUFFIX;
 }
 
 /**

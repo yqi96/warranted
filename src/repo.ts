@@ -17,6 +17,8 @@ import type {
   EventActor,
   BaselineHead,
   BaselineRef,
+  BaselineAttachment,
+  AttachmentSnapshot,
   RefRole,
   Finding,
 } from "./types.ts";
@@ -276,6 +278,22 @@ export function getEvent(db: Database, id: number): EventRow | null {
   return (db.prepare("SELECT * FROM events WHERE id = ?").get(id) as EventRow | undefined) ?? null;
 }
 
+/** 最近一次 review 事件。零 finding 的 clean review 也必须能被看见。 */
+export function latestReviewEvent(db: Database, nodeId: number): EventRow | null {
+  return (
+    (db
+      .prepare("SELECT * FROM events WHERE node_id = ? AND op = 'review' ORDER BY id DESC LIMIT 1")
+      .get(nodeId) as EventRow | undefined) ?? null
+  );
+}
+
+/** All review events newest first. Service decides which payloads are valid superseders. */
+export function reviewEventsNewestFirst(db: Database, nodeId: number): EventRow[] {
+  return db
+    .prepare("SELECT * FROM events WHERE node_id = ? AND op = 'review' ORDER BY id DESC")
+    .all(nodeId) as EventRow[];
+}
+
 /**
  * 查一批 id 的驳回记录。
  *
@@ -392,6 +410,21 @@ export function getBaselineRefs(db: Database, nodeId: number): BaselineRef[] {
   }));
 }
 
+export function getBaselineAttachments(db: Database, nodeId: number): BaselineAttachment[] {
+  const rows = db
+    .prepare("SELECT * FROM baseline_attachments WHERE node_id = ? ORDER BY path")
+    .all(nodeId) as Array<{
+    node_id: number;
+    path: string;
+    content_hash: string | null;
+  }>;
+  return rows.map((r) => ({
+    nodeId: r.node_id,
+    path: r.path,
+    sha256: r.content_hash,
+  }));
+}
+
 /**
  * 覆盖式写入一条命题的基线。**唯一的写入者是 set_qualifier**——
  * 这个函数只应被它调用,多一个调用点基线就退化成会漂移的缓存。
@@ -399,7 +432,8 @@ export function getBaselineRefs(db: Database, nodeId: number): BaselineRef[] {
 export function writeBaseline(
   db: Database,
   head: { nodeId: number; qualifier: Qualifier; selfFingerprint: string },
-  refs: Array<{ refId: number; refRole: RefRole; contentHash: string; qualifier: Qualifier }>
+  refs: Array<{ refId: number; refRole: RefRole; contentHash: string; qualifier: Qualifier }>,
+  attachments: AttachmentSnapshot[]
 ): void {
   db.prepare(
     `INSERT INTO baseline_head (node_id, qualifier, self_fingerprint, at)
@@ -417,6 +451,14 @@ export function writeBaseline(
   );
   for (const r of refs) {
     stmt.run(head.nodeId, r.refId, r.refRole, r.contentHash, r.qualifier);
+  }
+
+  db.prepare("DELETE FROM baseline_attachments WHERE node_id = ?").run(head.nodeId);
+  const attachmentStmt = db.prepare(
+    `INSERT INTO baseline_attachments (node_id, path, content_hash) VALUES (?, ?, ?)`
+  );
+  for (const attachment of attachments) {
+    attachmentStmt.run(head.nodeId, attachment.path, attachment.sha256);
   }
 }
 

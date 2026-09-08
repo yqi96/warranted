@@ -57,6 +57,56 @@ function fullRead(filePath: string): Record<string, unknown> {
   };
 }
 
+function textRead(
+  filePath: string,
+  startLine: number,
+  numLines: number,
+  totalLines: number,
+  truncatedByTokenCap = false
+): Record<string, unknown> {
+  return {
+    hook_event_name: "PostToolUse",
+    tool_name: "Read",
+    tool_use_id: `read-${startLine}`,
+    tool_input: { file_path: filePath, offset: startLine, limit: numLines },
+    tool_response: {
+      type: "text",
+      file: {
+        filePath,
+        content: "segment",
+        numLines,
+        startLine,
+        totalLines,
+        ...(truncatedByTokenCap ? { truncatedByTokenCap: true } : {}),
+      },
+    },
+  };
+}
+
+function pdfRead(
+  filePath: string,
+  type: "pdf" | "parts",
+  pages?: string
+): Record<string, unknown> {
+  return {
+    hook_event_name: "PostToolUse",
+    tool_name: "Read",
+    tool_use_id: `read-${pages ?? "all"}`,
+    tool_input: { file_path: filePath, ...(pages ? { pages } : {}) },
+    tool_response: type === "pdf"
+      ? { type, file: { filePath, base64: "cGRm", originalSize: 3 } }
+      : {
+          type,
+          file: {
+            filePath,
+            originalSize: 3,
+            count: pages ? 5 : 10,
+            outputDir: "/tmp/warranted-sdk-options/pdf-parts",
+          },
+        },
+  };
+}
+
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   query: (args: { prompt: string; options: Record<string, unknown> }) => {
     capturedOptions = args.options;
@@ -75,20 +125,36 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
         const hookInputs = mockPostToolUseInputsPerCall
           ? (mockPostToolUseInputsPerCall[callIndex] ?? [])
           : mockPostToolUseInputs;
+        const hooks = args.options.hooks as
+          | {
+              PreToolUse?: Array<{ hooks: Array<(input: never) => Promise<unknown>> }>;
+              PostToolUse?: Array<{
+                hooks: Array<(
+                  input: never,
+                  toolUseId: string | undefined,
+                  options: { signal: AbortSignal },
+                ) => Promise<unknown>>;
+              }>;
+            }
+          | undefined;
+        const preToolUse = hooks?.PreToolUse ?? [];
         const postToolUse = (
-          args.options.hooks as
-            | {
-                PostToolUse?: Array<{
-                  hooks: Array<(
-                    input: never,
-                    toolUseId: string | undefined,
-                    options: { signal: AbortSignal },
-                  ) => Promise<unknown>>;
-                }>;
-              }
-            | undefined
-        )?.PostToolUse ?? [];
+          hooks?.PostToolUse ?? []
+        );
         for (const input of hookInputs) {
+          let allowed = true;
+          for (const matcher of preToolUse) {
+            for (const hook of matcher.hooks) {
+              const response = await hook({
+                ...(input as Record<string, unknown>),
+                hook_event_name: "PreToolUse",
+              } as never) as {
+                hookSpecificOutput?: { permissionDecision?: string };
+              };
+              if (response.hookSpecificOutput?.permissionDecision === "deny") allowed = false;
+            }
+          }
+          if (!allowed) continue;
           for (const matcher of postToolUse) {
             for (const hook of matcher.hooks) {
               await hook(
@@ -122,6 +188,7 @@ afterEach(() => {
 });
 
 const { callAgent, callAndParse } = await import("../src/review-llm.ts");
+const { buildReviewRequestPrompt } = await import("../src/review-prompts.ts");
 const { runReview } = await import("../src/review-run.ts");
 const svc = await import("../src/service.ts");
 const { ReviewUnavailableError } = await import("../src/errors.ts");
@@ -155,8 +222,10 @@ describe("callAgent SDK call options", () => {
 
     await callAgent(testConfig, "test prompt", []);
 
-    expect(capturedOptions?.allowedTools).toEqual(["Read", "Glob", "Grep"]);
-    expect(capturedOptions?.disallowedTools).toEqual(["Edit", "Write", "Bash", "MultiEdit"]);
+    expect(capturedOptions?.allowedTools).toEqual(["Read"]);
+    expect(capturedOptions?.disallowedTools).toEqual([
+      "Edit", "Write", "Bash", "MultiEdit", "Glob", "Grep",
+    ]);
   });
 
   test("permission_denied 消息触发 console.warn 并包含工具名", async () => {
@@ -200,7 +269,7 @@ describe("callAgent SDK call options", () => {
     const db = createTestDb();
     try {
       const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
-      const err = await runReview(testConfig, db, id).catch((e) => e);
+      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
       expect(err).toBeInstanceOf(ReviewUnavailableError);
       expect(err.message).toContain("Read");
       expect(svc.getHistory(db, { id }).events.some((e) => e.op === "review")).toBe(false);
@@ -239,9 +308,147 @@ describe("callAgent SDK call options", () => {
     ];
     const reads: string[] = [];
 
-    await callAgent(testConfig, "test prompt", ["evidence.md"], undefined, undefined, [], reads);
+    await callAgent(
+      testConfig,
+      "test prompt",
+      ["evidence.md", "partial.md"],
+      "/tmp/warranted-sdk-options",
+      undefined,
+      [],
+      reads
+    );
 
     expect(reads).toEqual([filePath]);
+  });
+
+  test("同一文本的乱序、重叠分段 Read 累计覆盖全部行后只记一次", async () => {
+    mockMessages = [{ type: "result", subtype: "success", result: "{}" }];
+    const filePath = "/tmp/warranted-sdk-options/evidence.md";
+    mockPostToolUseInputs = [
+      textRead(filePath, 6, 3, 10),
+      textRead(filePath, 1, 4, 10),
+      textRead(filePath, 4, 3, 10),
+      textRead(filePath, 9, 2, 10),
+      textRead(filePath, 1, 10, 10),
+    ];
+    const reads: string[] = [];
+
+    await callAgent(
+      testConfig,
+      "test prompt",
+      ["evidence.md"],
+      "/tmp/warranted-sdk-options",
+      undefined,
+      [],
+      reads
+    );
+
+    expect(reads).toEqual([filePath]);
+  });
+
+  test("文本分段有空洞、token 截断或 totalLines 矛盾时不宣称完整", async () => {
+    mockMessages = [{ type: "result", subtype: "success", result: "{}" }];
+    const gapPath = "/tmp/warranted-sdk-options/gap.md";
+    const truncatedPath = "/tmp/warranted-sdk-options/truncated.md";
+    const inconsistentPath = "/tmp/warranted-sdk-options/inconsistent.md";
+    mockPostToolUseInputs = [
+      textRead(gapPath, 1, 4, 10),
+      textRead(gapPath, 6, 5, 10),
+      textRead(truncatedPath, 1, 10, 10, true),
+      textRead(inconsistentPath, 6, 5, 10),
+      textRead(inconsistentPath, 1, 5, 5),
+    ];
+    const reads: string[] = [];
+
+    await callAgent(
+      testConfig,
+      "test prompt",
+      ["gap.md", "truncated.md", "inconsistent.md"],
+      "/tmp/warranted-sdk-options",
+      undefined,
+      [],
+      reads
+    );
+
+    expect(reads).toEqual([]);
+  });
+
+  test("PDF 无 pages 的 pdf/parts 响应保持整份读取行为", async () => {
+    mockMessages = [{ type: "result", subtype: "success", result: "{}" }];
+    const small = "/tmp/warranted-sdk-options/small.pdf";
+    const extracted = "/tmp/warranted-sdk-options/extracted.pdf";
+    mockPostToolUseInputs = [pdfRead(small, "pdf"), pdfRead(extracted, "parts")];
+    const reads: string[] = [];
+
+    await callAgent(
+      testConfig,
+      "test prompt",
+      ["small.pdf", "extracted.pdf"],
+      "/tmp/warranted-sdk-options",
+      undefined,
+      [],
+      reads
+    );
+
+    expect(reads).toEqual([small, extracted]);
+  });
+
+  test("PDF 多次 pages Read 即使 count 覆盖所请求页也不宣称整份完整", async () => {
+    mockMessages = [{ type: "result", subtype: "success", result: "{}" }];
+    const filePath = "/tmp/warranted-sdk-options/evidence.pdf";
+    mockPostToolUseInputs = [
+      pdfRead(filePath, "parts", "1-5"),
+      pdfRead(filePath, "parts", "6-10"),
+    ];
+    const reads: string[] = [];
+
+    await callAgent(
+      testConfig,
+      "test prompt",
+      ["evidence.pdf"],
+      "/tmp/warranted-sdk-options",
+      undefined,
+      [],
+      reads
+    );
+
+    // parts.file.count only says how many requested pages were extracted; the
+    // installed SDK hook response has no totalPages field to close the range.
+    expect(reads).toEqual([]);
+  });
+
+  test("最终 review prompt 要求 PDF 不带 pages 整份读取", () => {
+    const prompt = buildReviewRequestPrompt({
+      id: 1,
+      content: "A proposition",
+      warrant: null,
+      attachments: ["evidence.pdf"],
+      evidenceNodes: [],
+    });
+
+    expect(prompt).toContain("call Read once without a `pages` parameter");
+    expect(prompt).toContain("do not split a PDF into page ranges");
+  });
+
+  test("Read 路径白名单拒绝未声明文件,且不把它记成成功读取", async () => {
+    mockMessages = [{ type: "result", subtype: "success", result: "{}" }];
+    mockPostToolUseInputs = [fullRead("/tmp/warranted-sdk-options/other.md")];
+    const denied: string[] = [];
+    const reads: string[] = [];
+    spyOn(console, "warn").mockImplementation(() => {});
+
+    await callAgent(
+      testConfig,
+      "test prompt",
+      ["evidence.md"],
+      "/tmp/warranted-sdk-options",
+      undefined,
+      denied,
+      reads
+    );
+
+    expect(denied.join(" ")).toContain("other.md");
+    expect(reads).toEqual([]);
   });
 
   test("有附件但没有完整 Read 时，runReview 作废且不落事件", async () => {
@@ -253,7 +460,7 @@ describe("callAgent SDK call options", () => {
       const id = svc.createPropositions(db, ctx, [
         { content: "A proposition", evidence: { attachments: ["evidence.md"] } },
       ])[0]!.id;
-      const err = await runReview(testConfig, db, id).catch((e) => e);
+      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
       expect(err).toBeInstanceOf(ReviewUnavailableError);
       expect(err.message).toContain("did not successfully Read every attachment");
       expect(svc.getHistory(db, { id }).events.some((e) => e.op === "review")).toBe(false);
@@ -264,6 +471,7 @@ describe("callAgent SDK call options", () => {
 
   test("fallback verdict 只承认 fallback 那次的完整 Read，并记录实际模型", async () => {
     const filePath = "/tmp/warranted-sdk-options/evidence.md";
+    const snapshotPath = "attachments/0001.md";
     mockMessagesPerCall = [
       [{ type: "result", subtype: "success", result: "not-json" }],
       [
@@ -274,7 +482,7 @@ describe("callAgent SDK call options", () => {
         },
       ],
     ];
-    mockPostToolUseInputsPerCall = [[], [fullRead(filePath)]];
+    mockPostToolUseInputsPerCall = [[], [fullRead(snapshotPath)]];
     const db = createTestDb();
     try {
       const config: ReviewConfig = {
@@ -297,6 +505,7 @@ describe("callAgent SDK call options", () => {
 
   test("首轮读过但最终 fallback 没读时仍作废", async () => {
     const filePath = "/tmp/warranted-sdk-options/evidence.md";
+    const snapshotPath = "attachments/0001.md";
     mockMessagesPerCall = [
       [{ type: "result", subtype: "success", result: "not-json" }],
       [
@@ -307,7 +516,7 @@ describe("callAgent SDK call options", () => {
         },
       ],
     ];
-    mockPostToolUseInputsPerCall = [[fullRead(filePath)], []];
+    mockPostToolUseInputsPerCall = [[fullRead(snapshotPath)], []];
     const db = createTestDb();
     try {
       const config: ReviewConfig = {
@@ -320,6 +529,107 @@ describe("callAgent SDK call options", () => {
       ])[0]!.id;
       const err = await runReview(config, db, id).catch((e) => e);
       expect(err).toBeInstanceOf(ReviewUnavailableError);
+      expect(svc.getHistory(db, { id }).events.some((event) => event.op === "review")).toBe(false);
+    } finally {
+      cleanupDb(db);
+    }
+  });
+
+  test("模型运行期间命题输入改变:整次作废且不落 review 事件", async () => {
+    mockDelayMs = 20;
+    mockMessages = [
+      { type: "result", subtype: "success", result: '{"Q1":"n/a","Q2":"pass","findings":[]}' },
+    ];
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "Before" }])[0]!.id;
+      const running = runReview(testConfig, db, id, ctx).catch((e) => e);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      svc.updateProposition(db, ctx, { id, content: "After" });
+      const err = await running;
+      expect(err).toBeInstanceOf(ReviewUnavailableError);
+      expect(err.message).toContain("changed");
+      expect(err.message).toContain("Nothing was recorded");
+      expect(svc.getHistory(db, { id }).events.some((event) => event.op === "review")).toBe(false);
+    } finally {
+      mockDelayMs = 0;
+      cleanupDb(db);
+    }
+  });
+
+  test("模型运行期间附件字节改变:整次作废且不落 review 事件", async () => {
+    mockDelayMs = 20;
+    const filePath = "/tmp/warranted-sdk-options/evidence.md";
+    mockPostToolUseInputs = [fullRead("attachments/0001.md")];
+    mockMessages = [
+      { type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' },
+    ];
+    const config: ReviewConfig = {
+      ...testConfig,
+      dbPath: "/tmp/warranted-sdk-options/.toulmin/graph.db",
+    };
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [
+        { content: "A proposition", evidence: { attachments: ["evidence.md"] } },
+      ])[0]!.id;
+      const running = runReview(config, db, id, ctx).catch((e) => e);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      writeFileSync(filePath, "changed during review\n", "utf8");
+      const err = await running;
+      expect(err).toBeInstanceOf(ReviewUnavailableError);
+      expect(err.message).toContain("changed");
+      expect(err.message).toContain("Nothing was recorded");
+      expect(svc.getHistory(db, { id }).events.some((event) => event.op === "review")).toBe(false);
+    } finally {
+      mockDelayMs = 0;
+      cleanupDb(db);
+    }
+  });
+
+  test("附件 A→B→A 时 reviewer 始终读不可变 A 快照,最终 review 可保持 current", async () => {
+    mockDelayMs = 30;
+    const filePath = "/tmp/warranted-sdk-options/evidence.md";
+    mockPostToolUseInputs = [fullRead("attachments/0001.md")];
+    mockMessages = [
+      { type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' },
+    ];
+    const config: ReviewConfig = {
+      ...testConfig,
+      dbPath: "/tmp/warranted-sdk-options/.toulmin/graph.db",
+    };
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [
+        { content: "A proposition", evidence: { attachments: ["evidence.md"] } },
+      ])[0]!.id;
+      const running = runReview(config, db, id, ctx);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      writeFileSync(filePath, "temporary B\n", "utf8");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      writeFileSync(filePath, "evidence\n", "utf8");
+      const result = await running;
+
+      expect(result.Q1).toBe("pass");
+      expect(svc.propositionView(db, ctx, id).review.status).toBe("current");
+      expect(String(capturedCalls[0]!.options.cwd)).toContain("warranted-review-");
+      expect(capturedCalls[0]!.prompt).toContain('"evidence.md" -> attachments/0001.md');
+    } finally {
+      mockDelayMs = 0;
+      cleanupDb(db);
+    }
+  });
+
+  test("Q2=fail 但没有有效 Q2 finding:协议失败且不落事件", async () => {
+    mockMessages = [
+      { type: "result", subtype: "success", result: '{"Q1":"n/a","Q2":"fail","findings":[]}' },
+    ];
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
+      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
+      expect(err).toBeInstanceOf(ReviewUnavailableError);
+      expect(err.message).toContain("verdict and accepted findings disagree");
       expect(svc.getHistory(db, { id }).events.some((event) => event.op === "review")).toBe(false);
     } finally {
       cleanupDb(db);
@@ -539,6 +849,33 @@ describe("配置里的凭据递给 SDK", () => {
       const body = readFileSync(`${auditDir}/${files[0]}`, "utf-8");
       expect(JSON.parse(body).baseUrl).toBe("https://proxy.example.com");
       expect(body).not.toContain("test-key");
+    } finally {
+      try { rmSync(auditDir, { recursive: true }); } catch {}
+    }
+  });
+
+  test("审计同时保存声明附件读取和实际私有快照路径", async () => {
+    const auditDir = `/tmp/warranted-audit-${Date.now()}-${Math.round(performance.now())}`;
+    try {
+      const audited: ReviewConfig = { ...testConfig, auditDir };
+      mockPostToolUseInputs = [fullRead("attachments/0001.md")];
+      await callAgent(
+        audited,
+        "final prompt",
+        ["attachments/0001.md"],
+        "/tmp/warranted-sdk-options",
+        undefined,
+        [],
+        [],
+        {
+          inputFingerprint: "a".repeat(64),
+          attachmentSnapshots: [{ path: "evidence.md", sha256: "b".repeat(64) }],
+        }
+      );
+      const file = readdirSync(auditDir)[0]!;
+      const audit = JSON.parse(readFileSync(`${auditDir}/${file}`, "utf8"));
+      expect(audit.output.successfulReads).toEqual(["evidence.md"]);
+      expect(audit.output.snapshotReads).toEqual(["attachments/0001.md"]);
     } finally {
       try { rmSync(auditDir, { recursive: true }); } catch {}
     }

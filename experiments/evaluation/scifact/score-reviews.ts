@@ -24,6 +24,10 @@ import {
   MECHANICAL_GRAPH_VERDICT_RULE,
   buildProvisionalGraphVerdictOverlay,
 } from "./graph-verdict.ts";
+import {
+  verifyAuditAttemptRecord,
+  verifyLinkedReviewProvenance,
+} from "./review-provenance.ts";
 import type {
   CaseScore,
   ClusterBootstrapSummary,
@@ -972,11 +976,13 @@ function verifyFixtureFiles(manifest: FixtureManifest, manifestDir: string): voi
   }
 }
 
-function verifyRunCaseArtifacts(
+export function verifyRunCaseArtifacts(
   result: ReviewCaseResult,
   fixture: FixtureCase,
   runDir: string,
+  requireAuditProvenance: boolean,
 ): void {
+  let archivedReviewPayload: Record<string, unknown> | null = null;
   if (result.graphPath !== null) {
     const graphPath = resolveFrom(runDir, result.graphPath);
     if (isAbsolute(result.graphPath) || !isInside(runDir, graphPath)) {
@@ -1000,6 +1006,7 @@ function verifyRunCaseArtifacts(
           throw new Error(`Case ${result.caseId} archived graph lacks its review event`);
         }
         const payload = JSON.parse(event.payload) as Record<string, unknown>;
+        archivedReviewPayload = payload;
         const drafts = result.findings.map(({ id: _id, ...finding }) => finding);
         if (
           payload.Q1 !== result.Q1 ||
@@ -1030,7 +1037,18 @@ function verifyRunCaseArtifacts(
     }
     const audit = readJson<{
       model?: unknown;
-      output?: { raw?: unknown; successfulReads?: unknown };
+      input?: {
+        prompt?: unknown;
+        attachmentPaths?: unknown;
+        cwd?: unknown;
+        inputFingerprint?: unknown;
+        attachmentSnapshots?: unknown;
+      };
+      output?: {
+        raw?: unknown;
+        successfulReads?: unknown;
+        snapshotReads?: unknown;
+      };
     }>(auditPath);
     if (
       audit.model !== attempt.model ||
@@ -1042,6 +1060,12 @@ function verifyRunCaseArtifacts(
     ) {
       throw new Error(`Case ${result.caseId} audit hash/provenance mismatch`);
     }
+    verifyAuditAttemptRecord(
+      attempt,
+      audit,
+      requireAuditProvenance,
+      `Case ${result.caseId} audit ${attempt.file}`,
+    );
   }
   if (result.status === "ok") {
     if (result.auditAttempts.at(-1)?.model !== result.actualModel) {
@@ -1052,6 +1076,18 @@ function verifyRunCaseArtifacts(
     if (JSON.stringify(result.attachmentsRead) !== JSON.stringify(expectedReads)) {
       throw new Error(`Case ${result.caseId} attachment Read trace is incomplete or unstable`);
     }
+    if (!archivedReviewPayload) {
+      throw new Error(`Case ${result.caseId} has no archived review payload`);
+    }
+    verifyLinkedReviewProvenance({
+      attempts: result.auditAttempts,
+      eventPayload: archivedReviewPayload,
+      expectedAttachments: (fixture.mode === "primary" ? fixture.attachments : []).map(
+        ({ path, sha256 }) => ({ path, sha256 }),
+      ),
+      requireProvenance: requireAuditProvenance,
+      label: `Case ${result.caseId}`,
+    });
   }
 }
 
@@ -1168,6 +1204,14 @@ async function main(): Promise<void> {
   const runDir = resolve(values["run-dir"]);
   const runManifestPath = join(runDir, "run-manifest.json");
   const runManifest = readJson<ReviewRunManifest>(runManifestPath);
+  if (
+    runManifest.auditProvenanceVersion !== undefined &&
+    runManifest.auditProvenanceVersion !== 1
+  ) {
+    throw new Error(
+      `Unsupported audit provenance version: ${runManifest.auditProvenanceVersion}`,
+    );
+  }
   const lockedFixtureManifest = resolveFrom(runDir, runManifest.fixtureManifest);
   const fixtureManifestPath = values.fixtures
     ? resolve(values.fixtures)
@@ -1238,7 +1282,12 @@ async function main(): Promise<void> {
   for (const result of results) {
     const fixture = fixtures.cases.find((item) => item.caseId === result.caseId);
     if (!fixture) throw new Error(`Result refers to unknown fixture ${result.caseId}`);
-    verifyRunCaseArtifacts(result, fixture, runDir);
+    verifyRunCaseArtifacts(
+      result,
+      fixture,
+      runDir,
+      runManifest.auditProvenanceVersion === 1,
+    );
     if (result.status === "ok") {
       if (result.model !== runManifest.model) {
         throw new Error(

@@ -11,6 +11,7 @@
 import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import type { ReviewConfig } from "../src/review-config.ts";
+import { makePdf } from "./pdf-fixture.ts";
 
 const testConfig: ReviewConfig = {
   enabled: true,
@@ -90,18 +91,20 @@ function pdfRead(
   type: "pdf" | "parts",
   pages?: string
 ): Record<string, unknown> {
+  const bytes = makePdf(10);
+  writeFileSync(filePath, bytes);
   return {
     hook_event_name: "PostToolUse",
     tool_name: "Read",
     tool_use_id: `read-${pages ?? "all"}`,
     tool_input: { file_path: filePath, ...(pages ? { pages } : {}) },
     tool_response: type === "pdf"
-      ? { type, file: { filePath, base64: "cGRm", originalSize: 3 } }
+      ? { type, file: { filePath, base64: bytes.toString("base64"), originalSize: bytes.length } }
       : {
           type,
           file: {
             filePath,
-            originalSize: 3,
+            originalSize: bytes.length,
             count: pages ? 5 : 10,
             outputDir: "/tmp/warranted-sdk-options/pdf-parts",
           },
@@ -448,7 +451,7 @@ describe("callAgent SDK call options", () => {
     expect(reads).toEqual([small, extracted]);
   });
 
-  test("PDF 多次 pages Read 即使 count 覆盖所请求页也不宣称整份完整", async () => {
+  test("PDF multiple actual page ranges cover the independently measured whole document", async () => {
     mockMessages = [{ type: "result", subtype: "success", result: "{}" }];
     const filePath = "/tmp/warranted-sdk-options/evidence.pdf";
     mockPostToolUseInputs = [
@@ -467,12 +470,10 @@ describe("callAgent SDK call options", () => {
       reads
     );
 
-    // parts.file.count only says how many requested pages were extracted; the
-    // installed SDK hook response has no totalPages field to close the range.
-    expect(reads).toEqual([]);
+    expect(reads).toEqual([filePath]);
   });
 
-  test("最终 review prompt 要求 PDF 不带 pages 整份读取", () => {
+  test("review prompt permits PDF ranges without weakening full coverage", () => {
     const prompt = buildReviewRequestPrompt({
       id: 1,
       content: "A proposition",
@@ -481,8 +482,8 @@ describe("callAgent SDK call options", () => {
       evidenceNodes: [],
     });
 
-    expect(prompt).toContain("call Read once without a `pages` parameter");
-    expect(prompt).toContain("do not split a PDF into page ranges");
+    expect(prompt).toContain("may be read in page ranges");
+    expect(prompt).toContain("cover every page");
   });
 
   test("Read 路径白名单拒绝未声明文件,且不把它记成成功读取", async () => {

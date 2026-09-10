@@ -174,7 +174,7 @@ export function buildReviewRequestPrompt(input: ReviewInput): string {
   const aliases = reviewAttachmentReadPaths(input.attachments);
   const readInstructions = input.attachments.length === 0
     ? ""
-    : `\n\n## Immutable attachment snapshots to read\nRead every snapshot path below before answering Q1. For a PDF snapshot, call Read once without a \`pages\` parameter so the entire PDF is read; do not split a PDF into page ranges. The left side is the declared attachment path that MUST be copied into citation.attachment; the right side is the private snapshot path to pass to Read. Do not read any other file.\n${input.attachments
+    : `\n\n## Immutable attachment snapshots to read\nRead every snapshot path below before answering Q1. PDF snapshots may be read in page ranges; cover every page, including relevant definitions, tables and captions. A requested range, an error, or a truncated response does not prove coverage. If you cannot finish reading the evidence, say so rather than treating unread material as checked. The left side is the declared attachment path that MUST be copied into citation.attachment; the right side is the private snapshot path to pass to Read. Do not read any other file.\n${input.attachments
         .map((declared, index) => `- ${JSON.stringify(declared)} -> ${aliases[index]}`)
         .join("\n")}`;
   return buildReviewPrompt(input) + readInstructions + RAW_JSON_SUFFIX;

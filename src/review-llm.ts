@@ -10,6 +10,7 @@ import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { resolve } from "path";
 import type { ReviewConfig } from "./review-config.ts";
 import { writeAuditRecord, type ReviewAuditMetadata } from "./review-audit.ts";
+import { createPdfReadCoverageTracker } from "./review-pdf-coverage.ts";
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 
@@ -127,6 +128,7 @@ export async function callAgent(
   const successfulReads: string[] = [];
   const successfulReadPaths = new Set<string>();
   const textCoverageByPath = new Map<string, TextReadCoverage>();
+  const recordPdfCoverage = createPdfReadCoverageTracker();
   const readRoot = cwd ?? process.cwd();
   const allowedReadPaths = new Set(attachmentPaths.map((path) => resolve(readRoot, path)));
   const abortController = new AbortController();
@@ -167,10 +169,15 @@ export async function callAgent(
       typeof input.tool_input.file_path === "string"
     ) {
       const path = input.tool_input.file_path;
+      const toolInput = input.tool_input;
       const resolvedPath = resolve(readRoot, path);
+      if (!allowedReadPaths.has(resolvedPath)) return {};
       const response = input.tool_response;
-      const complete = (() => {
+      const isPdf = response && typeof response === "object" && "type" in response &&
+        (response.type === "pdf" || response.type === "parts");
+      const complete = await (async () => {
         if (!response || typeof response !== "object" || !("type" in response)) return false;
+        if (isPdf) return recordPdfCoverage(resolvedPath, toolInput, response);
         if (
           response.type === "text" &&
           "file" in response &&
@@ -181,19 +188,19 @@ export async function callAgent(
           return recordTextCoverage(textCoverageByPath, resolvedPath, file);
         }
         if (response.type === "file_unchanged") return successfulReadPaths.has(resolvedPath);
-        if ("pages" in input.tool_input && input.tool_input.pages !== undefined) {
-          // SDK 0.3.201 reports paginated PDFs as parts.file.count (pages
-          // extracted), but exposes no totalPages. Even several successful page
-          // ranges therefore cannot prove whole-document coverage.
+        if ("pages" in toolInput && toolInput.pages !== undefined) {
           return false;
         }
         return (
           response.type === "image" ||
-          response.type === "notebook" ||
-          response.type === "pdf" ||
-          response.type === "parts"
+          response.type === "notebook"
         );
       })();
+      if (isPdf && !complete) {
+        successfulReadPaths.delete(resolvedPath);
+        const previous = successfulReads.findIndex((item) => resolve(readRoot, item) === resolvedPath);
+        if (previous !== -1) successfulReads.splice(previous, 1);
+      }
       if (complete && !successfulReadPaths.has(resolvedPath)) {
         successfulReadPaths.add(resolvedPath);
         successfulReads.push(path);

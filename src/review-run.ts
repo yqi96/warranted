@@ -29,6 +29,7 @@ import {
   snapshotReviewInput,
 } from "./review-snapshot.ts";
 import { materializeReviewAttachments } from "./review-materialize.ts";
+import { ReviewFailureTracker } from "./review-failures.ts";
 import type { CheckContext } from "./structural-check.ts";
 import type { Finding, FindingDraft, RejectedFinding, ReviewIncompleteDiagnostics } from "./types.ts";
 
@@ -108,7 +109,33 @@ function collectResponse(input: ReviewInput, parsed: Record<string, unknown>) {
  * `config` 为 null 表示没配审查模型——直接抛,并说明配法。旧系统在这里发一条警告然后
  * 把 claim 记成 passed,那是"没审查但记为通过"的补丁。
  */
+const failureTrackers = new WeakMap<Database, ReviewFailureTracker>();
+
 export async function runReview(
+  config: ReviewConfig | null,
+  db: Database,
+  nodeId: number,
+  ctx?: CheckContext
+): Promise<ReviewRunResult> {
+  let tracker = failureTrackers.get(db);
+  if (!tracker) failureTrackers.set(db, tracker = new ReviewFailureTracker());
+  try {
+    const result = await performReview(config, db, nodeId, ctx);
+    tracker.completed(nodeId);
+    return result;
+  } catch (error) {
+    if (error instanceof ReviewUnavailableError && error.diagnostics?.stage !== "input_freshness") {
+      const advisory = tracker.failed(nodeId, error.message, error.diagnostics?.inputFingerprint);
+      if (advisory) {
+        error.message += `\n${advisory}`;
+        if (error.diagnostics) error.diagnostics.reason = error.message;
+      }
+    }
+    throw error;
+  }
+}
+
+async function performReview(
   config: ReviewConfig | null,
   db: Database,
   nodeId: number,

@@ -34,6 +34,7 @@ let mockMessages: unknown[] = [];
 let mockMessagesPerCall: unknown[][] | null = null;
 let mockErrorsPerCall: Array<Error | null> | null = null;
 let mockDelayMs = 0;
+let mockCloseCount = 0;
 let concurrencyCounter = 0;
 let peakConcurrency = 0;
 let mockPostToolUseInputs: unknown[] = [];
@@ -121,7 +122,15 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
       peakConcurrency = Math.max(peakConcurrency, concurrencyCounter);
       try {
         if (mockDelayMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, mockDelayMs));
+          await new Promise<void>((resolve, reject) => {
+            const signal = (args.options.abortController as AbortController).signal;
+            const onAbort = () => { clearTimeout(timer); reject(new Error("SDK aborted")); };
+            const timer = setTimeout(() => {
+              signal.removeEventListener("abort", onAbort);
+              resolve();
+            }, mockDelayMs);
+            signal.addEventListener("abort", onAbort, { once: true });
+          });
         }
         const hookInputs = mockPostToolUseInputsPerCall
           ? (mockPostToolUseInputsPerCall[callIndex] ?? [])
@@ -175,7 +184,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
         concurrencyCounter--;
       }
     }
-    return generator();
+    return Object.assign(generator(), { close: () => { mockCloseCount++; } });
   },
 }));
 
@@ -219,6 +228,48 @@ describe("callAgent SDK call options", () => {
     await callAgent(testConfig, "test prompt", []);
 
     expect(capturedOptions?.permissionMode).toBe("dontAsk");
+  });
+
+  test("review effort is independent of main-agent overrides", async () => {
+    const previousEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+    const previousThinking = process.env.MAX_THINKING_TOKENS;
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = "max";
+    process.env.MAX_THINKING_TOKENS = "32000";
+    try {
+      mockMessages = [{ type: "result", subtype: "success", result: "{}" }];
+      await callAgent({ ...testConfig, effort: "low" }, "test prompt", []);
+      expect(capturedOptions?.effort).toBe("low");
+      const env = capturedOptions?.env as Record<string, unknown>;
+      expect(env.CLAUDE_CODE_EFFORT_LEVEL).toBe("low");
+      expect(env.MAX_THINKING_TOKENS).toBeUndefined();
+    } finally {
+      if (previousEffort === undefined) delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
+      else process.env.CLAUDE_CODE_EFFORT_LEVEL = previousEffort;
+      if (previousThinking === undefined) delete process.env.MAX_THINKING_TOKENS;
+      else process.env.MAX_THINKING_TOKENS = previousThinking;
+    }
+  });
+
+  test("timeout cancels and closes one attempt without exhausting later calls", async () => {
+    mockDelayMs = 1000;
+    mockCloseCount = 0;
+    try {
+      await expect(callAgent({ ...testConfig, timeoutMs: 15, maxConcurrency: 1 }, "slow", []))
+        .rejects.toThrow("timed out after 15 ms");
+      expect((capturedOptions?.abortController as AbortController).signal.aborted).toBe(true);
+      expect(mockCloseCount).toBeGreaterThan(0);
+      expect(concurrencyCounter).toBe(0);
+      mockDelayMs = 0;
+      mockMessages = [{ type: "result", subtype: "success", result: "{}" }];
+      expect(await callAgent({ ...testConfig, timeoutMs: 100, maxConcurrency: 1 }, "new claim", []))
+        .toBe("{}");
+    } finally { mockDelayMs = 0; }
+  });
+
+  test("SDK failure preserves the actual subtype and reason", async () => {
+    mockMessages = [{ type: "result", subtype: "error_during_execution", errors: ["32000 output token maximum"] }];
+    await expect(callAgent(testConfig, "test prompt", []))
+      .rejects.toThrow("Review SDK error_during_execution: 32000 output token maximum");
   });
 
   test("allowedTools/disallowedTools 保持不变", async () => {

@@ -78,6 +78,10 @@ export interface ReviewConfig {
   apiKey: string;
   baseUrl?: string;
   maxTurns: number;
+  /** Independent limit for each SDK attempt, not a per-node or task budget. */
+  timeoutMs?: number;
+  /** Reviewer effort is independent of the main agent's environment. */
+  effort?: "low" | "medium" | "high" | "max";
   /** 所有 callAgent 调用共享的全局并发上限。默认 4（见 review-llm.ts DEFAULT_MAX_CONCURRENCY） */
   maxConcurrency?: number;
   /** 审计日志目录。null = 禁用审计。默认 dirname(dbPath)/audit */
@@ -91,6 +95,8 @@ interface ReviewConfigFile {
   model?: string;
   fallbackModel?: string;
   maxTurns?: number;
+  timeoutMs?: number;
+  effort?: "low" | "medium" | "high" | "max";
   maxConcurrency?: number;
   /** 审计日志目录。null = 禁用审计。不设置时默认 dirname(dbPath)/audit */
   auditDir?: string | null;
@@ -142,6 +148,12 @@ export function loadReviewConfig(
   const fallbackModel = fileConfig.fallbackModel ?? undefined;
   const maxTurns = positiveInt("maxTurns", fileConfig.maxTurns) ?? 10;
   const maxConcurrency = positiveInt("maxConcurrency", fileConfig.maxConcurrency);
+  const timeoutMs = positiveInt("timeoutMs", fileConfig.timeoutMs) ?? 300_000;
+  const effort = ["low", "medium", "high", "max"].includes(fileConfig.effort ?? "")
+    ? fileConfig.effort! : "medium";
+  if (fileConfig.effort !== undefined && effort !== fileConfig.effort) {
+    console.warn("[Warranted] Invalid review effort; using medium.");
+  }
   const baseUrl = fileConfig.baseUrl ?? undefined;
 
   // auditDir: null = 禁用；string = 自定义；未设置 = 默认路径
@@ -165,6 +177,8 @@ export function loadReviewConfig(
     apiKey,
     baseUrl,
     maxTurns,
+    timeoutMs,
+    effort,
     // 非法值在 positiveInt 里已经变成 undefined，这里整个键不出现，
     // 由消费处的默认值接管（review-llm.ts DEFAULT_MAX_CONCURRENCY）。
     ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),

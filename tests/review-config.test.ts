@@ -97,6 +97,15 @@ describe("loadReviewConfig", () => {
     expect(config!.maxTurns).toBe(20);
   });
 
+  test("review attempt limits and effort are explicit with safe defaults", () => {
+    const dir = setupDir();
+    const path = `${dir}/review.json`;
+    writeFileSync(path, JSON.stringify({ apiKey: "test", timeoutMs: 1234, effort: "low" }));
+    expect(loadReviewConfig(path, `${dir}/graph.db`)).toMatchObject({ timeoutMs: 1234, effort: "low" });
+    writeFileSync(path, JSON.stringify({ apiKey: "test", timeoutMs: -1, effort: "typo" }));
+    expect(loadReviewConfig(path, `${dir}/graph.db`)).toMatchObject({ timeoutMs: 300000, effort: "medium" });
+  });
+
   test("未设置 auditDir 时默认为 dirname(dbPath)/audit", () => {
     const dir = setupDir();
     const configPath = `${dir}/review.json`;

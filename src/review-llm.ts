@@ -129,6 +129,15 @@ export async function callAgent(
   const textCoverageByPath = new Map<string, TextReadCoverage>();
   const readRoot = cwd ?? process.cwd();
   const allowedReadPaths = new Set(attachmentPaths.map((path) => resolve(readRoot, path)));
+  const abortController = new AbortController();
+  const timeoutMs = config.timeoutMs ?? 300_000;
+  let activeQuery: ReturnType<typeof query> | undefined;
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    abortController.abort();
+    activeQuery?.close?.();
+  }, timeoutMs);
   const authorizeRead: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse" || input.tool_name !== "Read") return {};
     const raw = input.tool_input;
@@ -193,11 +202,13 @@ export async function callAgent(
     return {};
   };
   try {
-    const result = await query({
+    const result = activeQuery = query({
       prompt: fullPrompt,
       options: {
         model: config.model,
         maxTurns: config.maxTurns ?? 10,
+        effort: config.effort ?? "medium",
+        abortController,
         // 凭据必须显式递进去：SDK 起的是子进程，配置文件里的 apiKey/baseUrl
         // 曾经读进 ReviewConfig 就再没被任何人用过（src/ 里 config.apiKey 零个消费者），
         // 于是真正生效的是外部 shell 的环境变量 —— 用户按注释把密钥和转发站写进
@@ -213,6 +224,9 @@ export async function callAgent(
         // 无法表达该走哪种。两个都给，让 endpoint 挑它认的那个。
         env: {
           ...process.env,
+          CLAUDE_CODE_EFFORT_LEVEL: config.effort ?? "medium",
+          // Do not inherit the research agent's separate thinking-token override.
+          MAX_THINKING_TOKENS: undefined,
           ANTHROPIC_API_KEY: config.apiKey,
           ANTHROPIC_AUTH_TOKEN: config.apiKey,
           ...(config.baseUrl ? { ANTHROPIC_BASE_URL: config.baseUrl } : {}),
@@ -260,9 +274,17 @@ export async function callAgent(
         finalResult = message.result || "";
       } else if (message.type === "system" && message.subtype === "permission_denied") {
         deniedTools.push(message.tool_name);
+      } else if (message.type === "result" && message.subtype !== "success") {
+        throw new Error(`Review SDK ${message.subtype}: ${message.errors.join("; ")}`);
       }
     }
+    if (timedOut) throw new Error(`Review attempt timed out after ${timeoutMs} ms`);
+  } catch (error) {
+    if (timedOut) throw new Error(`Review attempt timed out after ${timeoutMs} ms`);
+    throw error;
   } finally {
+    clearTimeout(timeout);
+    activeQuery?.close?.();
     // Preserve observed coverage and denials even when the SDK produces no final result.
     successfulReadsOut?.push(...successfulReads);
     deniedOut?.push(...deniedTools);

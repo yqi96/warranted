@@ -11,6 +11,9 @@
  *   "model": "claude-sonnet-4-...",   // 可选，默认 claude-sonnet-4-20250514
  *   "fallbackModel": "claude-...",    // 可选，解析失败重试时换的模型；不设置 = 沿用 model
  *   "maxTurns": 10,                   // 可选，agent 最大轮数（正整数），默认 10
+ *   "timeoutMs": 300000,              // 可选，每个 SDK attempt 独立超时，无节点累计时限
+ *   "effort": "medium",              // 可选，low/medium/high/max，与主 agent 独立
+ *   "debug": false,                   // 可选，保存完整提示、可见事件与不可变附件副本
  *   "maxConcurrency": 4,              // 可选，全局并发上限（所有 callAgent 调用共享，正整数），默认 4
  *   "auditDir": "/path/to/audit"      // 可选，审计日志目录；null = 禁用；不设置 = dirname(dbPath)/audit
  * }
@@ -86,6 +89,8 @@ export interface ReviewConfig {
   maxConcurrency?: number;
   /** 审计日志目录。null = 禁用审计。默认 dirname(dbPath)/audit */
   auditDir: string | null;
+  /** Retain prompt, SDK-visible events and immutable attachment bytes. Default false. */
+  debug?: boolean;
   dbPath: string;
 }
 
@@ -100,6 +105,7 @@ interface ReviewConfigFile {
   maxConcurrency?: number;
   /** 审计日志目录。null = 禁用审计。不设置时默认 dirname(dbPath)/audit */
   auditDir?: string | null;
+  debug?: boolean;
 }
 
 /**
@@ -163,7 +169,10 @@ export function loadReviewConfig(
 
   // 确保 audit 目录存在（仅在启用时）
   if (auditDir && !existsSync(auditDir)) {
-    mkdirSync(auditDir, { recursive: true });
+    try { mkdirSync(auditDir, { recursive: true }); }
+    catch (error) {
+      console.warn(`[Warranted] Audit directory unavailable; review remains enabled: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   console.error(`[Warranted] Config loaded: ${configPath}`);
@@ -183,6 +192,7 @@ export function loadReviewConfig(
     // 由消费处的默认值接管（review-llm.ts DEFAULT_MAX_CONCURRENCY）。
     ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
     auditDir,
+    debug: fileConfig.debug === true,
     dbPath,
   };
 }

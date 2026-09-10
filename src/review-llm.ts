@@ -9,7 +9,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { resolve } from "path";
 import type { ReviewConfig } from "./review-config.ts";
-import { writeAuditRecord, type ReviewAuditMetadata } from "./review-audit.ts";
+import { beginReviewAudit, type ReviewAuditMetadata } from "./review-audit.ts";
 import { createPdfReadCoverageTracker } from "./review-pdf-coverage.ts";
 
 const DEFAULT_MAX_CONCURRENCY = 4;
@@ -116,14 +116,21 @@ export async function callAgent(
   requestId?: string,
   deniedOut?: string[],
   successfulReadsOut?: string[],
-  auditMetadata?: ReviewAuditMetadata
+  auditMetadata?: ReviewAuditMetadata,
+  attempt = 1
 ): Promise<string> {
   // 调用方递进来的已经是最终 prompt。它与 protocol hash 必须逐字相同。
   const fullPrompt = prompt;
 
   const t0 = Date.now();
+  const audit = beginReviewAudit(config, { prompt: fullPrompt, attachmentPaths, cwd, requestId, attempt, metadata: auditMetadata });
+  const queuedAt = Date.now();
   await acquirePermit(config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
+  const queueMs = Date.now() - queuedAt;
   let finalResult = "";
+  let attemptError: unknown;
+  let readDurationMs = 0;
+  const readStarts = new Map<string, number>();
   const deniedTools: string[] = [];
   const successfulReads: string[] = [];
   const successfulReadPaths = new Set<string>();
@@ -142,6 +149,8 @@ export async function callAgent(
   }, timeoutMs);
   const authorizeRead: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse" || input.tool_name !== "Read") return {};
+    audit.event({ type: "read_start", input });
+    readStarts.set(input.tool_use_id, Date.now());
     const raw = input.tool_input;
     const path = raw && typeof raw === "object" && "file_path" in raw &&
       typeof raw.file_path === "string"
@@ -160,6 +169,12 @@ export async function callAgent(
     };
   };
   const recordSuccessfulRead: HookCallback = async (input) => {
+    if (input.hook_event_name === "PostToolUse" && input.tool_name === "Read") {
+      audit.event({ type: "read_result", input });
+      const started = readStarts.get(input.tool_use_id);
+      if (started !== undefined) readDurationMs += Date.now() - started;
+      readStarts.delete(input.tool_use_id);
+    }
     if (
       input.hook_event_name === "PostToolUse" &&
       input.tool_name === "Read" &&
@@ -255,8 +270,13 @@ export async function callAgent(
         // 实测一个项目的审查工作量留下 300 个文件、144MB —— 是 reviews+audit+log
         // 三者合计（3MB）的 48 倍。审查器的会话没人要恢复，不需要留。
         persistSession: false,
+        // Debug streams retain partial events even if generation later fails.
+        includePartialMessages: config.debug === true,
         // 只给 Read,且下面的 PreToolUse 再把路径收窄到本次不可变快照。
+        // allowedTools only pre-approves tools; tools also limits their availability.
+        tools: ["Read"],
         allowedTools: ["Read"],
+        skills: [],
         // 搜索工具也能返回未声明文件内容,因此与写操作一起禁用。
         disallowedTools: ["Edit", "Write", "Bash", "MultiEdit", "Glob", "Grep"],
         // 从不询问：未预批准的操作直接拒绝，不会因为无 TTY 而卡死
@@ -265,6 +285,7 @@ export async function callAgent(
         ...(cwd ? { cwd } : {}),
         // 禁用所有 MCP 服务器（reviewer 不需要 MCP 工具）
         mcpServers: {},
+        strictMcpConfig: true,
         // PostToolUse fires only after the built-in Read completed. Merely asking
         // the model to read, or observing no permission denial, is not evidence
         // that an attachment was actually opened.
@@ -277,6 +298,7 @@ export async function callAgent(
 
     // 收集消息，提取最终结果
     for await (const message of result) {
+      audit.event(message);
       if (message.type === "result" && message.subtype === "success") {
         finalResult = message.result || "";
       } else if (message.type === "system" && message.subtype === "permission_denied") {
@@ -286,9 +308,10 @@ export async function callAgent(
       }
     }
     if (timedOut) throw new Error(`Review attempt timed out after ${timeoutMs} ms`);
+    if (!finalResult) throw new Error("Agent returned no result");
   } catch (error) {
-    if (timedOut) throw new Error(`Review attempt timed out after ${timeoutMs} ms`);
-    throw error;
+    attemptError = timedOut ? new Error(`Review attempt timed out after ${timeoutMs} ms`) : error;
+    throw attemptError;
   } finally {
     clearTimeout(timeout);
     activeQuery?.close?.();
@@ -296,51 +319,20 @@ export async function callAgent(
     successfulReadsOut?.push(...successfulReads);
     deniedOut?.push(...deniedTools);
     releasePermit();
+    const successfulResolved = new Set(successfulReads.map((path) => resolve(readRoot, path)));
+    const declaredReads = auditMetadata?.attachmentSnapshots.length === attachmentPaths.length
+      ? attachmentPaths.flatMap((path, index) => successfulResolved.has(resolve(readRoot, path))
+        ? [auditMetadata.attachmentSnapshots[index]!.path] : [])
+      : successfulReads;
+    audit.finish({ status: attemptError === undefined ? "completed" : "failed", error: attemptError,
+      raw: finalResult, durationMs: Date.now() - t0, queueMs, readDurationMs,
+      successfulReads: declaredReads, snapshotReads: successfulReads });
   }
   if (deniedTools.length > 0) {
     // stderr only reaches the server operator, never the calling agent — so the
     // names are also handed back to the caller, which is what lets a denied
     // review be reported as "not reviewed" rather than counted as a pass.
     console.warn(`[review-llm] ${deniedTools.length} tool call(s) denied under dontAsk: ${deniedTools.join(", ")}`);
-  }
-
-  if (!finalResult) {
-    throw new Error("Agent returned no result");
-  }
-
-  // 写入审计日志（失败时静默忽略）
-  if (config.auditDir) {
-    const rid = requestId ?? crypto.randomUUID();
-    const successfulResolved = new Set(
-      successfulReads.map((path) => resolve(readRoot, path))
-    );
-    const declaredReads =
-      auditMetadata?.attachmentSnapshots.length === attachmentPaths.length
-        ? attachmentPaths.flatMap((path, index) =>
-            successfulResolved.has(resolve(readRoot, path))
-              ? [auditMetadata.attachmentSnapshots[index]!.path]
-              : []
-          )
-        : successfulReads;
-    writeAuditRecord(config.auditDir, {
-      timestamp: new Date().toISOString(),
-      requestId: rid,
-      model: config.model,
-      maxTurns: config.maxTurns ?? 10,
-      ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
-      input: {
-        prompt: fullPrompt,
-        attachmentPaths,
-        cwd,
-        ...(auditMetadata ?? {}),
-      },
-      output: {
-        raw: finalResult,
-        durationMs: Date.now() - t0,
-        successfulReads: declaredReads,
-        snapshotReads: successfulReads,
-      },
-    });
   }
 
   return finalResult;
@@ -493,7 +485,7 @@ export async function callAndParse(
     traceOut?.push(trace);
     try {
       const raw = await callAgent(
-        attemptConfig, prompt, attachments, cwd, requestId, deniedOut, trace.successfulReads, auditMetadata,
+        attemptConfig, prompt, attachments, cwd, requestId, deniedOut, trace.successfulReads, auditMetadata, attempt,
       );
       const parsed = parseLLMResponse(raw);
       trace.status = parsed._parseFailed ? "unparseable" : "parsed";

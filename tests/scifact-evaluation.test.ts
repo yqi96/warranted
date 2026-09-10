@@ -456,6 +456,9 @@ describe("graph fixtures and runner", () => {
         });
         return {
           ...recorded,
+          findings: recorded.findings.map((finding) => ({ ...finding, state: "pending" as const })),
+          reused: false as const,
+          reviewDecision: service.propositionView(db, { root: reviewCwd(config!) }, nodeId).reviewDecision,
           Q1: "pass" as const,
           Q2: "pass" as const,
           rejected: [],
@@ -607,6 +610,9 @@ describe("graph fixtures and runner", () => {
         });
         return {
           ...recorded,
+          findings: recorded.findings.map((finding) => ({ ...finding, state: "pending" as const })),
+          reused: false as const,
+          reviewDecision: service.propositionView(db, { root: reviewCwd(config!) }, nodeId).reviewDecision,
           Q1: "pass",
           Q2: "pass",
           rejected: [],
@@ -645,6 +651,9 @@ describe("graph fixtures and runner", () => {
         });
         return {
           ...recorded,
+          findings: recorded.findings.map((finding) => ({ ...finding, state: "pending" as const })),
+          reused: false as const,
+          reviewDecision: service.propositionView(db, { root: reviewCwd(config!) }, nodeId).reviewDecision,
           Q1: "pass",
           Q2: "pass",
           rejected: [],
@@ -694,6 +703,9 @@ describe("graph fixtures and runner", () => {
         });
         return {
           ...recorded,
+          findings: recorded.findings.map((finding) => ({ ...finding, state: "pending" as const })),
+          reused: false as const,
+          reviewDecision: service.propositionView(db, { root: reviewCwd(config!) }, nodeId).reviewDecision,
           Q1: "n/a" as const,
           Q2: "pass" as const,
           rejected: [],

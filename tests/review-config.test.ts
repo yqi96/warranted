@@ -18,6 +18,12 @@ function setupDir(): string {
 }
 
 describe("loadReviewConfig", () => {
+  test("audit directory failure warns without disabling review", () => {
+    const dir = setupDir();
+    writeFileSync(`${dir}/not-a-directory`, "file");
+    writeFileSync(`${dir}/review.json`, JSON.stringify({ apiKey: "test", auditDir: `${dir}/not-a-directory/audit` }));
+    expect(loadReviewConfig(`${dir}/review.json`, `${dir}/test.db`)?.enabled).toBe(true);
+  });
   test("未提供配置文件路径时返回 null", () => {
     const config = loadReviewConfig(null, "/tmp/test.db");
     expect(config).toBeNull();
@@ -95,6 +101,15 @@ describe("loadReviewConfig", () => {
 
     const config = loadReviewConfig(configPath, `${dir}/test.db`);
     expect(config!.maxTurns).toBe(20);
+  });
+
+  test("debug默认关闭，只有显式true开启", () => {
+    const dir = setupDir();
+    const configPath = `${dir}/review.json`;
+    for (const [debug, expected] of [[undefined, false], [false, false], [true, true], ["true", false]] as Array<[unknown, boolean]>) {
+      writeFileSync(configPath, JSON.stringify({ apiKey: "sk-test", debug }));
+      expect(loadReviewConfig(configPath, `${dir}/test.db`)!.debug).toBe(expected);
+    }
   });
 
   test("review attempt limits and effort are explicit with safe defaults", () => {

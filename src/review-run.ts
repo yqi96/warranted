@@ -13,6 +13,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type { ReviewConfig } from "./review-config.ts";
 import { reviewCwd } from "./review-config.ts";
@@ -22,6 +23,7 @@ import { callAndParse, type ReviewAttemptTrace } from "./review-llm.ts";
 import { NotFoundError, ReviewUnavailableError } from "./errors.ts";
 import { log } from "./logger.ts";
 import * as svc from "./service.ts";
+import * as repo from "./repo.ts";
 import { assertVerdictFindingConsistency } from "./review-consistency.ts";
 import {
   buildReviewInput,
@@ -31,9 +33,9 @@ import {
 import { materializeReviewAttachments } from "./review-materialize.ts";
 import { ReviewFailureTracker } from "./review-failures.ts";
 import type { CheckContext } from "./structural-check.ts";
-import type { Finding, FindingDraft, RejectedFinding, ReviewIncompleteDiagnostics } from "./types.ts";
+import type { Finding, FindingDraft, FindingView, RejectedFinding, ReviewDecision, ReviewIncompleteDiagnostics } from "./types.ts";
 
-export interface ReviewRunResult {
+interface ReviewExecutionResult {
   eventId: number;
   Q1: "pass" | "fail" | "n/a";
   Q2: "pass" | "fail";
@@ -44,6 +46,19 @@ export interface ReviewRunResult {
   actualModel: string;
   /** Declared attachment paths whose immutable copies were fully read in the final attempt. */
   attachmentsRead: string[];
+}
+
+export interface ReviewRunResult extends Omit<ReviewExecutionResult, "findings"> {
+  /** Original findings with their current dismissals, never resurrected as pending by reuse. */
+  findings: Array<Finding & Pick<FindingView, "state" | "dismissal">>;
+  reused: false | "completed" | "inflight";
+  /** Current agent/reviewer disposition; the original Q1/Q2 above remain unchanged. */
+  reviewDecision: ReviewDecision;
+}
+
+export interface ReviewRunOptions {
+  /** Request a new opinion instead of a completed result. An identical inflight call is shared. */
+  refresh?: boolean;
 }
 
 /**
@@ -110,28 +125,100 @@ function collectResponse(input: ReviewInput, parsed: Record<string, unknown>) {
  * 把 claim 记成 passed,那是"没审查但记为通过"的补丁。
  */
 const failureTrackers = new WeakMap<Database, ReviewFailureTracker>();
+const reuseByDatabase = new WeakMap<Database, {
+  completed: Map<number, { key: string; result: ReviewExecutionResult }>;
+  inflight: Map<string, Promise<ReviewExecutionResult>>;
+}>();
 
 export async function runReview(
   config: ReviewConfig | null,
   db: Database,
   nodeId: number,
-  ctx?: CheckContext
+  ctx?: CheckContext,
+  options: ReviewRunOptions = {}
 ): Promise<ReviewRunResult> {
   let tracker = failureTrackers.get(db);
   if (!tracker) failureTrackers.set(db, tracker = new ReviewFailureTracker());
-  try {
-    const result = await performReview(config, db, nodeId, ctx);
-    tracker.completed(nodeId);
-    return result;
-  } catch (error) {
-    if (error instanceof ReviewUnavailableError && error.diagnostics?.stage !== "input_freshness") {
-      const advisory = tracker.failed(nodeId, error.message, error.diagnostics?.inputFingerprint);
-      if (advisory) {
-        error.message += `\n${advisory}`;
-        if (error.diagnostics) error.diagnostics.reason = error.message;
+  let reuse = reuseByDatabase.get(db);
+  if (!reuse) reuseByDatabase.set(db, reuse = { completed: new Map(), inflight: new Map() });
+  // Hold an immutable configuration identity for the whole call, including credentials and
+  // diagnostics mode. Only a digest is used as the in-memory key; nothing is persisted.
+  const runConfig = config ? { ...config } : null;
+  const reviewContext = ctx ?? (runConfig ? { root: reviewCwd(runConfig) } : undefined);
+  let key: string | undefined;
+  if (runConfig?.enabled && reviewContext) {
+    try {
+      const snapshot = captureReviewSnapshot(db, reviewContext, nodeId);
+      key = createHash("sha256").update(JSON.stringify([
+        nodeId, resolve(reviewContext.root), snapshot.inputFingerprint,
+        protocolHash(buildReviewRequestPrompt(snapshot.input)),
+        Object.keys(runConfig).sort().map((name) => [name, runConfig[name as keyof ReviewConfig]]),
+        // The SDK receives these inherited request-routing/model overrides. Explicit
+        // configuration overrides credentials/effort, but an omitted endpoint inherits.
+        runConfig.baseUrl || process.env.ANTHROPIC_BASE_URL,
+        ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+          "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+          "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_MAX_OUTPUT_TOKENS"]
+          .map((name) => [name, process.env[name]]),
+      ])).digest("hex");
+    } catch {
+      // Let the ordinary executor report the precise missing-input/configuration diagnostic.
+    }
+  }
+
+  function present(result: ReviewExecutionResult, reused: ReviewRunResult["reused"]): ReviewRunResult {
+    const copy = structuredClone(result);
+    const dismissals = repo.findDismissals(db, copy.findings.map((finding) => finding.id));
+    return {
+      ...copy, reused,
+      findings: copy.findings.map((finding) => {
+        const dismissal = dismissals.get(finding.id);
+        return {
+          ...finding,
+          state: dismissal ? "acknowledged" as const : "pending" as const,
+          ...(dismissal ? { dismissal } : {}),
+        };
+      }),
+      reviewDecision: svc.propositionView(db, reviewContext!, nodeId).reviewDecision,
+    };
+  }
+
+  if (key) {
+    const inflight = reuse.inflight.get(key);
+    if (inflight) return present(await inflight, "inflight");
+    const completed = reuse.completed.get(nodeId);
+    if (!options.refresh && completed?.key === key) {
+      const freshness = svc.reviewFreshness(db, reviewContext!, nodeId);
+      if (freshness.status === "current" && freshness.eventId === completed.result.eventId) {
+        return present(completed.result, "completed");
       }
     }
-    throw error;
+  }
+
+  // Starting a new attempt invalidates the old cache, including when refresh later fails.
+  reuse.completed.delete(nodeId);
+  const running = (async () => {
+    try {
+      const result = await performReview(runConfig, db, nodeId, ctx);
+      tracker!.completed(nodeId);
+      if (key) reuse!.completed.set(nodeId, { key, result });
+      return result;
+    } catch (error) {
+      if (error instanceof ReviewUnavailableError && error.diagnostics?.stage !== "input_freshness") {
+        const advisory = tracker!.failed(nodeId, error.message, error.diagnostics?.inputFingerprint);
+        if (advisory) {
+          error.message += `\n${advisory}`;
+          if (error.diagnostics) error.diagnostics.reason = error.message;
+        }
+      }
+      throw error;
+    }
+  })();
+  if (key) reuse.inflight.set(key, running);
+  try {
+    return present(await running, false);
+  } finally {
+    if (key && reuse.inflight.get(key) === running) reuse.inflight.delete(key);
   }
 }
 
@@ -140,7 +227,7 @@ async function performReview(
   db: Database,
   nodeId: number,
   ctx?: CheckContext
-): Promise<ReviewRunResult> {
+): Promise<ReviewExecutionResult> {
   let stage: ReviewIncompleteDiagnostics["stage"] = "configuration";
   let initialInput: ReviewInput | undefined;
   let inputFingerprint: string | undefined;

@@ -452,18 +452,21 @@ export function registerTools(
       description: TOOLS.review.description,
       inputSchema: {
         id: z.number().int().describe(PARAMS.proposition_id),
+        refresh: z.boolean().optional().describe("Request a new opinion even if a completed review has identical input and configuration. An identical in-flight review is still shared."),
       },
     },
     withLog("review", async (input) => {
       try {
         // 没配模型、子进程失败、只读工具被拒 → ReviewUnavailableError,不降级。
         // 记一次没跑成的审查为 pass 会在图上造出"已核实"的假象。
-        const r = await runReview(reviewConfig, db, input.id, ctx);
-        const pending = r.findings.length;
+        const r = await runReview(reviewConfig, db, input.id, ctx, { refresh: input.refresh });
+        const pending = r.findings.filter((finding) => finding.state === "pending").length;
         const banner =
-          pending > 0 || r.Q1 === "fail" || r.Q2 === "fail"
-            ? `⚑ Q1=${r.Q1} Q2=${r.Q2}, ${pending} finding(s). ` +
+          pending > 0
+            ? `⚑ Reviewer Q1=${r.Q1} Q2=${r.Q2}, ${pending} pending finding(s). ` +
               `Findings do not expire on their own — they remain pending until a later review replaces them or dismiss records a reason.`
+            : r.reviewDecision.status === "stale"
+              ? "⚑ The review disposition is stale; decide what the changes require."
             : undefined;
         return ok(r, banner);
       } catch (e) {

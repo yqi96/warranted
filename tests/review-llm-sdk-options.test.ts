@@ -231,6 +231,10 @@ describe("callAgent SDK call options", () => {
     await callAgent(testConfig, "test prompt", []);
 
     expect(capturedOptions?.permissionMode).toBe("dontAsk");
+    expect(capturedOptions?.tools).toEqual(["Read"]);
+    expect(capturedOptions?.skills).toEqual([]);
+    expect(capturedOptions?.strictMcpConfig).toBe(true);
+    expect(capturedOptions?.includePartialMessages).toBe(false);
   });
 
   test("review effort is independent of main-agent overrides", async () => {
@@ -910,6 +914,80 @@ describe("配置里的凭据递给 SDK", () => {
     }
   });
 
+  test("normal audit retains actual usage without full prompt or response", async () => {
+    const auditDir = `/tmp/warranted-usage-${crypto.randomUUID()}`;
+    try {
+      mockMessages = [
+        { type: "system", subtype: "init", model: "sdk-reported-model" },
+        { type: "result", subtype: "success", result: "private response", usage: { input_tokens: 12, output_tokens: 7 }, total_cost_usd: 0.012, duration_api_ms: 30 },
+      ];
+      await callAgent({ ...testConfig, auditDir }, "private prompt", []);
+      const body = readFileSync(`${auditDir}/${readdirSync(auditDir)[0]}`, "utf8");
+      const audit = JSON.parse(body);
+      expect(audit.status).toBe("completed");
+      expect(audit.telemetry).toMatchObject({ actualModel: "sdk-reported-model", usage: { input_tokens: 12, output_tokens: 7 }, totalCostUsd: 0.012, durationApiMs: 30 });
+      expect(audit.output.queueMs).toBeGreaterThanOrEqual(0);
+      expect(body).not.toContain("private prompt");
+      expect(body).not.toContain("private response");
+    } finally { rmSync(auditDir, { recursive: true, force: true }); }
+  });
+
+  test.each(["empty", "sdk_error", "timeout"])("%s leaves a failed attempt audit", async (mode) => {
+    const auditDir = `/tmp/warranted-failed-audit-${crypto.randomUUID()}`;
+    try {
+      mockMessages = mode === "sdk_error"
+        ? [{ type: "result", subtype: "error_during_execution", errors: ["output exceeds 32000 tokens"] }]
+        : [];
+      mockDelayMs = mode === "timeout" ? 100 : 0;
+      await expect(callAgent({ ...testConfig, auditDir, timeoutMs: mode === "timeout" ? 10 : 1000 }, "private prompt", [])).rejects.toThrow();
+      const audit = JSON.parse(readFileSync(`${auditDir}/${readdirSync(auditDir)[0]}`, "utf8"));
+      expect(audit.status).toBe("failed");
+      expect(audit.output.error.message).toContain(mode === "timeout" ? "timed out" : mode === "sdk_error" ? "32000" : "no result");
+      expect(audit.telemetry.totalCostUsd).toBeNull();
+      expect(audit.telemetry.usage).toBeNull();
+    } finally {
+      mockDelayMs = 0;
+      rmSync(auditDir, { recursive: true, force: true });
+    }
+  });
+
+  test("debug review preserves exact snapshot bytes after cleanup and source edits", async () => {
+    const auditDir = `/tmp/warranted-debug-review-${crypto.randomUUID()}`;
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "Evidence exists", evidence: { attachments: ["evidence.md"] } }])[0]!.id;
+      mockPostToolUseInputs = [fullRead("attachments/0001.md")];
+      mockMessages = [{ type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' }];
+      await runReview({ ...testConfig, auditDir, debug: true }, db, id, ctx);
+      expect(capturedOptions?.includePartialMessages).toBe(true);
+      const filename = readdirSync(auditDir).find((file) => file.endsWith(".json"))!;
+      const audit = JSON.parse(readFileSync(`${auditDir}/${filename}`, "utf8"));
+      const archive = audit.input.attachmentArchive[0];
+      writeFileSync("/tmp/warranted-sdk-options/evidence.md", "different later bytes");
+      expect(readFileSync(`${auditDir}/${archive.storedPath}`, "utf8")).toBe("evidence\n");
+      expect(audit.input.prompt).toContain("Evidence exists");
+      expect(audit.output.raw).toContain('"Q1":"pass"');
+      expect(readFileSync(`${auditDir}/${audit.input.eventsPath}`, "utf8")).toContain("read_result");
+      expect(() => readFileSync(`${audit.input.cwd}/${archive.readPath}`)).toThrow();
+    } finally { cleanupDb(db); rmSync(auditDir, { recursive: true, force: true }); }
+  });
+
+  test("parse fallback writes two distinct attempts with the same request identity", async () => {
+    const auditDir = `/tmp/warranted-retry-audit-${crypto.randomUUID()}`;
+    try {
+      mockMessagesPerCall = [
+        [{ type: "result", subtype: "success", result: "not json" }],
+        [{ type: "result", subtype: "success", result: "{}" }],
+      ];
+      await callAndParse({ ...testConfig, auditDir }, "p", [], "/tmp");
+      const audits = readdirSync(auditDir).map((file) => JSON.parse(readFileSync(`${auditDir}/${file}`, "utf8")));
+      expect(audits).toHaveLength(2);
+      expect(new Set(audits.map((audit) => audit.requestId)).size).toBe(1);
+      expect(audits.map((audit) => audit.attempt).sort()).toEqual([1, 2]);
+      expect(audits.every((audit) => audit.scope === "model_attempt")).toBe(true);
+    } finally { rmSync(auditDir, { recursive: true, force: true }); }
+  });
+
   test("审计同时保存声明附件读取和实际私有快照路径", async () => {
     const auditDir = `/tmp/warranted-audit-${Date.now()}-${Math.round(performance.now())}`;
     try {
@@ -1150,7 +1228,7 @@ describe("incomplete review diagnostics", () => {
       const before = svc.propositionView(db, ctx, id);
       const history = svc.getHistory(db, { id });
       mockPostToolUseInputs = [];
-      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
+      const err = await runReview(testConfig, db, id, ctx, { refresh: true }).catch((e) => e);
       expect(err).toBeInstanceOf(ReviewUnavailableError);
       expect(err.diagnostics).toMatchObject({
         status: "incomplete", stage: "read", nodeId: id,
@@ -1336,6 +1414,45 @@ describe("incomplete review diagnostics", () => {
       expect(err.diagnostics.candidateFindings).toHaveLength(1);
       expect(svc.propositionView(db, ctx, id).review.status).toBe("never");
     } finally { cleanupDb(db); }
+  });
+
+  test("MCP cached review preserves agent acceptance and refresh requests a new opinion", async () => {
+    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const { registerTools } = await import("../src/tools.ts");
+    const server = new McpServer({ name: "reuse-test", version: "0" });
+    const client = new Client({ name: "reuse-test-client", version: "0" });
+    const db = createTestDb();
+    const parse = (result: any) => {
+      expect(result.isError).not.toBe(true);
+      const text = result.content[0].text as string;
+      return { text, payload: JSON.parse(text.slice(text.indexOf("{"))) };
+    };
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
+      registerTools(server, db, "/tmp/warranted-sdk-options/.toulmin/graph.db", testConfig);
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      mockMessages = reply({ Q1: "n/a", Q2: "fail", findings: [q2(id)] });
+      const first = parse(await client.callTool({ name: "review", arguments: { id } }));
+      expect(first.payload.reused).toBe(false);
+      parse(await client.callTool({ name: "dismiss", arguments: { items: [{ id: first.payload.findings[0].id, reason: "Checked the objection and accept the stated limited scope" }] } }));
+      const cached = parse(await client.callTool({ name: "review", arguments: { id } }));
+      expect(cached.payload.reused).toBe("completed");
+      expect(cached.payload.Q2).toBe("fail");
+      expect(cached.payload.reviewDecision).toMatchObject({ status: "passed", source: "agent" });
+      expect(cached.payload.findings[0].state).toBe("acknowledged");
+      expect(cached.text.startsWith("⚑")).toBe(false);
+      expect(capturedCalls).toHaveLength(1);
+      const fresh = parse(await client.callTool({ name: "review", arguments: { id, refresh: true } }));
+      expect(fresh.payload.reused).toBe(false);
+      expect(fresh.payload.reviewDecision.status).toBe("pending");
+      expect(fresh.text.startsWith("⚑")).toBe(true);
+      expect(capturedCalls).toHaveLength(2);
+    } finally {
+      await client.close(); await server.close(); cleanupDb(db);
+    }
   });
 
   test("MCP transport serializes incomplete diagnostics as JSON and keeps isError", async () => {

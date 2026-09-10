@@ -28,6 +28,8 @@ Ground, backing, claim, and rebuttal are viewpoints, not node types. The same pr
 
 Structural checks are deterministic and automatic. They return **non-blocking warnings** for incomplete evidence, missing attachments, changed dependencies, and similar conditions. They do not rewrite qualifiers or prevent the agent from recording a judgment. An explicit `review` call can ask a separate LLM for a semantic second opinion about source faithfulness and inference validity. Findings are advisory; they remain pending until a later review replaces them or they are dismissed with a reason.
 
+After checking a small fix, rejecting a mistaken objection, or accepting a limitation for the stated use, the primary agent can `dismiss` with a specific reason. Dismissing every finding in the latest valid review records acceptance of the current input as **passed by the agent**, without rewriting the reviewer's verdict or changing credibility. Later input or protocol changes make that acceptance stale. Finishing does not require every node to pass or every warning to disappear.
+
 ## Documentation
 
 | Doc | What it covers |
@@ -70,6 +72,10 @@ On launch, `toulmin-researcher` becomes the primary agent. Two stdio MCP servers
 - `browser` provides process-isolated Chrome sessions for browser-assisted research.
 
 Review is never triggered merely by creating or editing a proposition. It runs only when the agent deliberately calls `review`, and only when `review.json` supplies a usable `apiKey`.
+
+Review attempts have independent `timeoutMs` (default `300000`) and `effort` (default `medium`), rather than inheriting the main agent's effort or sharing a node-wide budget. Three consecutive incomplete reviews within 30 minutes produce an advisory, not a lockout; a completed review with findings is not an execution failure. Identical completed or in-flight requests may be reused within the server process; `refresh: true` requests a new review. PDF page-range coverage needs Poppler's `pdfinfo` and the SDK's PDF reading support (`pdftoppm` for page rendering). Missing metadata or incomplete page coverage never counts as a completed read.
+
+Audit is compact by default: input/attachment hashes, attempt outcome, elapsed time, and SDK-reported model/usage/cost when available (otherwise `null`). Set `debug: true` for diagnosis to additionally retain the actual prompt, SDK-visible event stream and hash-deduplicated immutable attachment bytes under the audit directory's `debug/` subdirectory. Credentials are redacted; unreturned internal reasoning is not observable. Debug must be enabled before the attempt and can use substantial disk space. Normal mode does not guarantee exact-input replay. `auditDir: null` disables both modes. See [review configuration and audit](docs/api.md#review-配置与运行留档).
 
 > Hitting install or version issues? See [known-working versions](docs/reference/known-working-versions.md).
 

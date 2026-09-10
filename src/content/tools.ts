@@ -54,7 +54,7 @@ export const TOOLS = {
   get_argument: {
     title: "Get argument",
     description:
-      "Read a proposition in full — five slots, structural warnings, unresolved findings, and whether its latest review is current — plus its neighbours to the requested depth. " +
+      "Read a proposition in full — five slots, structural warnings, unresolved findings, reviewer freshness and the current reviewer/agent decision — plus its neighbours to the requested depth. " +
       "Use this when you know the id; when you do not, find_propositions first.",
   },
 
@@ -68,7 +68,7 @@ export const TOOLS = {
   get_stats: {
     title: "Get stats",
     description:
-      "Whole-graph recorded-state summary: unresolved findings, structural-check violations, review freshness/coverage, and counts per credence band. " +
+      "Whole-graph recorded-state summary: unresolved findings, structural-check violations, review freshness/coverage, separate reviewer/agent decisions, and counts per credence band. " +
       "It does not prove truth, completeness, or alignment of an outward answer. Use it before a substantive handoff; to inspect one proposition, use get_argument.",
   },
 
@@ -88,6 +88,8 @@ export const TOOLS = {
       "It sees no history, command trace, omitted file, or wider graph, so it cannot by itself establish chronology or provenance. " +
       "Reviews may take several minutes and are expensive; use them deliberately for consequential semantic risks. " +
       "If the runtime supports background or asynchronous tool calls, prefer that mode, but keep the reviewed proposition and attachments unchanged, do not submit a duplicate while one is pending, and do not rely on a verdict until the result returns. " +
+      "Identical completed or in-flight requests may be reused; refresh=true requests a fresh review when needed, not merely to clear a status. " +
+      "Each execution attempt has its own timeout, not a per-node or research-task budget. Repeated failures prompt your judgment but do not disable review. " +
       "An incomplete result reports the failure and any candidate findings for verification; these are not recorded findings or a pass and cannot be dismissed by id. Earlier findings remain in force. Structural checks remain automatic.",
   },
 

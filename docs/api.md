@@ -28,7 +28,7 @@
 | `get_stats` | 结算摘要(红点清单) | 交付前扫全图;看单条用 `get_argument` |
 | `get_history` | 读事件流(变更、判断、意见) | 看"怎么变成现在这样";看"现在是什么样"用 `get_argument` |
 | `review` | 请第三方 LLM 审查单条命题的证据与推理 | 慢且贵、只发现不裁决;结构性检查是免费的、自动的,不需要调 |
-| `dismiss` | 驳回一条警告或一条 finding,必写理由 | 驳回是"我判它不成立";真去修是 `update_proposition` / `set_qualifier` |
+| `dismiss` | 处置一条警告或一条 finding,必写理由 | 意见有误、用途内可接受或已修复核实;不替代实际修改,不自动提高 qualifier |
 
 **没有的工具**:没有 `create_warrant`(warrant 是槽位不是节点,design.md §1.2);没有 `compile_arguments`(动词退役,§2.6);没有 `verify_statements`(verified 并入 qualifier 正向档);没有任何 tag 工具(体系废除);没有 `confirm`(人直接改图即留痕)。
 
@@ -213,8 +213,9 @@
 | 字段 | 说明 |
 | --- | --- |
 | `id` | 单条命题(不递归、不吃子图,design.md §2.2) |
+| `refresh` | 可选 boolean,默认 false;跳过已有完成结果取得新意见,但仍共享正在执行的同输入请求 |
 
-产出:带引证的 findings,落库并绑定到该命题;进同一条事件流。
+产出:带引证的 findings,落库并绑定到该命题;进同一条事件流。返回同时包含当前 `reviewDecision` / findings 处置状态及 `reused: false | "completed" | "inflight"`。本进程内对相同输入、协议和配置复用成功完成的调用,或合并仍在执行的等价请求;失败不会缓存成通过。复用仍检查当前输入及处置,不把历史结果伪装成新审查。
 
 **finding 结构**(契约与理由见 design.md §2.2"一条 finding 的构成"):
 
@@ -252,7 +253,7 @@ F4 是把 §2.3"强制引证"从措辞变成可执行判据的地方——Q1 的
 
 拒收通常是逐条的,但最终 verdict 必须满足 `Q1=fail ⇔ 至少一条有效 Q1 finding`、`Q2=fail ⇔ 至少一条有效 Q2 finding`;`pass/n/a` 不得报告对应 finding,即使那条 finding 随后被机械拒收也不能把矛盾答复洗成 clean pass。若拒收后破坏了这项一致性,整次 review 作为协议失败不落事件、不落 finding。
 
-**未完成审查的工具返回。** `ReviewUnavailableError` 保持为错误;MCP 返回 `isError: true`,文本内容是可解析 JSON,并在 `structuredContent` 提供同一诊断对象。成功返回的形状不变。诊断包含:
+**未完成审查的工具返回。** `ReviewUnavailableError` 保持为错误;MCP 返回 `isError: true`,文本内容是可解析 JSON,并在 `structuredContent` 提供同一诊断对象。诊断包含:
 
 | 字段 | 说明 |
 | --- | --- |
@@ -293,7 +294,25 @@ review 先把声明附件用同一字节流复制并哈希到私有只读目录;
 - **被审查命题自己的 qualifier 不进**——那是待判的结论。
 - 检查点在 prompt 构建函数的入参类型:越界的修法是**删字段**,不是在 prompt 里加禁令。
 
-审查器只开放 Read,并用 PreToolUse 将路径限制到本次声明附件的私有不可变副本;Glob/Grep 因可能返回未挂载文件内容而禁用。用户 settings、skills、plugins 与 MCP 也被隔离。它只看当前单条局部视图,**不看历史、命令轨迹、未挂载文件或整张图**,因此不能单独证明过程顺序。agent 自写的说明文档只是底层证据的索引,不能自证其断言。`out-of-sample/held-out/independent` 要求评价规则在结果揭示前固定,且评价数据、场景、结果或标签没有参与被检验对象的拟合、选择、调参或修订;事后重跑/缩放只能称 sensitivity/robustness,但不要求高层假设本身也预注册。review 事件和 audit 记录实际模型、最终协议、输入指纹及附件哈希,但不记录凭据。未配置审查模型时拒绝执行并说明如何配置。
+审查器只开放 Read,并用 PreToolUse 将路径限制到本次声明附件的私有不可变副本;Glob/Grep 因可能返回未挂载文件内容而禁用。用户 settings、skills、plugins 与 MCP 也被隔离。它只看当前单条局部视图,**不看历史、命令轨迹、未挂载文件或整张图**,因此不能单独证明过程顺序。agent 自写的说明文档只是底层证据的索引,不能自证其断言。`out-of-sample/held-out/independent` 要求评价规则在结果揭示前固定,且评价数据、场景、结果或标签没有参与被检验对象的拟合、选择、调参或修订;事后重跑/缩放只能称 sensitivity/robustness,但不要求高层假设本身也预注册。review 事件记录模型、最终协议、输入指纹及附件哈希;audit 记录实际发送的 prompt 哈希及 SDK 返回的模型信息,不记录凭据。SDK 报告的模型名不是对代理服务后端身份的独立证明。未配置审查模型时拒绝执行并说明如何配置。
+
+PDF 可以分段读取:宿主从不可变副本读取总页数,核对 SDK 成功响应中的实际页数,累计覆盖全部页才算读全。请求页码本身、读取错误、截断或矛盾元数据不能证明覆盖;缺 `pdfinfo` 时不猜总页数。SDK 的整份 PDF 响应可用完整 base64 与副本字节一致来证明整份读取。文本仍使用既有行区间覆盖。数值 finding 应先核对定义、单位、分母、样本数与舍入,必要时给出简短可复算的算式;不新增 finding 字段。
+
+#### Review 配置与运行留档
+
+| 配置 | 默认与含义 |
+| --- | --- |
+| `timeoutMs` | `300000`;每个实际 SDK attempt 独立的防卡死时限,不限制节点累计审查时间或科研任务总时长 |
+| `effort` | `medium`;可用 `low/medium/high/max`,与主 agent 环境隔离 |
+| `maxTurns` | `10`;每个 attempt 的最大轮数 |
+| `auditDir` | `dirname(dbPath)/audit`;`null` 禁用运行审计 |
+| `debug` | `false`;显式 true 才保存详细排障材料 |
+
+同一节点 30 分钟内连续 3 次审查未完成时,返回近期原因和输入变化情况,只建议主 agent 判断输入、服务或配置是否需处理。输入新鲜度变化不计作这类故障;正常完成但发现论证错误也不计作执行失败。正常完成会重置连续计数,达到阈值后不会每次重复提醒。没有节点锁定、累计时限或自动科研调度。
+
+运行审计与图事件分开:每个 SDK attempt 开始即写稳定 JSON,结束时更新 `started/completed/failed`。其 `scope: model_attempt` 只描述模型调用,不是完整 `runReview` 已通过读取、协议、输入新鲜度和科学判断检查。正常模式保留输入指纹、prompt 哈希、附件路径与哈希、状态/原因、耗时,以及 SDK 提供的实际模型、轮数、usage、费用、API 耗时;未知项为 `null`,不是零。正常模式不额外保存完整 prompt、raw、SDK 事件或历史附件字节。
+
+`debug: true` 时保存实际 prompt、原始回复、可见 SDK 事件的增量 JSONL,并在 query 前从本次私有副本保存按哈希去重的附件字节。映射保留原声明路径、读取别名和哈希,目录为 `auditDir/debug/attachments/` 与 `auditDir/debug/*.events.jsonl`。不复制整个工作区、环境或凭据;凭据脱敏优先于原文保留,缺失或哈希不符会明确记录。日志写入失败发告警而不改科学结果。没有 SDK 返回的内部思考不可宣称可见;事后开启 debug 不能恢复已清理的旧附件。关闭 debug 不自动删除此前材料,本轮不提供自动归档或清理服务。
 
 ### 4.2 `dismiss`
 
@@ -399,7 +418,7 @@ design.md §1.4 把旧"类型"承担的写作引导转移到参数描述。以�
 | `paperTagObservedSource` | **删除**(`source` 字段与 tag 体系一并废除) |
 | `attachmentOutOfRoot` | **保留**。它查的是可移植性,与 V3 无关(V3 只查存在),两者都要 |
 | `attachmentUnreadable` | **新增(S6)**。路径存在但不能作为文件完整读取时标红;否则附件可进入基线却无法哈希或 review |
-| `compiledWithoutReviewModel` | **改为失败**。它原本是"没审查却记为 passed"的补丁,而 review 不产出 passed,缺配置时应直接拒绝执行(§4.1) |
+| `compiledWithoutReviewModel` | **改为失败**。它原本是"没审查却记为 passed"的补丁;缺配置时应直接拒绝执行,不能生成 reviewer 或 agent 的通过裁定(§4.1) |
 
 新增的警告类别只有一族:**结构检查警告 / 该重查警告**,按 design.md §3.1 的四档判据派生,带触发点与 id(§5)。其中 `S6` 指出路径存在但附件不可完整读取;`R4` 精确指出同一路径附件的字节内容已经偏离 set_qualifier 时的基线;整体 `R0` 同时说明原判断所依据的自身状态已变。
 

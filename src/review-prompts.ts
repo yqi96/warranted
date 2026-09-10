@@ -19,7 +19,7 @@ import { extname } from "path";
 import type { Qualifier } from "./types.ts";
 
 /** Prompt 版本。改动本文件的任何措辞都要跟着改它——协议 hash 由它与正文一起算。 */
-export const REVIEW_PROTOCOL_VERSION = "q1q2/4";
+export const REVIEW_PROTOCOL_VERSION = "q1q2/5";
 
 const RAW_JSON_SUFFIX =
   "\n\nCRITICAL: Output ONLY a raw JSON object. Do NOT wrap it in markdown code fences.";
@@ -104,6 +104,8 @@ Answer exactly two questions about the proposition below. Nothing else is in sco
 **Q2 — Validity.** Granting the evidence as true, does the warrant actually get you from the evidence to the content? Take each referenced proposition at its stated qualifier: a premise marked "refuted" enters as a refuted claim, not as a true one, and an argument that needs it to be true is broken.
 
 An agent-authored note, report, or description is an index to evidence, not independent corroboration of its own assertions. For empirical, computational, or process claims, inspect the underlying source, data, result, or execution record among the attachments. Repetition of the proposition in a description file does not make Q1 pass.
+
+Before making a numerical objection, verify the definitions, units, denominator, sample count and rounding in the cited source. Distinguish standard deviation (SD) from standard error (SE), and proportions below a threshold from those above it. When arithmetic is the basis of a finding, include a short, checkable calculation in its existing content field alongside the required citation; confidence alone is not evidence. Keep findings concise and specific. Do not expand this review into a new experiment, a broader research plan or a long essay.
 
 Treat "out-of-sample", "held-out", "independent validation", and similar chronology-sensitive claims strictly. The evaluation rule must have been fixed before outcomes were revealed, and the evaluation data, scenario, outcomes, or labels must not have been inspected while fitting, selecting, tuning, or revising the claim, method, or bound being evaluated. This need not predate the high-level hypothesis; it must predate the decisions whose generalization it is claimed to test. A post-hoc rerun, rescaling, or selected scenario is a sensitivity check, not out-of-sample validation. Retrospective prose asserting independence is not prospective provenance.
 

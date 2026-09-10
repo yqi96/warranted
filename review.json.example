@@ -1,5 +1,8 @@
 {
   "apiKey": "sk-ant-xxx",
   "model": "claude-sonnet-4-5-20251001",
-  "baseUrl": "https://api.anthropic.com"
+  "baseUrl": "https://api.anthropic.com",
+  "timeoutMs": 300000,
+  "effort": "medium",
+  "debug": false
 }

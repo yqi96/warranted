@@ -146,7 +146,9 @@
 | `id` | 命题 id |
 | `depth` | 默认 1(自己 + 直接证据 / 反驳 / 晋升后的理由)。`0` = 只读这一条 |
 
-返回每条命题:`content` / `qualifier` / `warrant`(内联文本或 promoted 引用)/ `evidence`(attachments + nodes)/ `rebuttals` / `warnings[]` / `findings[]` / `review`。
+返回每条命题:`content` / `qualifier` / `warrant`(内联文本或 promoted 引用)/ `evidence`(attachments + nodes)/ `rebuttals` / `warnings[]` / `findings[]` / `review` / `reviewDecision`。
+
+`reviewDecision` 表示当前处置,状态为 `never/pending/passed/stale`;`passed` 用 `source: reviewer | agent` 区分独立审查通过与主 agent 裁定通过。它不覆盖原始 Q1/Q2,不改变 qualifier。旧 reviewer 记录可以 stale,而修正后由主 agent 确认的当前版本仍为 passed。
 
 `review` 是判别联合:`{status:"never"}`;或 latest review 的 `{status:"current", eventId, at, Q1, Q2, model, protocol}`;或同样元数据加 `{status:"stale", reason}`。`reason ∈ {input_changed, protocol_changed, legacy_unfingerprinted, invalid_record}`。它只回答最近 review 是否覆盖**当前局部输入**,不回答 finding 是否已处理。
 
@@ -180,6 +182,8 @@
 **与最近邻的判别**:实质性交付前扫全图用本工具;看单条用 `get_argument`。
 
 无必填参数。`reviewCoverage` 分三组返回 `{count,nodeIds}`;`never` 只是覆盖率信息,不自动成为 warning。persona 约定交付前扫一遍并处理(design.md §4)。本工具只汇总已记录状态,**不证明命题为真、不证明图已覆盖全部重要主张、也不证明对外文案与图一致**。
+
+`reviewDecisions` 按 `reviewerPassed/agentPassed/pending/stale/never` 分组返回同样的计数与节点 id。当前处置提示依据这一字段,不因历史 reviewer 记录 stale 就要求已接受当前版本的主 agent 重审。两类通过须分开统计。交付不要求所有节点通过、警告清空或 review 全部 current。
 
 ### 3.4 `get_history`
 
@@ -293,9 +297,9 @@ review 先把声明附件用同一字节流复制并哈希到私有只读目录;
 
 ### 4.2 `dismiss`
 
-**description**:驳回一条结构检查警告或一条 finding,判定它不成立或无需处理。必须写理由。
+**description**:处置一条结构检查警告或 finding:意见不成立、在当前用途和范围内可接受,或问题已修复并核实。必须逐条写具体理由。
 
-**与最近邻的判别**:本工具表达"我看过了,判它不成立";真要修是 `update_proposition` / `set_qualifier`。
+**与最近邻的判别**:本工具表达主 agent 的处置判断,不替代实际修改。小问题修复后能直接核实,可 dismiss,不必再次 review;仅在实质变化或重要不确定性需要时重审。
 
 | 字段 | 说明 |
 | --- | --- |
@@ -304,6 +308,8 @@ review 先把声明附件用同一字节流复制并哈希到私有只读目录;
 - **`reason` 强制非空,但不设长度下限。** 长度下限是可以刷的,刷起来比写一句真话便宜,加了只是给审计一种虚假的确定感。真正让"没看就驳回"变贵的是它进事件流、可被 `get_history` 逐条读出来。
 - **驳回是降级不是删除**:警告降为"已阅",留时间 + 理由(design.md §3.1b)。
 - **批量不违反 §3.1b**:那条防的是"命题级批量"——一个理由清掉一条命题上所有警告。本工具每项自带自己的警告 id 与自己的理由,该付的成本一分没省。
+
+最新有效 review 的非空 finding 批次全部主动 dismiss 后,最后一条 dismiss 事件同时记录 `{reviewEventId,inputFingerprint,protocol}` 确认,派生 `reviewDecision: passed/source=agent`。这表示主 agent 接受当前版本,不表示 reviewer 改口。先修正再 dismiss 可确认新版;确认后输入或协议再变化,复用现有指纹判 stale。可再次对当前批次 finding 写理由确认,不新增工具。旧 dismiss 无确认信息不回填通过;旧批次、未审查、执行失败或损坏 review 都不能因 finding 数为零而放行。
 
 **警告与 finding 的过期语义相反,这是有意的:**
 

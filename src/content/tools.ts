@@ -94,7 +94,8 @@ export const TOOLS = {
   dismiss: {
     title: "Dismiss warning or finding",
     description:
-      "Rule that a structural warning or a review finding does not hold, or needs no action. A reason is mandatory. " +
-      "Use this to say 'I looked, and I judge it does not apply'; to actually fix what it points at, use update_proposition or set_qualifier.",
+      "Judge that a warning or finding is mistaken, acceptable within the stated scope, or already fixed and checked. Give a specific reason for each item; this does not edit evidence or change qualifiers. " +
+      "Dismissing the last finding in the latest valid review also records your acceptance of the current input (reviewDecision: passed, source: agent), without rewriting the reviewer's verdict. Check the current version before doing so. " +
+      "Later input changes make that acceptance stale. You may re-confirm with a new reason on a current-batch finding; small verified fixes do not require another review. Never dismiss a material unresolved issue merely to clear a status.",
   },
 } as const;

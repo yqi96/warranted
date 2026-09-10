@@ -403,6 +403,8 @@ export interface PropositionView {
   findings: FindingView[];
   /** 最近一次语义审查相对于当前局部输入是否仍然有效。 */
   review: ReviewFreshness;
+  /** Current disposition, without rewriting the reviewer's historical verdict. */
+  reviewDecision: ReviewDecision;
   createdAt: string;
   updatedAt: string;
 }
@@ -428,6 +430,31 @@ export type ReviewFreshness =
         | "legacy_unfingerprinted"
         | "invalid_record";
     });
+
+/** Agent acceptance is version-bound, not an independent reviewer pass or a qualifier. */
+export type ReviewDecision =
+  | { status: "never" }
+  | {
+      status: "passed" | "pending";
+      source: "reviewer";
+      reviewEventId: number;
+      at: string;
+    }
+  | {
+      status: "passed";
+      source: "agent";
+      reviewEventId: number;
+      dismissEventId: number;
+      at: string;
+    }
+  | {
+      status: "stale";
+      source: "reviewer" | "agent";
+      reviewEventId: number;
+      dismissEventId?: number;
+      at: string;
+      reason: Extract<ReviewFreshness, { status: "stale" }>["reason"];
+    };
 
 export interface CreateResultItem {
   id: number;
@@ -484,6 +511,8 @@ export interface DismissResultItem {
   target: "warning" | "finding" | "unknown";
   ok: boolean;
   message?: string;
+  /** Present for a current finding, including when it closes the current batch. */
+  reviewDecision?: ReviewDecision;
 }
 
 /** get_stats 的结算摘要(design.md §4)。红点清单在前,计数在后。 */
@@ -501,4 +530,9 @@ export interface SettlementSummary {
     stale: { count: number; nodeIds: number[] };
     never: { count: number; nodeIds: number[] };
   };
+  /** Effective dispositions; reviewer coverage above remains historical provenance. */
+  reviewDecisions: Record<
+    "reviewerPassed" | "agentPassed" | "pending" | "stale" | "never",
+    { count: number; nodeIds: number[] }
+  >;
 }

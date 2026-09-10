@@ -57,6 +57,7 @@ import type {
   PropositionRow,
   PropositionView,
   Qualifier,
+  ReviewDecision,
   ReviewFreshness,
   ReviewOutcome,
   SetQualifierItem,
@@ -334,6 +335,70 @@ export function reviewFreshness(
   return { status: "current", ...summary };
 }
 
+/** Derive acceptance from existing review/dismiss events and the same input fingerprint. */
+function reviewDecision(
+  db: Database,
+  ctx: CheckContext,
+  nodeId: number,
+  freshness: ReviewFreshness,
+  findings: FindingView[],
+  capturedAttachments?: import("./types.ts").AttachmentSnapshot[]
+): ReviewDecision {
+  if (freshness.status === "never") return { status: "never" };
+  const latest = repo.latestReviewEvent(db, nodeId)!;
+  if (!reviewEventCanSupersedeFindings(latest)) {
+    return {
+      status: "stale", source: "reviewer", reviewEventId: latest.id,
+      at: latest.at, reason: "invalid_record",
+    };
+  }
+
+  // Empty findings are not agent acceptance. Legacy dismissals still acknowledge opinions,
+  // but only an explicit, version-bound confirmation can accept a changed input.
+  if (findings.length > 0 && findings.every((f) =>
+    f.state === "acknowledged" && !!f.dismissal?.reason.trim()
+  )) {
+    for (const event of repo.dismissalEventsNewestFirst(db, findings.map((f) => f.id))) {
+      let payload: Record<string, unknown>;
+      try { payload = JSON.parse(event.payload); } catch { continue; }
+      const rawConfirmation = payload?.reviewDecision;
+      if (!rawConfirmation || typeof rawConfirmation !== "object" || Array.isArray(rawConfirmation)) continue;
+      const confirmation = rawConfirmation as Record<string, unknown>;
+      if (
+        typeof payload?.reason !== "string" || !payload.reason.trim() ||
+        confirmation.reviewEventId !== latest.id ||
+        event.id <= latest.id ||
+        typeof confirmation.inputFingerprint !== "string" ||
+        !/^[0-9a-f]{64}$/.test(confirmation.inputFingerprint) ||
+        typeof confirmation.protocol !== "string" ||
+        !/^[0-9a-f]{16}$/.test(confirmation.protocol)
+      ) continue;
+
+      const summary = {
+        source: "agent" as const, reviewEventId: latest.id,
+        dismissEventId: event.id, at: event.at,
+      };
+      const current = captureReviewSnapshot(db, ctx, nodeId, capturedAttachments);
+      if (confirmation.inputFingerprint !== current.inputFingerprint) {
+        return { status: "stale", reason: "input_changed", ...summary };
+      }
+      if (confirmation.protocol !== protocolHash(buildReviewRequestPrompt(current.input))) {
+        return { status: "stale", reason: "protocol_changed", ...summary };
+      }
+      return { status: "passed", ...summary };
+    }
+  }
+
+  const summary = { source: "reviewer" as const, reviewEventId: latest.id, at: latest.at };
+  if (freshness.status === "stale") {
+    return { status: "stale", reason: freshness.reason, ...summary };
+  }
+  return {
+    status: freshness.Q1 !== "fail" && freshness.Q2 === "pass" ? "passed" : "pending",
+    ...summary,
+  };
+}
+
 function viewOf(
   db: Database,
   ctx: CheckContext,
@@ -347,6 +412,10 @@ function viewOf(
   const attachments = needsWarningHashes
     ? snapshotAttachments(ctx, state.attachments, attachmentCache)
     : [];
+  const findings = findingViews(db, state.id);
+  // Legacy/invalid reviews can be classified without touching large attachment bytes.
+  const captured = needsWarningHashes ? attachments : undefined;
+  const freshness = reviewFreshness(db, ctx, state.id, captured);
   return {
     id: state.id,
     content: state.content,
@@ -355,10 +424,9 @@ function viewOf(
     evidence: { attachments: state.attachments, nodes: state.evidenceNodes },
     rebuttals: state.rebuttals,
     warnings: computeWarningsFor(db, ctx, state, undefined, attachments),
-    findings: findingViews(db, state.id),
-    // For unestablished nodes, let reviewFreshness decide whether a legacy/invalid event can be
-    // classified without touching attachment bytes. Current fingerprints still hash on demand.
-    review: reviewFreshness(db, ctx, state.id, needsWarningHashes ? attachments : undefined),
+    findings,
+    review: freshness,
+    reviewDecision: reviewDecision(db, ctx, state.id, freshness, findings, captured),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -945,6 +1013,13 @@ export function getStats(db: Database, ctx: CheckContext): SettlementSummary {
     stale: { count: 0, nodeIds: [] },
     never: { count: 0, nodeIds: [] },
   };
+  const reviewDecisions: SettlementSummary["reviewDecisions"] = {
+    reviewerPassed: { count: 0, nodeIds: [] },
+    agentPassed: { count: 0, nodeIds: [] },
+    pending: { count: 0, nodeIds: [] },
+    stale: { count: 0, nodeIds: [] },
+    never: { count: 0, nodeIds: [] },
+  };
   const attachmentCache = new Map<string, string | null>();
 
   for (const id of repo.allPropositionIds(db)) {
@@ -955,7 +1030,8 @@ export function getStats(db: Database, ctx: CheckContext): SettlementSummary {
       if (!existsSync(resolveAttachment(ctx, p))) missing.push(p);
     }
 
-    const pendingFindings = findingViews(db, id).filter((f) => f.state === "pending");
+    const findings = findingViews(db, id);
+    const pendingFindings = findings.filter((f) => f.state === "pending");
     if (pendingFindings.length > 0) {
       unresolvedFindings.push({ nodeId: id, count: pendingFindings.length });
     }
@@ -977,6 +1053,13 @@ export function getStats(db: Database, ctx: CheckContext): SettlementSummary {
     const freshness = reviewFreshness(db, ctx, id, needsWarningHashes ? attachments : undefined);
     reviewCoverage[freshness.status].count++;
     reviewCoverage[freshness.status].nodeIds.push(id);
+    const decision = reviewDecision(db, ctx, id, freshness, findings,
+      needsWarningHashes ? attachments : undefined);
+    const bucket = decision.status === "passed"
+      ? decision.source === "agent" ? "agentPassed" : "reviewerPassed"
+      : decision.status;
+    reviewDecisions[bucket].count++;
+    reviewDecisions[bucket].nodeIds.push(id);
   }
 
   return {
@@ -986,6 +1069,7 @@ export function getStats(db: Database, ctx: CheckContext): SettlementSummary {
     unresolvedWarnings,
     attachments: { total: attachmentTotal, missing },
     reviewCoverage,
+    reviewDecisions,
   };
 }
 
@@ -1139,7 +1223,8 @@ export function recordReview(
  * **作用域是单条**:每项自带 id 与自己的理由。批量调用省的是往返,不是思考——
  * 这与 §3.1b"不提供命题级批量驳回"不冲突,那一条防的是"一个理由清掉一片"。
  *
- * 驳回是**降级不是删除**:只往事件流里 append 一条,原对象一个字节都不改。
+ * 处置不是删除:只 append 一条事件,原对象不改。当前批次最后一条意见被处置时,
+ * 同时钉住当前输入,派生主 agent 的通过裁定;不覆盖 reviewer 的历史结论。
  */
 export function dismiss(
   db: Database,
@@ -1172,16 +1257,43 @@ export function dismiss(
         };
       }
 
+      const finding = target === "finding"
+        ? repo.listAllFindings(db).find((f) => f.id === item.id)
+        : undefined;
+      const latestReview = finding ? repo.latestReviewEvent(db, finding.node_id) : null;
+      const isCurrentFinding = !!finding && !!latestReview &&
+        latestReview.id === finding.review_event_id &&
+        reviewEventCanSupersedeFindings(latestReview);
+      let confirmation: { reviewEventId: number; inputFingerprint: string; protocol: string } | undefined;
+      if (isCurrentFinding) {
+        const currentFindings = findingViews(db, finding.node_id);
+        if (currentFindings.every((f) => f.id === item.id ||
+          (f.state === "acknowledged" && !!f.dismissal?.reason.trim())
+        )) {
+          const current = captureReviewSnapshot(db, ctx, finding.node_id);
+          confirmation = {
+            reviewEventId: latestReview.id,
+            inputFingerprint: current.inputFingerprint,
+            protocol: protocolHash(buildReviewRequestPrompt(current.input)),
+          };
+        }
+      }
+
       repo.appendEvent(db, {
         nodeId: null,
         op: "dismiss",
         actor: "tool",
-        payload: { reason: item.reason },
+        payload: { reason: item.reason, ...(confirmation ? { reviewDecision: confirmation } : {}) },
         note: item.reason,
         targetKey: item.id,
       });
 
-      return { id: item.id, target, ok: true };
+      return {
+        id: item.id, target, ok: true,
+        ...(isCurrentFinding ? {
+          reviewDecision: propositionView(db, ctx, finding.node_id).reviewDecision,
+        } : {}),
+      };
     })
   )();
 }

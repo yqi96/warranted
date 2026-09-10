@@ -969,6 +969,163 @@ describe("recordReview", () => {
     });
   });
 
+  describe("agent review decision", () => {
+    function failedReview(id: number, count = 1) {
+      const snapshot = captureReviewSnapshot(db, root, id);
+      return recordGuarded({
+        nodeId: id,
+        Q1: snapshot.input.attachments.length ? "pass" : "n/a",
+        Q2: "fail",
+        findings: Array.from({ length: count }, (_, i) => ({
+          nodeId: id, question: "Q2" as const, confidence: "high" as const,
+          content: `Objection ${i + 1}`,
+          citation: { nodeId: id, slot: "content" as const, quote: snapshot.input.content },
+        })),
+        model: "test-model",
+        protocolHash: protocolHash(buildReviewRequestPrompt(snapshot.input)),
+      });
+    }
+
+    test("reviewer pass retains n/a and never-reviewed does not pass", () => {
+      const id = create();
+      expect(svc.propositionView(db, root, id).reviewDecision).toEqual({ status: "never" });
+      recordCurrent(id);
+      const view = svc.propositionView(db, root, id);
+      expect(view.reviewDecision).toMatchObject({ status: "passed", source: "reviewer" });
+      expect(view.review).toMatchObject({ status: "current", Q1: "n/a", Q2: "pass" });
+      expect(view.qualifier).toBe("unestablished");
+    });
+
+    test("only dismissing the whole nonempty current batch accepts without rewriting review", () => {
+      const id = create();
+      const review = failedReview(id, 2);
+      const original = repo.latestReviewEvent(db, id)!.payload;
+      const first = svc.dismiss(db, root, [{ id: review.findings[0]!.id, reason: "First objection misreads the definition" }]);
+      expect(first[0]!.reviewDecision).toMatchObject({ status: "pending", source: "reviewer" });
+      const last = svc.dismiss(db, root, [{ id: review.findings[1]!.id, reason: "Second limitation is acceptable for this descriptive use" }]);
+      expect(last[0]!.reviewDecision).toMatchObject({ status: "passed", source: "agent" });
+      const view = svc.propositionView(db, root, id);
+      expect(view.reviewDecision).toMatchObject({ status: "passed", source: "agent" });
+      expect(view.review).toMatchObject({ status: "current", Q1: "n/a", Q2: "fail" });
+      expect(repo.latestReviewEvent(db, id)!.payload).toBe(original);
+      expect(view.findings.every((f) => f.state === "acknowledged")).toBe(true);
+      expect(view.qualifier).toBe("unestablished");
+    });
+
+    test("fix then dismiss accepts the repaired input; later changes stale until explicit reconfirmation", () => {
+      const id = create("Maximum <=0.052");
+      const finding = failedReview(id).findings[0]!;
+      svc.updateProposition(db, root, { id, content: "Maximum <=0.053" });
+      const result = svc.dismiss(db, root, [{ id: finding.id, reason: "Fixed the bound and checked 0.0522325 <= 0.053" }]);
+      expect(result[0]!.reviewDecision).toMatchObject({ status: "passed", source: "agent" });
+      expect(svc.propositionView(db, root, id).review).toMatchObject({ status: "stale", reason: "input_changed" });
+      svc.updateProposition(db, root, { id, content: "Maximum <=0.054" });
+      expect(svc.propositionView(db, root, id).reviewDecision).toMatchObject({
+        status: "stale", source: "agent", reason: "input_changed",
+      });
+      svc.dismiss(db, root, [{ id: finding.id, reason: "Verified that the current looser bound also holds" }]);
+      expect(svc.propositionView(db, root, id).reviewDecision).toMatchObject({ status: "passed", source: "agent" });
+    });
+
+    test.each(["attachment", "warrant", "evidence", "evidence qualifier"])("agent acceptance uses existing freshness for %s changes", (change) => {
+      const attachment = root.file("decision-evidence.md", "Original bytes");
+      const evidence = create("Direct evidence");
+      const id = create("Main claim", { evidence: { attachments: [attachment], nodes: [evidence] } });
+      const finding = failedReview(id).findings[0]!;
+      svc.dismiss(db, root, [{ id: finding.id, reason: "The objection is refuted by the evidence" }]);
+      if (change === "attachment") root.file(attachment, "Changed bytes");
+      if (change === "warrant") svc.updateProposition(db, root, { id, warrant: "New inference" });
+      if (change === "evidence") svc.updateProposition(db, root, { id: evidence, content: "New evidence" });
+      if (change === "evidence qualifier") svc.setQualifier(db, root, [{ id: evidence, qualifier: "probably" }]);
+      expect(svc.propositionView(db, root, id).reviewDecision).toMatchObject({
+        status: "stale", source: "agent", reason: "input_changed",
+      });
+    });
+
+    test("agent acceptance remains separate from qualifiers and structural warnings", () => {
+      const attachment = root.file("qualifier-evidence.md");
+      const id = create("A qualified claim", { evidence: { attachments: [attachment] } });
+      svc.setQualifier(db, root, [{ id, qualifier: "probably" }]);
+      const finding = failedReview(id).findings[0]!;
+      root.file(attachment, "Revised data");
+      const before = svc.propositionView(db, root, id).warnings;
+      expect(before.length).toBeGreaterThan(0);
+      svc.dismiss(db, root, [{ id: finding.id, reason: "Checked the revised evidence and the objection no longer applies" }]);
+      const view = svc.propositionView(db, root, id);
+      expect(view.reviewDecision).toMatchObject({ status: "passed", source: "agent" });
+      expect(view.qualifier).toBe("probably");
+      expect(view.warnings).toEqual(before);
+    });
+
+    test("old dismissals stay acknowledged but cannot backfill acceptance for a new input", () => {
+      const id = create();
+      const finding = failedReview(id).findings[0]!;
+      repo.appendEvent(db, {
+        nodeId: null, op: "dismiss", actor: "tool", targetKey: finding.id,
+        payload: { reason: "Legacy decision, no captured version" },
+      });
+      expect(svc.propositionView(db, root, id).findings[0]!.state).toBe("acknowledged");
+      expect(svc.propositionView(db, root, id).reviewDecision).toMatchObject({ status: "pending", source: "reviewer" });
+      svc.updateProposition(db, root, { id, content: "Changed since legacy dismissal" });
+      expect(svc.propositionView(db, root, id).reviewDecision.status).toBe("stale");
+    });
+
+    test("dismissing an older batch cannot accept the current batch", () => {
+      const id = create();
+      const old = failedReview(id).findings[0]!;
+      const current = failedReview(id).findings[0]!;
+      svc.dismiss(db, root, [{ id: old.id, reason: "Historical objection was wrong" }]);
+      expect(svc.propositionView(db, root, id).reviewDecision).toMatchObject({ status: "pending", source: "reviewer" });
+      expect(svc.propositionView(db, root, id).findings[0]!.id).toBe(current.id);
+      svc.dismiss(db, root, [{ id: current.id, reason: "Current objection also misreads the same definition" }]);
+      expect(svc.propositionView(db, root, id).reviewDecision).toMatchObject({ source: "agent" });
+      recordCurrent(id);
+      expect(svc.propositionView(db, root, id).reviewDecision).toMatchObject({ status: "passed", source: "reviewer" });
+    });
+
+    test("malformed latest review cannot create a pass even when earlier findings are dismissed", () => {
+      const id = create();
+      const finding = failedReview(id).findings[0]!;
+      repo.appendEvent(db, {
+        nodeId: id, op: "review", actor: "tool",
+        payload: { Q1: "n/a", Q2: "pass", findings: [], model: "m" },
+      });
+      svc.dismiss(db, root, [{ id: finding.id, reason: "Earlier objection was wrong" }]);
+      expect(svc.propositionView(db, root, id).reviewDecision).toMatchObject({ status: "stale", reason: "invalid_record" });
+    });
+
+    test("protocol changes stale the agent decision without losing its original provenance", () => {
+      const id = create();
+      const finding = failedReview(id).findings[0]!;
+      svc.dismiss(db, root, [{ id: finding.id, reason: "Verified the objection does not apply" }]);
+      const event = repo.dismissalEventsNewestFirst(db, [finding.id])[0]!;
+      const payload = JSON.parse(event.payload);
+      payload.reviewDecision.protocol = "0".repeat(16);
+      db.prepare("UPDATE events SET payload = ? WHERE id = ?").run(JSON.stringify(payload), event.id);
+      expect(svc.propositionView(db, root, id).reviewDecision).toMatchObject({ status: "stale", source: "agent", reason: "protocol_changed" });
+    });
+
+    test("get_stats separates agent acceptance from stale reviewer coverage", () => {
+      const id = create();
+      const finding = failedReview(id).findings[0]!;
+      svc.updateProposition(db, root, { id, content: "Fixed claim" });
+      svc.dismiss(db, root, [{ id: finding.id, reason: "Fixed and verified" }]);
+      const reviewerPass = create();
+      recordCurrent(reviewerPass);
+      const never = create();
+      const stats = svc.getStats(db, root);
+      expect(stats.reviewCoverage.stale.nodeIds).toEqual([id]);
+      expect(stats.reviewDecisions).toEqual({
+        agentPassed: { count: 1, nodeIds: [id] },
+        reviewerPassed: { count: 1, nodeIds: [reviewerPass] },
+        pending: { count: 0, nodeIds: [] },
+        stale: { count: 0, nodeIds: [] },
+        never: { count: 1, nodeIds: [never] },
+      });
+      expect(stats.unresolvedFindings).toEqual([]);
+    });
+  });
+
   test("finding 不随图变化过期:改 content 之后仍然待处理", () => {
     const id = create();
     recordGuarded({

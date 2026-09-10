@@ -294,6 +294,15 @@ export function reviewEventsNewestFirst(db: Database, nodeId: number): EventRow[
     .all(nodeId) as EventRow[];
 }
 
+/** Dismissal provenance for the active finding batch; no separate acceptance table. */
+export function dismissalEventsNewestFirst(db: Database, targetKeys: string[]): EventRow[] {
+  if (targetKeys.length === 0) return [];
+  const ph = targetKeys.map(() => "?").join(",");
+  return db.prepare(
+    `SELECT * FROM events WHERE op = 'dismiss' AND target_key IN (${ph}) ORDER BY id DESC`
+  ).all(...targetKeys) as EventRow[];
+}
+
 /**
  * 查一批 id 的驳回记录。
  *

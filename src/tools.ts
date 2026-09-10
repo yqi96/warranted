@@ -101,13 +101,13 @@ function bannerFor(warnings: StructuralWarning[] = [], findings: FindingView[] =
 function bannerForMany(views: PropositionView[]): string | undefined {
   const flagged = views.filter((v) => {
     const { w, f } = pendingCounts(v.warnings, v.findings);
-    return w > 0 || f > 0 || v.review.status === "stale";
+    return w > 0 || f > 0 || v.reviewDecision.status === "stale";
   });
   if (flagged.length === 0) return undefined;
-  const stale = flagged.filter((v) => v.review.status === "stale").length;
+  const stale = flagged.filter((v) => v.reviewDecision.status === "stale").length;
   return `⚑ ${flagged.length} of ${views.length} proposition(s) need attention: ${flagged
     .map((v) => `#${v.id}`)
-    .join(", ")}${stale > 0 ? ` (${stale} with a stale latest review)` : ""}`;
+    .join(", ")}${stale > 0 ? ` (${stale} with a stale review disposition; judge the changed input, not merely the status label)` : ""}`;
 }
 
 // =============================================================================
@@ -397,14 +397,14 @@ export function registerTools(
     withLog("get_stats", () => {
       try {
         const s = service.getStats(db, ctx);
-        const staleReviews = s.reviewCoverage.stale.count;
+        const staleReviews = s.reviewDecisions.stale.count;
         const red = s.unresolvedFindings.length + s.unresolvedWarnings.length + staleReviews;
         const banner =
           red > 0
             ? `⚑ ${s.unresolvedWarnings.length} proposition(s) with structural warnings, ` +
               `${s.unresolvedFindings.length} with unresolved findings.` +
               (staleReviews > 0
-                ? ` ${staleReviews} proposition(s) have a stale latest review.`
+                ? ` ${staleReviews} proposition(s) have a stale review disposition; decide what the changes require.`
                 : "") +
               (s.attachments.missing.length > 0
                 ? ` ${s.attachments.missing.length} attachment path(s) no longer resolve.`

@@ -307,8 +307,8 @@ PDF 可以分段读取:宿主核对 SDK 成功响应中的实际页数,记录观
 
 | 配置 | 默认与含义 |
 | --- | --- |
-| `timeoutMs` | `300000`;每个实际 SDK attempt 独立的防卡死时限,不限制节点累计审查时间或科研任务总时长 |
-| `effort` | `medium`;可用 `low/medium/high/max`,与主 agent 环境隔离 |
+| `timeoutMs` | `600000`(10 分钟);每个实际 SDK attempt 独立的防卡死时限,不限制节点累计审查时间或科研任务总时长 |
+| `effort` | `low`;可用 `low/medium/high/max`,与主 agent 环境隔离 |
 | `maxTurns` | `10`;每个 attempt 的最大轮数 |
 | `auditDir` | `dirname(dbPath)/audit`;`null` 禁用运行审计 |
 | `debug` | `false`;显式 true 才保存详细排障材料 |

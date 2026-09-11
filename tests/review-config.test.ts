@@ -115,10 +115,14 @@ describe("loadReviewConfig", () => {
   test("review attempt limits and effort are explicit with safe defaults", () => {
     const dir = setupDir();
     const path = `${dir}/review.json`;
+    writeFileSync(path, JSON.stringify({ apiKey: "test" }));
+    expect(loadReviewConfig(path, `${dir}/graph.db`)).toMatchObject({ timeoutMs: 600000, effort: "low" });
     writeFileSync(path, JSON.stringify({ apiKey: "test", timeoutMs: 1234, effort: "low" }));
     expect(loadReviewConfig(path, `${dir}/graph.db`)).toMatchObject({ timeoutMs: 1234, effort: "low" });
-    writeFileSync(path, JSON.stringify({ apiKey: "test", timeoutMs: -1, effort: "typo" }));
+    writeFileSync(path, JSON.stringify({ apiKey: "test", timeoutMs: 300000, effort: "medium" }));
     expect(loadReviewConfig(path, `${dir}/graph.db`)).toMatchObject({ timeoutMs: 300000, effort: "medium" });
+    writeFileSync(path, JSON.stringify({ apiKey: "test", timeoutMs: -1, effort: "typo" }));
+    expect(loadReviewConfig(path, `${dir}/graph.db`)).toMatchObject({ timeoutMs: 600000, effort: "low" });
   });
 
   test("未设置 auditDir 时默认为 dirname(dbPath)/audit", () => {

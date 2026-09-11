@@ -11,8 +11,8 @@
  *   "model": "claude-sonnet-4-...",   // 可选，默认 claude-sonnet-4-20250514
  *   "fallbackModel": "claude-...",    // 可选，解析失败重试时换的模型；不设置 = 沿用 model
  *   "maxTurns": 10,                   // 可选，agent 最大轮数（正整数），默认 10
- *   "timeoutMs": 300000,              // 可选，每个 SDK attempt 独立超时，无节点累计时限
- *   "effort": "medium",              // 可选，low/medium/high/max，与主 agent 独立
+ *   "timeoutMs": 600000,              // 可选，每个 SDK attempt 独立超时，无节点累计时限
+ *   "effort": "low",                 // 可选，low/medium/high/max，与主 agent 独立
  *   "debug": false,                   // 可选，保存完整提示、可见事件与不可变附件副本
  *   "maxConcurrency": 4,              // 可选，全局并发上限（所有 callAgent 调用共享，正整数），默认 4
  *   "auditDir": "/path/to/audit"      // 可选，审计日志目录；null = 禁用；不设置 = dirname(dbPath)/audit
@@ -154,11 +154,11 @@ export function loadReviewConfig(
   const fallbackModel = fileConfig.fallbackModel ?? undefined;
   const maxTurns = positiveInt("maxTurns", fileConfig.maxTurns) ?? 10;
   const maxConcurrency = positiveInt("maxConcurrency", fileConfig.maxConcurrency);
-  const timeoutMs = positiveInt("timeoutMs", fileConfig.timeoutMs) ?? 300_000;
+  const timeoutMs = positiveInt("timeoutMs", fileConfig.timeoutMs) ?? 600_000;
   const effort = ["low", "medium", "high", "max"].includes(fileConfig.effort ?? "")
-    ? fileConfig.effort! : "medium";
+    ? fileConfig.effort! : "low";
   if (fileConfig.effort !== undefined && effort !== fileConfig.effort) {
-    console.warn("[Warranted] Invalid review effort; using medium.");
+    console.warn("[Warranted] Invalid review effort; using low.");
   }
   const baseUrl = fileConfig.baseUrl ?? undefined;
 

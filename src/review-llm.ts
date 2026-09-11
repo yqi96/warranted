@@ -150,7 +150,7 @@ export async function callAgent(
   const readRoot = cwd ?? process.cwd();
   const allowedReadPaths = new Set(attachmentPaths.map((path) => resolve(readRoot, path)));
   const abortController = new AbortController();
-  const timeoutMs = config.timeoutMs ?? 300_000;
+  const timeoutMs = config.timeoutMs ?? 600_000;
   let activeQuery: ReturnType<typeof query> | undefined;
   let timedOut = false;
   const timeout = setTimeout(() => {
@@ -242,7 +242,7 @@ export async function callAgent(
       options: {
         model: config.model,
         maxTurns: config.maxTurns ?? 10,
-        effort: config.effort ?? "medium",
+        effort: config.effort ?? "low",
         abortController,
         // 凭据必须显式递进去：SDK 起的是子进程，配置文件里的 apiKey/baseUrl
         // 曾经读进 ReviewConfig 就再没被任何人用过（src/ 里 config.apiKey 零个消费者），
@@ -259,7 +259,7 @@ export async function callAgent(
         // 无法表达该走哪种。两个都给，让 endpoint 挑它认的那个。
         env: {
           ...process.env,
-          CLAUDE_CODE_EFFORT_LEVEL: config.effort ?? "medium",
+          CLAUDE_CODE_EFFORT_LEVEL: config.effort ?? "low",
           // Do not inherit the research agent's separate thinking-token override.
           MAX_THINKING_TOKENS: undefined,
           ANTHROPIC_API_KEY: config.apiKey,

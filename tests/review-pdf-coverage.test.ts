@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPdfReadCoverageTracker, readPdfPageCount } from "../src/review-pdf-coverage.ts";
 import { makePdf } from "./pdf-fixture.ts";
+import type { AttachmentRead } from "../src/types.ts";
 
 const folders: string[] = [];
 const bytes = makePdf(10);
@@ -25,6 +26,18 @@ afterEach(() => {
 });
 
 describe("SDK PDF coverage", () => {
+  test("valid selected pages are observed even when total page count is unknown", async () => {
+    const path = fixture();
+    const observed = new Map<string, AttachmentRead>();
+    const record = createPdfReadCoverageTracker(async () => null, observed);
+    expect(await record(path, { pages: "6-10" }, parts(path, 5))).toBe(false);
+    expect(observed.get(path)).toEqual({ path, kind: "pdf", ranges: [[6, 10]], total: null, complete: false });
+    await record(path, { pages: "1-5" }, parts(path, 4));
+    expect(observed.get(path)?.ranges).toEqual([[6, 10]]);
+    await record(path, { pages: "1-5" }, parts(path, 5, { originalSize: bytes.length - 1 }));
+    expect(observed.has(path)).toBe(false);
+  });
+
   test("successful page ranges accumulate, overlap and rereads do not replace missing pages", async () => {
     const path = fixture();
     let probes = 0;

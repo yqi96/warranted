@@ -216,6 +216,17 @@ export interface RejectedFinding {
   raw: unknown;
 }
 
+/** Observed successful reads, not a certification of the whole attachment.
+ * ranges are inclusive pages (pdf) or lines (text); total=null means unknown.
+ */
+export interface AttachmentRead {
+  path: string;
+  kind: "pdf" | "text" | "image" | "notebook";
+  ranges: Array<[number, number]>;
+  total: number | null;
+  complete: boolean;
+}
+
 /** A completed model attempt, including attempts that cannot support a formal review. */
 export interface ReviewAttemptDiagnostic {
   requestId: string;
@@ -227,6 +238,7 @@ export interface ReviewAttemptDiagnostic {
   /** Declared attachment paths, never private snapshot aliases. */
   attachmentsRead: string[];
   unreadAttachments: string[];
+  attachmentReads?: AttachmentRead[];
 }
 
 /** Failure feedback only: it neither records nor supersedes a review or finding. */
@@ -242,6 +254,7 @@ export interface ReviewIncompleteDiagnostics {
   /** Coverage in the last attempt; empty if no input/attempt was available. */
   attachmentsRead: string[];
   unreadAttachments: string[];
+  attachmentReads?: AttachmentRead[];
   /** F1–F4-valid drafts only, without formal IDs or any claim of semantic validity. */
   candidateFindings: FindingDraft[];
   rejected: RejectedFinding[];

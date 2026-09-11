@@ -86,6 +86,7 @@ export const TOOLS = {
     description:
       "Ask an independent third-party model to check one proposition's current local view: whether its attachments substantiate what it claims (Q1), and whether the direct evidence, even granting it, gets you to the content (Q2). " +
       "It sees no history, command trace, omitted file, or wider graph, so it cannot by itself establish chronology or provenance. " +
+      "It reads evidence needed for this proposition, not necessarily every attachment or page. Supply relevant original evidence and optional location hints without withholding contrary context. Returned reading ranges describe observed access, not exhaustive verification; a necessary evidence gap can make the review incomplete, but unrelated unread material alone does not. " +
       "Reviews may take several minutes and are expensive; use them deliberately for consequential semantic risks. " +
       "If the runtime supports background or asynchronous tool calls, prefer that mode, but keep the reviewed proposition and attachments unchanged, do not submit a duplicate while one is pending, and do not rely on a verdict until the result returns. " +
       "Identical completed or in-flight requests may be reused; refresh=true requests a fresh review when needed, not merely to clear a status. " +

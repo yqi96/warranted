@@ -8,7 +8,7 @@
 import { appendFileSync, writeFileSync, mkdirSync, readFileSync, renameSync, realpathSync, statSync, existsSync } from "fs";
 import { join, relative, resolve, sep } from "path";
 import { createHash, randomUUID } from "crypto";
-import type { AttachmentSnapshot } from "./types.ts";
+import type { AttachmentRead, AttachmentSnapshot } from "./types.ts";
 import type { ReviewConfig } from "./review-config.ts";
 
 export interface ReviewAuditMetadata {
@@ -42,6 +42,7 @@ export interface AuditRecord {
     successfulReads: string[];
     /** Actual private snapshot paths with complete coverage; retained for low-level audit. */
     snapshotReads?: string[];
+    attachmentReads?: AttachmentRead[];
   };
 }
 
@@ -84,6 +85,7 @@ export interface FinishReviewAuditInput {
   readDurationMs?: number;
   successfulReads: string[];
   snapshotReads?: string[];
+  attachmentReads?: AttachmentRead[];
   result?: unknown;
 }
 
@@ -171,6 +173,7 @@ export function beginReviewAudit(config: ReviewConfig, input: BeginReviewAuditIn
       queueMs: null as number | null,
       readDurationMs: null as number | null,
       successfulReads: [] as string[], snapshotReads: [] as string[],
+      attachmentReads: [] as AttachmentRead[],
       error: null as unknown,
       ...(debug ? { raw: null as string | null } : {}),
     },
@@ -285,6 +288,7 @@ export function beginReviewAudit(config: ReviewConfig, input: BeginReviewAuditIn
         record.output.readDurationMs = finiteNumber(result.readDurationMs);
         record.output.successfulReads = [...result.successfulReads];
         record.output.snapshotReads = [...(result.snapshotReads ?? [])];
+        record.output.attachmentReads = result.attachmentReads ?? [];
         const error = result.error;
         if (error === undefined || error === null) record.output.error = null;
         else if (debug) record.output.error = error;

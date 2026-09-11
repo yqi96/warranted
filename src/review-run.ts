@@ -33,7 +33,7 @@ import {
 import { materializeReviewAttachments } from "./review-materialize.ts";
 import { ReviewFailureTracker } from "./review-failures.ts";
 import type { CheckContext } from "./structural-check.ts";
-import type { Finding, FindingDraft, FindingView, RejectedFinding, ReviewDecision, ReviewIncompleteDiagnostics } from "./types.ts";
+import type { AttachmentRead, Finding, FindingDraft, FindingView, RejectedFinding, ReviewDecision, ReviewIncompleteDiagnostics } from "./types.ts";
 
 interface ReviewExecutionResult {
   eventId: number;
@@ -44,8 +44,11 @@ interface ReviewExecutionResult {
   rejected: RejectedFinding[];
   /** Model that produced the parsed verdict (may be the configured fallback). */
   actualModel: string;
-  /** Declared attachment paths whose immutable copies were fully read in the final attempt. */
+  /** Declared paths with at least one observed successful read in the final attempt. */
   attachmentsRead: string[];
+  /** New executors provide these; optional for existing external adapters. */
+  unreadAttachments?: string[];
+  attachmentReads?: AttachmentRead[];
 }
 
 export interface ReviewRunResult extends Omit<ReviewExecutionResult, "findings"> {
@@ -94,6 +97,7 @@ export function interpretResponse(
   input: ReviewInput,
   parsed: Record<string, unknown>
 ): { Q1: "pass" | "fail" | "n/a"; Q2: "pass" | "fail"; accepted: FindingDraft[]; rejected: RejectedFinding[] } {
+  assertReviewCompletion(parsed);
   const outcome = collectResponse(input, parsed);
   assertVerdictFindingConsistency({
     Q1: outcome.Q1,
@@ -102,6 +106,36 @@ export function interpretResponse(
     rejected: outcome.rejected,
   });
   return outcome;
+}
+
+function assertReviewCompletion(parsed: Record<string, unknown>): void {
+  if (parsed.status === "incomplete") {
+    const reason = typeof parsed.reason === "string" && parsed.reason.trim()
+      ? parsed.reason.trim() : "Reviewer could not check evidence necessary for this proposition";
+    throw new ReviewUnavailableError(`Reviewer reported incomplete review: ${reason}. Nothing was recorded.`);
+  }
+  if (parsed.status !== undefined && parsed.status !== "completed") {
+    throw new ReviewUnavailableError("Reviewer returned an invalid completion status. Nothing was recorded.");
+  }
+}
+
+/** Require actual evidence access, not exhaustive file coverage. Also used by isolated replays. */
+export function assertReviewReadiness(
+  input: ReviewInput,
+  parsed: Record<string, unknown>,
+  attachmentsRead: readonly string[],
+): void {
+  assertReviewCompletion(parsed);
+  if (input.attachments.length > 0 && attachmentsRead.length === 0) {
+    throw new ReviewUnavailableError("Review did not successfully Read any attachment. Nothing was recorded.");
+  }
+  // Partial reading is allowed; quoting an entirely unread attachment is not.
+  for (const finding of Array.isArray(parsed.findings) ? parsed.findings : []) {
+    if (finding?.question === "Q1" && input.attachments.includes(finding.citation?.attachment) &&
+        !attachmentsRead.includes(finding.citation.attachment)) {
+      throw new ReviewUnavailableError(`Review cited an unread attachment (${finding.citation.attachment}). Nothing was recorded.`);
+    }
+  }
 }
 
 /** Keep mechanically valid candidates even when later whole-review guards fail. */
@@ -240,16 +274,21 @@ async function performReview(
   function readCoverage(attempt?: ReviewAttemptTrace) {
     const resolvedReads = new Set(
       materialized && attempt
-        ? attempt.successfulReads.map((path) => resolve(materialized!.cwd, path))
+        ? (attempt.attachmentReads?.map((read) => read.path) ?? attempt.successfulReads)
+          .map((path) => resolve(materialized!.cwd, path))
         : []
     );
     const attachmentsRead: string[] = [];
     const unreadAttachments: string[] = [];
+    const attachmentReads: AttachmentRead[] = [];
     initialInput?.attachments.forEach((path, index) => {
-      const read = materialized && resolvedReads.has(resolve(materialized.cwd, materialized.readPaths[index]!));
+      const snapshotPath = materialized && resolve(materialized.cwd, materialized.readPaths[index]!);
+      const read = snapshotPath && resolvedReads.has(snapshotPath);
       (read ? attachmentsRead : unreadAttachments).push(path);
+      const coverage = attempt?.attachmentReads?.find((item) => materialized && resolve(materialized.cwd, item.path) === snapshotPath);
+      if (coverage) attachmentReads.push({ ...coverage, path });
     });
-    return { attachmentsRead, unreadAttachments };
+    return { attachmentsRead, unreadAttachments, attachmentReads };
   }
 
   function withDiagnostics(error: ReviewUnavailableError): ReviewUnavailableError {
@@ -272,7 +311,7 @@ async function performReview(
       ...readCoverage(attempts.at(-1)),
       candidateFindings,
       rejected: rejectedFindings,
-      candidateNotice: "Candidates passed only local F1–F4 mechanical checks. They are not formal findings and cannot be dismissed. They do not establish complete attachment reading, current input, or scientific truth.",
+      candidateNotice: "Candidates passed only local F1–F4 mechanical checks. They are not formal findings and cannot be dismissed. They do not establish sufficient evidence inspection, current input, or scientific truth.",
     };
     return error;
   }
@@ -379,13 +418,8 @@ async function performReview(
       );
     }
     stage = "read";
-    const { unreadAttachments } = readCoverage(verdictAttempt);
-    if (unreadAttachments.length > 0) {
-      throw new ReviewUnavailableError(
-        `Review of #${nodeId} did not successfully Read every attachment ` +
-          `(${unreadAttachments.join(", ")}). Nothing was recorded.`
-      );
-    }
+    const coverage = readCoverage(verdictAttempt);
+    assertReviewReadiness(input, parsed, coverage.attachmentsRead);
 
     stage = "protocol";
     const { accepted, rejected, Q1, Q2 } = outcome!;
@@ -428,7 +462,9 @@ async function performReview(
       rejected,
       actualModel: verdictAttempt.model,
       // Keep the public result in declared-path space; audit retains the actual snapshot paths.
-      attachmentsRead: input.attachments.map((path) => resolve(reviewContext.root, path)),
+      attachmentsRead: coverage.attachmentsRead.map((path) => resolve(reviewContext.root, path)),
+      unreadAttachments: coverage.unreadAttachments.map((path) => resolve(reviewContext.root, path)),
+      attachmentReads: coverage.attachmentReads.map((read) => ({ ...read, path: resolve(reviewContext.root, read.path) })),
     };
   } catch (error) {
     // Diagnostics describe an unrecorded attempt; post-commit errors cannot use that shape.

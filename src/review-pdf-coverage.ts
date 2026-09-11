@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { AttachmentRead } from "./types.ts";
 
 /** Read metadata only; this does not render the PDF or expose it to the model. */
 export async function readPdfPageCount(snapshotPath: string): Promise<number | null> {
@@ -47,6 +48,7 @@ interface Coverage {
  */
 export function createPdfReadCoverageTracker(
   getPageCount: (path: string) => Promise<number | null> = readPdfPageCount,
+  observed?: Map<string, AttachmentRead>,
 ): (snapshotPath: string, toolInput: unknown, toolResponse: unknown) => Promise<boolean> {
   const states = new Map<string, Promise<Coverage | null>>();
   return async (snapshotPath, toolInput, toolResponse) => {
@@ -71,6 +73,7 @@ export function createPdfReadCoverageTracker(
     // Contradictory metadata cannot reset earlier evidence from the same snapshot.
     if (file.originalSize !== coverage.originalSize) {
       coverage.invalid = true;
+      observed?.delete(path);
       return false;
     }
 
@@ -80,9 +83,11 @@ export function createPdfReadCoverageTracker(
       // Canonical base64 equality also rejects missing/truncated/foreign payloads.
       try {
         const bytes = await readFile(path);
-        return bytes.length === coverage.originalSize &&
+        const complete = bytes.length === coverage.originalSize &&
           bytes.subarray(0, 5).toString("ascii") === "%PDF-" &&
           bytes.toString("base64") === file.base64;
+        if (complete) observed?.set(path, { path, kind: "pdf", ranges: [], total: null, complete: true });
+        return complete;
       } catch {
         return false;
       }
@@ -90,10 +95,10 @@ export function createPdfReadCoverageTracker(
 
     if (!positiveInteger(file.count) || typeof file.outputDir !== "string" || !file.outputDir) return false;
     coverage.totalPages ??= getPageCount(path).catch(() => null);
-    const total = await coverage.totalPages;
-    if (!positiveInteger(total)) return false;
+    const measuredTotal = await coverage.totalPages;
+    const total = positiveInteger(measuredTotal) ? measuredTotal : null;
     let first = 1;
-    let last = total;
+    let last = total ?? file.count;
     if (toolInput.pages !== undefined) {
       // SDK accepts one page or a closed range; open ranges fail its 20-page cap.
       const range = typeof toolInput.pages === "string"
@@ -101,7 +106,7 @@ export function createPdfReadCoverageTracker(
       if (!range) return false;
       first = Number(range[1]);
       last = Number(range[2] ?? range[1]);
-      if (!positiveInteger(first) || !positiveInteger(last) || first > last || last > total) return false;
+      if (!positiveInteger(first) || !positiveInteger(last) || first > last || (total !== null && last > total)) return false;
     }
     if (file.count !== last - first + 1) return false;
 
@@ -114,6 +119,8 @@ export function createPdfReadCoverageTracker(
       else previous[1] = Math.max(previous[1], end);
     }
     coverage.intervals = merged;
-    return merged.length === 1 && merged[0]![0] === 1 && merged[0]![1] === total;
+    const complete = total !== null && merged.length === 1 && merged[0]![0] === 1 && merged[0]![1] === total;
+    observed?.set(path, { path, kind: "pdf", ranges: merged, total, complete });
+    return complete;
   };
 }

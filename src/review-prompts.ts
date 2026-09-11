@@ -19,7 +19,7 @@ import { extname } from "path";
 import type { Qualifier } from "./types.ts";
 
 /** Prompt 版本。改动本文件的任何措辞都要跟着改它——协议 hash 由它与正文一起算。 */
-export const REVIEW_PROTOCOL_VERSION = "q1q2/5";
+export const REVIEW_PROTOCOL_VERSION = "q1q2/6";
 
 const RAW_JSON_SUFFIX =
   "\n\nCRITICAL: Output ONLY a raw JSON object. Do NOT wrap it in markdown code fences.";
@@ -99,11 +99,13 @@ export function buildReviewPrompt(input: ReviewInput): string {
 
 Answer exactly two questions about the proposition below. Nothing else is in scope.
 
-**Q1 — Faithfulness.** Do the attachments actually substantiate what this proposition claims, or are they fabricated, misread, self-corroborating, or in direct contradiction? This question applies **only to attachment files**. You MUST use your Read tool to open every corresponding immutable snapshot named at the end of this request; do not guess at its contents. If there are no attachments, Q1 is "n/a".
+**Q1 — Faithfulness.** Do the attachments actually substantiate what this proposition claims, or are they fabricated, misread, self-corroborating, or in direct contradiction? This question applies **only to attachment files**. Use Read on the corresponding immutable snapshots to check the evidence needed for this proposition; do not guess at unread contents. You are reviewing this proposition, not certifying entire attachments. If there are no attachments, Q1 is "n/a".
 
 **Q2 — Validity.** Granting the evidence as true, does the warrant actually get you from the evidence to the content? Take each referenced proposition at its stated qualifier: a premise marked "refuted" enters as a refuted claim, not as a true one, and an argument that needs it to be true is broken.
 
 An agent-authored note, report, or description is an index to evidence, not independent corroboration of its own assertions. For empirical, computational, or process claims, inspect the underlying source, data, result, or execution record among the attachments. Repetition of the proposition in a description file does not make Q1 pass.
+
+Read selectively, according to the proposition's scope. Locate the relevant results and inspect the definitions, methods, captions and surrounding qualifications needed to interpret them. Suggested locations are navigation aids, not boundaries: check context and relevant contrary evidence, and expand reading when ambiguity or contradictions require it. You need not read every attachment or every page. Once you have enough evidence to answer Q1/Q2, stop; a specific substantiated flaw does not require an exhaustive scan of unrelated material. Broad or absence claims may require broader inspection. Unread material alone is neither a flaw nor an incomplete review.
 
 Before making a numerical objection, verify the definitions, units, denominator, sample count and rounding in the cited source. Distinguish standard deviation (SD) from standard error (SE), and proportions below a threshold from those above it. When arithmetic is the basis of a finding, include a short, checkable calculation in its existing content field alongside the required citation; confidence alone is not evidence. Keep findings concise and specific. Do not expand this review into a new experiment, a broader research plan or a long essay.
 
@@ -132,6 +134,12 @@ ${ANTIPATTERN_HINTS}
 ## Output
 
 Return a raw JSON object:
+
+If key evidence cannot be accessed or essential information remains unchecked so that you cannot answer Q1/Q2, return instead:
+{ "status": "incomplete", "reason": "<the specific evidence gap preventing judgment>", "findings": [ ... ] }
+Keep any already substantiated candidate findings with the citation shapes below, but omit Q1/Q2 rather than guessing pass or fail. Lack of access is not proof that the proposition is false. Merely leaving unrelated pages or attachments unread is not a reason to report incomplete.
+
+Otherwise, for a completed review of this proposition:
 
 {
   "Q1": "pass" | "fail" | "n/a",
@@ -176,7 +184,7 @@ export function buildReviewRequestPrompt(input: ReviewInput): string {
   const aliases = reviewAttachmentReadPaths(input.attachments);
   const readInstructions = input.attachments.length === 0
     ? ""
-    : `\n\n## Immutable attachment snapshots to read\nRead every snapshot path below before answering Q1. PDF snapshots may be read in page ranges; cover every page, including relevant definitions, tables and captions. A requested range, an error, or a truncated response does not prove coverage. If you cannot finish reading the evidence, say so rather than treating unread material as checked. The left side is the declared attachment path that MUST be copied into citation.attachment; the right side is the private snapshot path to pass to Read. Do not read any other file.\n${input.attachments
+    : `\n\n## Available immutable attachment snapshots\nRead the portions needed to judge this proposition. PDF snapshots may be read in page ranges; text snapshots may be read in line ranges. Include necessary context, but do not read unrelated material just to fill coverage. Only successful returned content counts as read, not a request, error or truncated response. Do not describe unread portions as checked. If necessary evidence cannot be checked, use the incomplete response above. The left side is the declared attachment path that MUST be copied into citation.attachment; the right side is the private snapshot path to pass to Read. Do not read any other file.\n${input.attachments
         .map((declared, index) => `- ${JSON.stringify(declared)} -> ${aliases[index]}`)
         .join("\n")}`;
   return buildReviewPrompt(input) + readInstructions + RAW_JSON_SUFFIX;

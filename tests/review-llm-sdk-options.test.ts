@@ -11,6 +11,7 @@
 import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import type { ReviewConfig } from "../src/review-config.ts";
+import type { AttachmentRead } from "../src/types.ts";
 import { makePdf } from "./pdf-fixture.ts";
 
 const testConfig: ReviewConfig = {
@@ -154,7 +155,8 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
         const postToolUse = (
           hooks?.PostToolUse ?? []
         );
-        for (const input of hookInputs) {
+        for (const entry of hookInputs) {
+          const input = typeof entry === "function" ? entry(args.options) : entry;
           let allowed = true;
           for (const matcher of preToolUse) {
             for (const hook of matcher.hooks) {
@@ -477,7 +479,7 @@ describe("callAgent SDK call options", () => {
     expect(reads).toEqual([filePath]);
   });
 
-  test("review prompt permits PDF ranges without weakening full coverage", () => {
+  test("review prompt permits selective reading and explicit evidence gaps", () => {
     const prompt = buildReviewRequestPrompt({
       id: 1,
       content: "A proposition",
@@ -487,7 +489,108 @@ describe("callAgent SDK call options", () => {
     });
 
     expect(prompt).toContain("may be read in page ranges");
-    expect(prompt).toContain("cover every page");
+    expect(prompt).not.toContain("cover every page");
+    expect(prompt).not.toContain("open every corresponding");
+    expect(prompt).toContain("You need not read every attachment or every page");
+    expect(prompt).toContain('"status": "incomplete"');
+    expect(prompt).toContain("relevant contrary evidence");
+  });
+
+  test("partial text and an unread unrelated attachment can complete without claiming full coverage", async () => {
+    writeFileSync("/tmp/warranted-sdk-options/unrelated.md", "unrelated\n");
+    mockPostToolUseInputs = [textRead("attachments/0001.md", 3, 2, 10)];
+    mockMessages = [{ type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' }];
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition", evidence: { attachments: ["evidence.md", "unrelated.md"] } }])[0]!.id;
+      const result = await runReview(testConfig, db, id, ctx);
+      expect(result.attachmentsRead).toEqual(["/tmp/warranted-sdk-options/evidence.md"]);
+      expect(result.unreadAttachments).toEqual(["/tmp/warranted-sdk-options/unrelated.md"]);
+      expect(result.attachmentReads).toEqual([{ path: "/tmp/warranted-sdk-options/evidence.md", kind: "text", ranges: [[3, 4]], total: 10, complete: false }]);
+      expect(svc.getHistory(db, { id }).events.filter((e) => e.op === "review")).toHaveLength(1);
+      const cached = await runReview(testConfig, db, id, ctx);
+      expect(cached.reused).toBe("completed");
+      expect(cached.attachmentReads).toEqual(result.attachmentReads);
+    } finally { cleanupDb(db); }
+  });
+
+  test("65-page PDF can complete after five relevant pages, with truthful normal audit", async () => {
+    const bytes = makePdf(65);
+    writeFileSync("/tmp/warranted-sdk-options/selective.pdf", bytes);
+    mockPostToolUseInputs = [(options: { cwd: string }) => {
+      const path = `${options.cwd}/attachments/0001.pdf`;
+      return { hook_event_name: "PostToolUse", tool_name: "Read", tool_use_id: "pdf-range",
+        tool_input: { file_path: path, pages: "41-45" },
+        tool_response: { type: "parts", file: { filePath: path, originalSize: bytes.length, count: 5, outputDir: "/tmp/sdk-pages" } } };
+    }];
+    mockMessages = [{ type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' }];
+    const db = createTestDb();
+    const auditDir = `/tmp/warranted-sdk-options/selective-audit-${crypto.randomUUID()}`;
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition", evidence: { attachments: ["selective.pdf"] } }])[0]!.id;
+      const result = await runReview({ ...testConfig, auditDir }, db, id, ctx);
+      expect(result.attachmentReads).toEqual([{ path: "/tmp/warranted-sdk-options/selective.pdf", kind: "pdf", ranges: [[41, 45]], total: 65, complete: false }]);
+      const audit = JSON.parse(readFileSync(`${auditDir}/${readdirSync(auditDir)[0]}`, "utf8"));
+      expect(audit.output.successfulReads).toEqual([]);
+      expect(audit.output.attachmentReads).toEqual([{ path: "selective.pdf", kind: "pdf", ranges: [[41, 45]], total: 65, complete: false }]);
+      expect(audit.input.prompt).toBeUndefined();
+      expect(svc.getHistory(db, { id }).events.filter((e) => e.op === "review")).toHaveLength(1);
+    } finally { cleanupDb(db); }
+  });
+
+  test("explicit evidence gap preserves candidates and earlier review without retrying or recording a pass", async () => {
+    mockPostToolUseInputs = [textRead("attachments/0001.md", 1, 1, 10)];
+    mockMessages = [{ type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' }];
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition", evidence: { attachments: ["evidence.md"] } }])[0]!.id;
+      await runReview(testConfig, db, id, ctx);
+      mockMessages = [{ type: "result", subtype: "success", result: JSON.stringify({ status: "incomplete", reason: "The necessary methods table could not be read", findings: [{ question: "Q1", confidence: "high", content: "A number differs", citation: { attachment: "evidence.md", locator: "line 1", quote: "evidence" } }] }) }];
+      const err = await runReview(testConfig, db, id, ctx, { refresh: true }).catch(e => e);
+      expect(err).toBeInstanceOf(ReviewUnavailableError);
+      expect(err.diagnostics).toMatchObject({ status: "incomplete", recorded: false, stage: "read", attachmentsRead: ["evidence.md"], unreadAttachments: [] });
+      expect(err.message).toContain("necessary methods table");
+      expect(err.diagnostics.candidateFindings).toHaveLength(1);
+      expect(err.diagnostics).not.toHaveProperty("Q1");
+      expect(err.diagnostics.attempts).toHaveLength(1);
+      expect(capturedCalls).toHaveLength(2);
+      expect(svc.getHistory(db, { id }).events.filter((e) => e.op === "review")).toHaveLength(1);
+    } finally { cleanupDb(db); }
+  });
+
+  test("reading one attachment does not license a Q1 citation from another unread attachment", async () => {
+    writeFileSync("/tmp/warranted-sdk-options/unrelated.md", "unrelated\n");
+    mockPostToolUseInputs = [textRead("attachments/0001.md", 1, 1, 10)];
+    mockMessages = [{ type: "result", subtype: "success", result: JSON.stringify({ Q1: "fail", Q2: "pass", findings: [{ question: "Q1", confidence: "high", content: "A number differs", citation: { attachment: "unrelated.md", locator: "line 1", quote: "unrelated" } }] }) }];
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition", evidence: { attachments: ["evidence.md", "unrelated.md"] } }])[0]!.id;
+      const err = await runReview(testConfig, db, id, ctx).catch(e => e);
+      expect(err.message).toContain("cited an unread attachment");
+      expect(svc.getHistory(db, { id }).events.filter((e) => e.op === "review")).toHaveLength(0);
+    } finally { cleanupDb(db); }
+  });
+
+  test("failed or truncated reads do not become observed access under selective reading", async () => {
+    const failed = textRead("attachments/0001.md", 1, 1, 10);
+    (failed.tool_response as Record<string, unknown>).isError = true;
+    mockPostToolUseInputs = [textRead("attachments/0001.md", 1, 1, 10, true), failed];
+    mockMessages = [{ type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' }];
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition", evidence: { attachments: ["evidence.md"] } }])[0]!.id;
+      const err = await runReview(testConfig, db, id, ctx).catch(e => e);
+      expect(err.diagnostics.attachmentReads).toEqual([]);
+      expect(err.message).toContain("did not successfully Read any attachment");
+    } finally { cleanupDb(db); }
+  });
+
+  test("partial reads survive SDK execution failure in the attempt trace", async () => {
+    mockPostToolUseInputs = [textRead("attachments/0001.md", 7, 2, 10)];
+    mockMessages = [];
+    const observed: AttachmentRead[] = [];
+    await callAgent(testConfig, "prompt", ["attachments/0001.md"], "/tmp/warranted-sdk-options", undefined, [], [], undefined, 1, observed).catch(() => {});
+    expect(observed).toEqual([{ path: "/tmp/warranted-sdk-options/attachments/0001.md", kind: "text", ranges: [[7, 8]], total: 10, complete: false }]);
   });
 
   test("Read 路径白名单拒绝未声明文件,且不把它记成成功读取", async () => {
@@ -511,7 +614,7 @@ describe("callAgent SDK call options", () => {
     expect(reads).toEqual([]);
   });
 
-  test("有附件但没有完整 Read 时，runReview 作废且不落事件", async () => {
+  test("有附件但没有任何有效 Read 时，runReview 作废且不落事件", async () => {
     mockMessages = [
       { type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' },
     ];
@@ -522,7 +625,7 @@ describe("callAgent SDK call options", () => {
       ])[0]!.id;
       const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
       expect(err).toBeInstanceOf(ReviewUnavailableError);
-      expect(err.message).toContain("did not successfully Read every attachment");
+      expect(err.message).toContain("did not successfully Read any attachment");
       expect(svc.getHistory(db, { id }).events.some((e) => e.op === "review")).toBe(false);
     } finally {
       cleanupDb(db);

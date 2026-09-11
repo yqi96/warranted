@@ -11,6 +11,7 @@ import { resolve } from "path";
 import type { ReviewConfig } from "./review-config.ts";
 import { beginReviewAudit, type ReviewAuditMetadata } from "./review-audit.ts";
 import { createPdfReadCoverageTracker } from "./review-pdf-coverage.ts";
+import type { AttachmentRead } from "./types.ts";
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 
@@ -32,7 +33,8 @@ function isSafeIntegerAtLeast(value: unknown, minimum: number): value is number 
 function recordTextCoverage(
   coverageByPath: Map<string, TextReadCoverage>,
   resolvedPath: string,
-  file: Record<string, unknown>
+  file: Record<string, unknown>,
+  observed: Map<string, AttachmentRead>,
 ): boolean {
   const { startLine, numLines, totalLines } = file;
   if (
@@ -47,7 +49,9 @@ function recordTextCoverage(
   }
 
   if (totalLines === 0) {
-    return startLine === 1 && numLines === 0;
+    const complete = startLine === 1 && numLines === 0;
+    if (complete) observed.set(resolvedPath, { path: resolvedPath, kind: "text", ranges: [], total: 0, complete });
+    return complete;
   }
   if (numLines === 0 || startLine > totalLines) return false;
 
@@ -64,7 +68,10 @@ function recordTextCoverage(
   // contradicts itself, do not let a later smaller total reset the evidence and
   // manufacture complete coverage.
   if (coverage.totalLines !== totalLines) coverage.invalid = true;
-  if (coverage.invalid) return false;
+  if (coverage.invalid) {
+    observed.delete(resolvedPath);
+    return false;
+  }
 
   const ordered = [...coverage.intervals, [startLine, endLine] as [number, number]]
     .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -78,7 +85,9 @@ function recordTextCoverage(
     }
   }
   coverage.intervals = merged;
-  return merged.length === 1 && merged[0]![0] === 1 && merged[0]![1] >= totalLines;
+  const complete = merged.length === 1 && merged[0]![0] === 1 && merged[0]![1] >= totalLines;
+  observed.set(resolvedPath, { path: resolvedPath, kind: "text", ranges: merged, total: totalLines, complete });
+  return complete;
 }
 
 /**
@@ -117,7 +126,8 @@ export async function callAgent(
   deniedOut?: string[],
   successfulReadsOut?: string[],
   auditMetadata?: ReviewAuditMetadata,
-  attempt = 1
+  attempt = 1,
+  attachmentReadsOut?: AttachmentRead[],
 ): Promise<string> {
   // 调用方递进来的已经是最终 prompt。它与 protocol hash 必须逐字相同。
   const fullPrompt = prompt;
@@ -135,7 +145,8 @@ export async function callAgent(
   const successfulReads: string[] = [];
   const successfulReadPaths = new Set<string>();
   const textCoverageByPath = new Map<string, TextReadCoverage>();
-  const recordPdfCoverage = createPdfReadCoverageTracker();
+  const observedReads = new Map<string, AttachmentRead>();
+  const recordPdfCoverage = createPdfReadCoverageTracker(undefined, observedReads);
   const readRoot = cwd ?? process.cwd();
   const allowedReadPaths = new Set(attachmentPaths.map((path) => resolve(readRoot, path)));
   const abortController = new AbortController();
@@ -191,7 +202,8 @@ export async function callAgent(
       const isPdf = response && typeof response === "object" && "type" in response &&
         (response.type === "pdf" || response.type === "parts");
       const complete = await (async () => {
-        if (!response || typeof response !== "object" || !("type" in response)) return false;
+        if (!response || typeof response !== "object" || !("type" in response) ||
+            ("isError" in response && response.isError === true)) return false;
         if (isPdf) return recordPdfCoverage(resolvedPath, toolInput, response);
         if (
           response.type === "text" &&
@@ -200,16 +212,17 @@ export async function callAgent(
           typeof response.file === "object"
         ) {
           const file = response.file as Record<string, unknown>;
-          return recordTextCoverage(textCoverageByPath, resolvedPath, file);
+          return recordTextCoverage(textCoverageByPath, resolvedPath, file, observedReads);
         }
         if (response.type === "file_unchanged") return successfulReadPaths.has(resolvedPath);
         if ("pages" in toolInput && toolInput.pages !== undefined) {
           return false;
         }
-        return (
-          response.type === "image" ||
-          response.type === "notebook"
-        );
+        if (response.type === "image" || response.type === "notebook") {
+          observedReads.set(resolvedPath, { path: resolvedPath, kind: response.type, ranges: [], total: null, complete: true });
+          return true;
+        }
+        return false;
       })();
       if (isPdf && !complete) {
         successfulReadPaths.delete(resolvedPath);
@@ -317,6 +330,7 @@ export async function callAgent(
     activeQuery?.close?.();
     // Preserve observed coverage and denials even when the SDK produces no final result.
     successfulReadsOut?.push(...successfulReads);
+    attachmentReadsOut?.push(...observedReads.values());
     deniedOut?.push(...deniedTools);
     releasePermit();
     const successfulResolved = new Set(successfulReads.map((path) => resolve(readRoot, path)));
@@ -326,7 +340,11 @@ export async function callAgent(
       : successfulReads;
     audit.finish({ status: attemptError === undefined ? "completed" : "failed", error: attemptError,
       raw: finalResult, durationMs: Date.now() - t0, queueMs, readDurationMs,
-      successfulReads: declaredReads, snapshotReads: successfulReads });
+      successfulReads: declaredReads, snapshotReads: successfulReads,
+      attachmentReads: [...observedReads.values()].map((read) => {
+        const index = attachmentPaths.findIndex((path) => resolve(readRoot, path) === read.path);
+        return { ...read, path: auditMetadata?.attachmentSnapshots[index]?.path ?? read.path };
+      }) });
   }
   if (deniedTools.length > 0) {
     // stderr only reaches the server operator, never the calling agent — so the
@@ -346,6 +364,8 @@ export interface ReviewAttemptTrace {
   error?: string;
   /** Paths with complete Read coverage; multiple text-line Reads may contribute. */
   successfulReads: string[];
+  /** All observed reads, including partial coverage. */
+  attachmentReads?: AttachmentRead[];
 }
 
 function asJsonObject(value: unknown): Record<string, unknown> | null {
@@ -480,12 +500,12 @@ export async function callAndParse(
   const requestId = crypto.randomUUID();
   async function callAttempt(attemptConfig: ReviewConfig, attempt: number): Promise<Record<string, unknown>> {
     const trace: ReviewAttemptTrace = {
-      requestId, attempt, model: attemptConfig.model, status: "error", successfulReads: [],
+      requestId, attempt, model: attemptConfig.model, status: "error", successfulReads: [], attachmentReads: [],
     };
     traceOut?.push(trace);
     try {
       const raw = await callAgent(
-        attemptConfig, prompt, attachments, cwd, requestId, deniedOut, trace.successfulReads, auditMetadata, attempt,
+        attemptConfig, prompt, attachments, cwd, requestId, deniedOut, trace.successfulReads, auditMetadata, attempt, trace.attachmentReads,
       );
       const parsed = parseLLMResponse(raw);
       trace.status = parsed._parseFailed ? "unparseable" : "parsed";

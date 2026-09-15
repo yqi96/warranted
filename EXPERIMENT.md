@@ -24,3 +24,14 @@ Production `main` and development `dev` are not changed or merged by this experi
 - The full treatment implements existing checks and local semantic review; it does not add a declared investigation execution interface.
 
 The baseline branch is preparation, not an additional treatment. No scientific trial is run by these checks.
+
+## This checkout
+
+Treatment: **guidance** (group 2). The installed plugin exposes 0 MCP tools. The exact common guidance is the prefix before `## Structured Research Records`, or the entire agent file for group 2.
+
+## Local validation
+
+- `bun test ./tests`: 354 passed, 0 failed. This covers retained shared-core regressions plus this treatment's contract tests.
+- `tsc --noEmit`, shell syntax checks and `git diff --check`: passed.
+- Methodology prefix SHA-256 matches `experiment.json` across all three treatments.
+- No live scientific experiment or external reviewer request was run. Runtime trial settings and full-arm reviewer credentials must be supplied by the experiment harness.

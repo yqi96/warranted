@@ -1,5 +1,5 @@
 {
-  "arm": "base",
+  "arm": "full",
   "source_commit": "222113e69831dc8ed3f9369e0f46a4a78ad7018d",
   "guidance_sha256": "0c191d5875497cc9ff6385311fa6ccdcaff2cc00c1c0b6761c9becef6bd2d73c",
   "removed_shared_components": [
@@ -8,5 +8,21 @@
     "browser"
   ],
   "model_policy": "Set the same model and effort in the external harness; the primary prompt does not override the model.",
-  "state_policy": "Fresh, independent task workspace and database for each trial. Never reuse another arm state."
+  "state_policy": "Fresh, independent task workspace and database for each trial. Never reuse another arm state.",
+  "group": 4,
+  "common_base_commit": "5e22469",
+  "mcp_tools": [
+    "create_propositions",
+    "update_proposition",
+    "set_qualifier",
+    "promote_warrant",
+    "delete_proposition",
+    "get_argument",
+    "find_propositions",
+    "get_stats",
+    "get_history",
+    "review",
+    "dismiss"
+  ],
+  "automatic_feedback": true
 }

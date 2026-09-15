@@ -43,12 +43,10 @@ function updatePhase1Stats(nodes, stats, totalArg) {
   const total    = totalArg ?? Object.values(stats).reduce((a, b) => a + b, 0);
   const settled  = (stats.possibly || 0) + (stats.probably || 0) + (stats.certainly || 0);
   const open     = stats.unestablished || 0;
-  const flagged  = nodes.filter(hasAttention).length;
 
   const totalEl    = document.getElementById('phase1-total-num');
   const settledEl  = document.getElementById('phase1-settled');
   const openEl     = document.getElementById('phase1-open');
-  const flaggedEl  = document.getElementById('phase1-flagged');
 
   if (!totalEl) return;
 
@@ -58,12 +56,10 @@ function updatePhase1Stats(nodes, stats, totalArg) {
     animateCount(totalEl,   total,   900);
     animateCount(settledEl, settled, 800);
     animateCount(openEl,    open,    850);
-    animateCount(flaggedEl, flagged, 820);
   } else {
     totalEl.textContent   = total;
     settledEl.textContent = settled;
     openEl.textContent    = open;
-    flaggedEl.textContent = flagged;
   }
 
   // Attention items
@@ -82,18 +78,7 @@ function buildAttentionItems(nodes, stats) {
     container.appendChild(item);
   };
 
-  const warned  = nodes.filter(n => (n.warnings?.pending || 0) > 0);
-  const found   = nodes.filter(n => (n.findings?.pending || 0) > 0);
-  const bare    = nodes.filter(n => isPositive(n) && nodeStructure(n) === 'bare');
-  const refuted = stats.refuted || 0;
-
-  // 结构检查只"照"不"判"：这里列的是该重查的触发点，不是结论。
-  if (warned.length) add('warning', `⚑ ${warned.length} 条命题有未处理的结构警告`);
-  if (found.length)  add('warning', `⚑ ${found.length} 条命题有未处理的 finding`);
-  // 正向档却空证据槽——S1 会报，单独提一句是因为它是最常见的那一种。
-  if (bare.length)   add('', `○ ${bare.length} 条正向档命题证据槽为空`);
-  if (refuted)       add('', `✕ ${refuted} 条已被推翻(仍可作为证据使用)`);
-  if (!container.children.length) add('', '— 没有待处理项');
+  add('', `${nodes.length} 条命题记录`);
 }
 
 // Transition Phase 1 → Phase 2 with FLIP animation

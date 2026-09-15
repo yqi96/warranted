@@ -2,11 +2,11 @@
 /**
  * Warranted MCP Server — 入口文件
  *
- * 启动 MCP Server，注册 11 个论证管理工具。
+ * 启动 MCP Server，注册 9 个论证管理工具。
  * 通过 stdio 与 Agent 通信。
  *
  * Usage:
- *   bun src/index.ts [--db-path ./toulmin.db] [--review-config ./review.json]
+ *   bun src/index.ts [--db-path ./toulmin.db]
  *
  * 默认数据库路径：.toulmin/graph.db（项目目录下，支持跨 Session 恢复）
  */
@@ -14,10 +14,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { openDatabase, DEFAULT_DB_PATH } from "./db.ts";
-import { registerTools } from "./tools.ts";
-import type { Lifecycle } from "./tools.ts";
+import { registerTools } from "./records-tools.ts";
+import type { Lifecycle } from "./records-tools.ts";
 import { initLogger } from "./logger.ts";
-import { loadReviewConfig } from "./review-config.ts";
 import plugin from "../.claude-plugin/plugin.json";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
@@ -26,25 +25,21 @@ import { dirname } from "path";
 // CLI 参数解析
 // =============================================================================
 
-function parseArgs(): { dbPath: string; reviewConfigPath: string | null; noPersist: boolean } {
+function parseArgs(): { dbPath: string; noPersist: boolean } {
   const args = process.argv.slice(2);
   let dbPath = DEFAULT_DB_PATH;
-  let reviewConfigPath: string | null = null;
   let noPersist = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--db-path" && args[i + 1]) {
       dbPath = args[i + 1];
       i++;
-    } else if (args[i] === "--review-config" && args[i + 1]) {
-      reviewConfigPath = args[i + 1];
-      i++;
     } else if (args[i] === "--no-persist") {
       noPersist = true;
     }
   }
 
-  return { dbPath, reviewConfigPath, noPersist };
+  return { dbPath, noPersist };
 }
 
 // =============================================================================
@@ -52,7 +47,7 @@ function parseArgs(): { dbPath: string; reviewConfigPath: string | null; noPersi
 // =============================================================================
 
 async function main() {
-  const { dbPath, reviewConfigPath, noPersist } = parseArgs();
+  const { dbPath, noPersist } = parseArgs();
 
   // 确保数据库目录存在（文件数据库时）
   if (dbPath !== ":memory:") {
@@ -72,7 +67,7 @@ async function main() {
   }
 
   if (noPersist) {
-    console.error("[Warranted] --no-persist: operation log and review audit writes disabled");
+    console.error("[Warranted] --no-persist: operation log writes disabled");
   }
 
   // 创建 MCP Server
@@ -80,17 +75,6 @@ async function main() {
     name: "warranted",
     version: plugin.version,
   });
-
-  // 加载审查配置
-  const reviewConfig = loadReviewConfig(reviewConfigPath, dbPath);
-  if (reviewConfig) {
-    if (noPersist) {
-      reviewConfig.auditDir = null;
-    }
-    console.error(`[Warranted] Review enabled (synchronous, model: ${reviewConfig.model})`);
-  } else {
-    console.error("[Warranted] Review disabled");
-  }
 
   // 追踪 in-flight 工具调用，确保关闭前全部完成
   let _pendingOps = 0;
@@ -112,8 +96,8 @@ async function main() {
   };
 
   // 注册工具
-  registerTools(server, db, dbPath, reviewConfig, lifecycle);
-  console.error("[Warranted] 11 tools registered");
+  registerTools(server, db, dbPath, lifecycle);
+  console.error("[Warranted] 9 tools registered");
 
   // 连接 stdio transport
   const transport = new StdioServerTransport();

@@ -101,21 +101,6 @@ function buildNodeDetailHtml(data) {
     html += `</ul></div>`;
   }
 
-  // ── 待看：明细异步补 ──
-  // 图上只画"有没有"，具体断在哪要问 /viz/nodes/:id。标红是提示不是拒绝
-  // (design.md §2.5)——所以这一节即使有内容也不改上面的任何显示。
-  const pendingW = data.warnings?.pending || 0;
-  const pendingF = data.findings?.pending || 0;
-  const ackW     = data.warnings?.acknowledged || 0;
-  const ackF     = data.findings?.acknowledged || 0;
-  if (pendingW || pendingF || ackW || ackF) {
-    html += `<div class="bs-section">
-      <div class="bs-section-title">待看 ${pendingW + pendingF} / 已阅 ${ackW + ackF}</div>
-      <div id="bs-attention-${data.id}"><span style="color:var(--text-3);font-size:11px">载入中…</span></div>
-    </div>`;
-    loadAttentionDetail(data.id);
-  }
-
   // ── Timestamps ──
   html += `<div class="bs-grid" style="margin-top:4px">
     <div class="bs-field">
@@ -129,44 +114,6 @@ function buildNodeDetailHtml(data) {
   </div>`;
 
   return html;
-}
-
-/** 拉单条命题的完整视图，把警告与 finding 的原话填进占位。 */
-async function loadAttentionDetail(id) {
-  let view;
-  try {
-    const res = await fetch(`viz/nodes/${id}`);
-    if (!res.ok) return;
-    view = await res.json();
-  } catch { return; }
-
-  const box = document.getElementById(`bs-attention-${id}`);
-  if (!box) return;   // 面板已经切走了
-
-  const items = [];
-  (view.warnings || []).forEach(w => {
-    items.push(`<li class="bs-att-item att-${w.state}">
-      <span class="att-code">${escapeHtml(w.code)}</span>
-      <span class="att-msg">${escapeHtml(w.message)}</span>
-      ${w.dismissal ? `<div class="att-dismissal">已阅：${escapeHtml(w.dismissal.reason)}</div>` : ''}
-    </li>`);
-  });
-  (view.findings || []).forEach(f => {
-    // Q1 引的是附件的某处，Q2 引的是某条命题某个槽里的逐字片段。
-    const cite = f.question === 'Q1'
-      ? `${f.citation?.attachment || ''} @ ${f.citation?.locator || ''}｜${f.citation?.quote || ''}`
-      : `#${f.citation?.nodeId} ${f.citation?.slot || ''}｜${f.citation?.quote || ''}`;
-    items.push(`<li class="bs-att-item att-${f.state} att-finding">
-      <span class="att-code">${escapeHtml(f.question)}·${escapeHtml(f.confidence)}</span>
-      <span class="att-msg">${escapeHtml(f.content)}</span>
-      ${cite.trim() ? `<div class="att-cite">${escapeHtml(truncate(cite.trim(), 90))}</div>` : ''}
-      ${f.dismissal ? `<div class="att-dismissal">已阅：${escapeHtml(f.dismissal.reason)}</div>` : ''}
-    </li>`);
-  });
-
-  box.innerHTML = items.length
-    ? `<ul class="bs-att-list">${items.join('')}</ul>`
-    : `<span style="color:var(--text-3);font-size:11px">—</span>`;
 }
 
 function focusNode(id) {

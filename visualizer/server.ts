@@ -23,14 +23,12 @@ import type {
   PropositionRow,
   Qualifier,
   WarrantSlot,
-  CheckCode,
 } from "../src/types.ts";
 import { QUALIFIERS } from "../src/schema.ts";
 import * as repo from "../src/repo.ts";
-import * as service from "../src/service.ts";
+import * as service from "../src/records.ts";
 import {
   checkContext,
-  computeWarningsFor,
   loadNodeState,
   warrantSlotOf,
   type CheckContext,
@@ -82,9 +80,6 @@ interface GraphNode {
   attachments: string[];
   evidence: number[];
   rebuttals: number[];
-  /** 未处理/已阅的计数与判据编号。图上只画"有没有"，明细在 /viz/nodes/:id。 */
-  warnings: { pending: number; acknowledged: number; codes: CheckCode[] };
-  findings: { pending: number; acknowledged: number };
   created_at: string;
   updated_at: string;
 }
@@ -106,6 +101,7 @@ function buildGraph(
   db: Database,
   ctx: CheckContext
 ): { nodes: GraphNode[]; edges: GraphEdge[]; stats: Record<Qualifier, number>; total: number } {
+  service.assertRecordDatabase(db);
   const rows = db
     .prepare("SELECT * FROM propositions ORDER BY id")
     .all() as PropositionRow[];
@@ -116,8 +112,6 @@ function buildGraph(
 
   for (const row of rows) {
     const state = loadNodeState(db, row.id)!;
-    const warnings = computeWarningsFor(db, ctx, state);
-    const findings = service.findingViews(db, row.id);
 
     nodes.push({
       id: row.id,
@@ -127,15 +121,6 @@ function buildGraph(
       attachments: state.attachments,
       evidence: state.evidenceNodes,
       rebuttals: state.rebuttals,
-      warnings: {
-        pending: warnings.filter((w) => w.state === "pending").length,
-        acknowledged: warnings.filter((w) => w.state === "acknowledged").length,
-        codes: [...new Set(warnings.filter((w) => w.state === "pending").map((w) => w.code))],
-      },
-      findings: {
-        pending: findings.filter((f) => f.state === "pending").length,
-        acknowledged: findings.filter((f) => f.state === "acknowledged").length,
-      },
       created_at: row.created_at,
       updated_at: row.updated_at,
     });
@@ -177,6 +162,7 @@ if (initialDbPath !== ":memory:") {
 }
 
 let db = openDatabase(initialDbPath);
+service.assertRecordDatabase(db);
 let ctx = checkContext(initialDbPath);
 let currentDbPath = initialDbPath;
 console.error(`[Warranted Viz] Database opened: ${initialDbPath}`);
@@ -235,6 +221,7 @@ function switchDatabase(newPath: string) {
   if (watchDebounce) { clearTimeout(watchDebounce); watchDebounce = null; }
 
   db = openDatabase(newPath);
+  service.assertRecordDatabase(db);
   // ctx 必须跟着换：附件路径是相对项目根解析的，换库不换根等于拿旧根去查新库的
   // 附件，S2(附件不存在)会整片误报。
   ctx = checkContext(newPath);

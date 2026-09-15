@@ -24,3 +24,18 @@ Production `main` and development `dev` are not changed or merged by this experi
 - The full treatment implements existing checks and local semantic review; it does not add a declared investigation execution interface.
 
 The baseline branch is preparation, not an additional treatment. No scientific trial is run by these checks.
+
+## This checkout
+
+Treatment: **records** (group 3). `src/index.ts` registers the nine tools in `src/records-tools.ts`, backed by `src/records.ts`. No review configuration is loaded. The visualizer uses the same record-only service. Only record edits, references, timestamps, counts and history are returned; normal data integrity errors remain.
+
+The record service is a static extraction of the existing CRUD operations. Production `service.ts`, `tools.ts` and their legacy evaluator tests remain as source history/shared-core regression coverage, but the installed treatment does not register them. Do not use the legacy evaluation MCP entrypoints as this arm's launcher. No capability-switch framework was added.
+
+The records entry refuses databases with review/dismiss events from another treatment. Keep separate fresh workspaces; the original schema is reused for record compatibility, but no judgment baseline or feedback event is created by this arm.
+
+## Local validation
+
+- `bun test ./tests`: 358 passed, 0 failed. This covers retained shared-core regressions plus this treatment's contract tests.
+- `tsc --noEmit`, shell syntax checks and `git diff --check`: passed.
+- Methodology prefix SHA-256 matches `experiment.json` across all three treatments.
+- No live scientific experiment or external reviewer request was run. Runtime trial settings and full-arm reviewer credentials must be supplied by the experiment harness.

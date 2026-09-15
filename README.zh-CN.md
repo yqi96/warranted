@@ -1,3 +1,5 @@
+> Paper experiment branch: see [EXPERIMENT.md](EXPERIMENT.md) and [experiment.json](experiment.json). The production documentation below is historical context; the branch manifest defines the supplied components.
+
 # Warranted
 
 让 AI Agent 的科研推理可被审计——每一个结论都有可追溯的论证图。

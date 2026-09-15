@@ -1,6 +1,6 @@
 {
   "name": "warranted",
-  "description": "Make AI research agents accountable — give every conclusion a traceable argument graph.",
+  "description": "Make AI research agents accountable \u2014 give every conclusion a traceable argument graph.",
   "type": "module",
   "scripts": {
     "dev": "bun src/index.ts",
@@ -19,7 +19,6 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.201",
     "@modelcontextprotocol/sdk": "^1.25.1",
-    "chrome-devtools-mcp": "1.7.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

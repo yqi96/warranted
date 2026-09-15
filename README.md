@@ -1,3 +1,5 @@
+> Paper experiment branch: see [EXPERIMENT.md](EXPERIMENT.md) and [experiment.json](experiment.json). The production documentation below is historical context; the branch manifest defines the supplied components.
+
 # Warranted
 
 Make AI research agents accountable — give every conclusion a traceable argument graph.

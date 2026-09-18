@@ -141,6 +141,8 @@ command = {q(bun)}
 args = {q(mcp_args)}
 cwd = {q(str(task))}
 required = true
+# This is the frozen local Warranted server, explicitly permitted for the trial.
+default_tools_approval_mode = "approve"
 startup_timeout_sec = 60
 tool_timeout_sec = {timeout}
 '''

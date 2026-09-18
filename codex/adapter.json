@@ -1,0 +1,7 @@
+{
+  "arm": "records",
+  "parent_branch": "codex/exp-records",
+  "parent_commit": "2dc1d19ca6a645683b6fcea168c346c960f64ea1",
+  "agent_sha256": "97fa37531b610712de64fadb57cc00383f458ffffd4c69043b1954ffd56388e1",
+  "prompt_body_sha256": "23eb0a570070d8751b07951a563b1c6289137c58055f0cbb7903b4b8f0d5265b"
+}

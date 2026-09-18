@@ -1,5 +1,7 @@
 # Warranted：full 的 Codex 实验接入
 
+完整操作步骤、从 `review.json` 读取凭据及三个分支的用法，见 [中文使用文档](USAGE.zh-CN.md)。
+
 本分支 `codex/exp-codex-full` 独立派生自 `codex/exp-full`，父提交 `c6ca511b0d1293b58f25b54cbafb3fd4b0a4f96f`。只新增 `codex/`，所有原有 tracked 文件（含源码、依赖锁、提示词和实验定义）与父提交一致。没有其他处理的实现，也没有运行时处理开关。
 
 主研究 agent 使用 Codex；full 中的评审器继续使用原有 Claude Agent SDK。完整父实验协议见 `../EXPERIMENT.md`。本接入用于无人工界面操作的实验，不加载 Claude 插件及 visualizer selection hook；在 Claude Code 对照中也不要启动或使用该界面注入。

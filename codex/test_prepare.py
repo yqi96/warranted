@@ -67,6 +67,7 @@ class PreparationTests(unittest.TestCase):
             self.assertEqual(mcp["cwd"], str(self.task))
             self.assertEqual(mcp["args"][:3], [str(HERE.parent / "src/index.ts"), "--db-path", str(self.task / ".toulmin/graph.db")])
             self.assertTrue(mcp["required"])
+            self.assertEqual(mcp["default_tools_approval_mode"], "approve")
             self.assertNotIn("enabled_tools", mcp)  # Use the actual treatment backend.
             if ARM == "full":
                 self.assertEqual(mcp["args"][-2:], ["--review-config", str(self.review)])

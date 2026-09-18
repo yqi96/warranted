@@ -1,0 +1,7 @@
+{
+  "arm": "guidance",
+  "parent_branch": "codex/exp-guidance",
+  "parent_commit": "0a514fb8509bafaa7c06f331a3aadc7f8a1e3aea",
+  "agent_sha256": "0c191d5875497cc9ff6385311fa6ccdcaff2cc00c1c0b6761c9becef6bd2d73c",
+  "prompt_body_sha256": "d05eb43c71dded44b65ea4342a1b41c34db49af55fa66c713f0420931d1a9903"
+}

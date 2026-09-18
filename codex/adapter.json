@@ -1,0 +1,7 @@
+{
+  "arm": "full",
+  "parent_branch": "codex/exp-full",
+  "parent_commit": "c6ca511b0d1293b58f25b54cbafb3fd4b0a4f96f",
+  "agent_sha256": "be7e256063a1796d1153799f0006ec061b89f51aff6a5af857cceee7b6a3bc99",
+  "prompt_body_sha256": "a62c2d5e3bc61254db40b9db154e6f78c4f5cf189e0c8da65a141c22da804dad"
+}

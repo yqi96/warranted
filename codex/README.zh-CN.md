@@ -29,7 +29,7 @@ python3 codex/prepare.py \
 - `--task-dir` 必须已存在并包含 `TASK.md` 等允许输入，位于 Warranted checkout 之外。每个试验使用新任务副本，不能含已有 `.toulmin`、项目 `.codex` 或 `.agents`。
 - `--runtime-dir` 必须尚不存在，且与任务目录分离。它保存独立配置、profile、准备回执以及后续 Codex 会话状态。不要放入研究输入包。
 - 默认 API key 环境变量是 `DEEPSEEK_API_KEY`；可用 `--api-key-env` 指定已有变量名。通过本地安全方式设置变量，脚本不读取或写入密钥。
-- `--base-url` 必须支持 Responses API 与工具调用。只支持 Chat Completions 的服务不能直接使用；需另行验证转换层。本次没有验证真实 DeepSeek 服务。
+- `--base-url` 必须支持 Responses API 与工具调用。只支持 Chat Completions 的服务不能直接使用；需另行验证转换层。已用 DeepSeek 官方 `https://api.deepseek.com` 的 Responses 接口和 `deepseek-flash` 完成真实调用；其他端点/模型仍需分别验证。`review.json` 中的 `/anthropic` 地址用于评审器，不应原样用作 Codex 的 base URL。
 - full 必须显式提供 `--review-config`，使用与 Claude Code full 试验相同的评审配置；配置文件必须位于任务输入目录之外。其他分支拒绝此参数。它不会被复制进生成配置，MCP 只接收文件路径。
 
 ## 直接使用 Codex
@@ -55,7 +55,7 @@ CODEX_HOME=/path/to/new-codex-runtime \
 
 profile 使用 Codex >= 0.134 引入的独立 `*.config.toml` 文件。`developer_instructions` 是原 agent 文件去掉 YAML frontmatter 后的正文，保留正文全部字节；不替换 Codex 原生基础指令。MCP 直接执行本分支 `src/index.ts`，不靠工具过滤模拟其他处理。数据库固定在本次任务的 `.toulmin/graph.db`。
 
-生成配置的公共默认值：`workspace-write`、`approval_policy=never`、原生 web search 关闭；关闭 hooks、记忆、apps 和远程插件目录；不加载 AGENTS.md，项目根限制在任务目录，项目标记为 untrusted，隔离个人配置与项目自定义配置。Codex 内建能力（如内建 skills、原生委派）保留。此配置隔离不构成文件读取安全边界；严格的数据/秘密隔离仍由容器或实验 harness 的挂载权限提供。
+生成配置的公共默认值：`workspace-write`、`approval_policy=never`、原生 web search 关闭；关闭 hooks、记忆、apps 和远程插件目录；不加载 AGENTS.md，项目根限制在任务目录，项目标记为 untrusted，隔离个人配置与项目自定义配置。Codex 内建能力（如内建 skills、原生委派）保留。records/full 对这个已冻结的本地 Warranted MCP server 显式设置 `default_tools_approval_mode="approve"`，避免 `approval_policy=never` 时工具调用被审批阻断；该设置不扩大 shell 沙箱权限。此配置隔离不构成文件读取安全边界；严格的数据/秘密隔离仍由容器或实验 harness 的挂载权限提供。
 
 模型思考参数、上下文窗口、网络权限和紧急中止预算应由实验协议明确，然后通过原生 `-c` / `-s` 参数设置并留档。默认工作区沙箱不开放 shell 网络；需要联网研究时，可在各对照中统一设置 `-c sandbox_workspace_write.network_access=true`。不要只改其中一组的资源权限。同名 effort 不自动代表不同 API 中相同的推理预算。
 

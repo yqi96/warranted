@@ -39,7 +39,7 @@ Ground、Backing、Claim、Rebuttal 都是观察视角，不是节点类型。�
 
 详细实现契约见 [docs/design.md](docs/design.md) 与 [docs/api.md](docs/api.md)，发布历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-> **开发分支兼容说明：**提交 `90c7acb` 把 0.5.0 发布版的“三节点 + compile”模型替换成了本文描述的 Proposition 模型。旧 `.toulmin/argument.db` 只作为只读历史档案保留；当前运行使用 `.toulmin/graph.db`，不会机械迁移旧 verdict。0.5.0 术语只在 changelog 中作为历史记录保留。
+> **0.6.0 升级兼容说明：**0.6.0 正式采用提交 `90c7acb` 引入的 Proposition 模型，替代 0.5.0 的“三节点 + compile”模型。旧 `.toulmin/argument.db` 只作为只读历史档案保留；当前运行使用 `.toulmin/graph.db`，不会机械迁移旧 verdict。0.5.0 术语只在 changelog 中作为历史记录保留。
 
 ## 接入 Claude Code
 

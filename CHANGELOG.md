@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-20
+
 ### Added
 
 - Replaced the released three-node argument model with one `Proposition` carrying five slots: `content`, `evidence`, `warrant`, `rebuttals`, and `qualifier`. The current MCP surface has 11 tools, stores new work in `.toulmin/graph.db`, and exposes structural problems as non-blocking warnings.
@@ -24,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `hooks/toulmin-guard.sh` is explicitly deprecated and retained only as a side-effect-free compatibility placeholder.
 
-> Entries in 0.5.0 and earlier describe the historical released model; they are not instructions for the current development branch.
+> Entries in 0.5.0 and earlier describe the historical released model; they are not instructions for the 0.6.0 proposition model.
 
 ## [0.5.0] - 2026-08-12
 
@@ -204,7 +206,11 @@ The three upgrade action classes for this historical release are recorded below.
 - `UserPromptSubmit` hook that injects the current node selection as context.
 - Bilingual README and a known-working dependency versions snapshot.
 
-[Unreleased]: https://github.com/yqi96/warranted/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/yqi96/warranted/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/yqi96/warranted/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/yqi96/warranted/compare/v0.4.3...v0.5.0
+[0.4.3]: https://github.com/yqi96/warranted/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/yqi96/warranted/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/yqi96/warranted/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/yqi96/warranted/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yqi96/warranted/compare/v0.2.0...v0.3.0

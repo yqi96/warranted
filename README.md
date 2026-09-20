@@ -41,7 +41,7 @@ After checking a small fix, rejecting a mistaken objection, or accepting a limit
 
 The detailed contracts live in [docs/design.md](docs/design.md) and [docs/api.md](docs/api.md). Release history is in [CHANGELOG.md](CHANGELOG.md).
 
-> **Development-branch compatibility note:** commit `90c7acb` replaced the released 0.5.0 three-node/compile model with the proposition model described above. Old `.toulmin/argument.db` files remain read-only historical archives; current runs use `.toulmin/graph.db` and do not mechanically migrate old verdicts. The 0.5.0 terminology remains in the changelog only as release history.
+> **0.6.0 upgrade compatibility:** version 0.6.0 replaces the 0.5.0 three-node/compile model with the proposition model described above, introduced in commit `90c7acb`. Old `.toulmin/argument.db` files remain read-only historical archives; current runs use `.toulmin/graph.db` and do not mechanically migrate old verdicts. The 0.5.0 terminology remains in the changelog only as release history.
 
 ## Setup with Claude Code
 

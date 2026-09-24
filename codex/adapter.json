@@ -1,0 +1,46 @@
+{
+  "release": "0.6.0",
+  "parent_tag": "v0.6.0",
+  "parent_commit": "bc7937ac06b1fd0ea2bd948b3d57ddd359436b3b",
+  "branch": "codex/v0.6.0-codex",
+  "profile": "warranted-v060",
+  "strategy_reference": "codex/exp-codex-full",
+  "adapted_parent_files": [
+    "skills/overleaf-setup/SKILL.md",
+    "skills/literature-survey/references/state.md"
+  ],
+  "agent_sha256": "d6402104a29258ad345e2fe63b7477f5e715c9e5c1b4403d27c6b0d0ea3d16c5",
+  "prompt_body_sha256": "cdbce5d84ddd6c468022cfc38c20681668a902948e1c2ad76a3c6901c869659e",
+  "mcp_tools": [
+    "create_propositions",
+    "update_proposition",
+    "set_qualifier",
+    "promote_warrant",
+    "delete_proposition",
+    "get_argument",
+    "find_propositions",
+    "get_stats",
+    "get_history",
+    "review",
+    "dismiss"
+  ],
+  "subagents": [
+    "code-experimenter",
+    "code-optimizer",
+    "discrepancy-auditor",
+    "literature-extractor",
+    "literature-scout",
+    "paper-reader",
+    "rigor-auditor",
+    "toulmin-explorer"
+  ],
+  "skills": [
+    "browser",
+    "cite-review",
+    "literature-survey",
+    "literature-writing",
+    "overleaf-setup",
+    "paper-download-browser",
+    "paper-reproduce"
+  ]
+}

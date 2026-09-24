@@ -27,7 +27,7 @@ Do not create unused files up front. Add them when the inquiry produces content 
 - Keep `notes/<bibkey>.md` for question-directed interpretation and exact locators. A note may be attached as audit support, but it does not replace the PDF for citation expansion.
 - Keep comparison tables and other inquiry artifacts in `evidence/`; do not place them in the LaTeX project unless the manuscript actually includes them.
 - Let `literature-writing` own prose-to-graph citation consistency inside `manuscript/`.
-- When synchronization is wanted, give `overleaf-setup` the absolute path to `manuscript/` as `LATEX_DIR`. Its staging and hook should not include inquiry state, notes, or the paper library.
+- When synchronization is wanted, give `overleaf-setup` the absolute path to `manuscript/` as `LATEX_DIR`. Its staging and synchronization command should not include inquiry state, notes, or the paper library.
 
 ## `state.yaml`
 

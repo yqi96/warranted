@@ -1,11 +1,11 @@
 ---
 name: overleaf-setup
-description: Use once when a LaTeX project needs Overleaf synchronization with Warranted citation enforcement. Installs/authenticates leaf, binds a local LaTeX directory to an Overleaf project, and writes the Stop hook that pushes staged source with prop_N citations expanded.
+description: Set up Overleaf synchronization for a LaTeX project with Warranted citation enforcement. Installs/authenticates leaf, binds the local directory to an Overleaf project, and provides an explicit push command with prop_N citations expanded.
 ---
 
 ## Goal
 
-Configure automatic Overleaf push so that every `.tex` edit triggers a push without further agent involvement. The skill ends when the hook is written to `settings.local.json` and the user has been told to restart Claude Code.
+Connect a local LaTeX directory to Overleaf and provide a reusable synchronization command. Run the command when synchronization is requested; setup does not enable automatic end-of-turn pushes.
 
 ---
 
@@ -70,39 +70,26 @@ This writes `leaf.toml` into `LATEX_DIR`. The push script copies it into staging
 
 ---
 
-## Step 5 — Write the hook
+## Step 5 — Prepare the synchronization command
 
-Determine `SKILL_DIR` (absolute path to `${CLAUDE_PLUGIN_ROOT}/skills/overleaf-setup`) and `DB_PATH` (absolute path to `.toulmin/graph.db`).
+Determine `SKILL_DIR` from this skill's location and `DB_PATH` from the active task's `.toulmin/graph.db`. Use absolute paths.
 
-Merge the following into `.claude/settings.local.json`, preserving any existing hooks:
+Resolve the placeholders below to those paths:
 
-```json
-{
-  "hooks": {
-    "Stop": [{
-      "hooks": [{
-        "type": "command",
-        "command": "uv run SKILL_DIR/scripts/overleaf-push.py --dir LATEX_DIR --db DB_PATH --require-prop-cites",
-        "timeout": 120,
-        "statusMessage": "Checking citations and pushing to Overleaf..."
-      }]
-    }]
-  }
-}
+```bash
+uv run "SKILL_DIR/scripts/overleaf-push.py" \
+  --dir "LATEX_DIR" \
+  --db "DB_PATH" \
+  --require-prop-cites
 ```
 
-Replace `LATEX_DIR`, `SKILL_DIR`, and `DB_PATH` with the actual absolute paths before writing.
+The existing script validates citations and expands `prop_N` keys before pushing staged source. Run it if the user requested a synchronization to this project; otherwise provide the resolved command for later use.
 
 ---
 
 ## Step 6 — Done
 
-Tell the user:
-
-> "Hook configured. **Please restart Claude Code** to activate it — hooks only take effect after a restart, and restarting also clears this setup context.
-> After restart, Overleaf will be updated automatically at the end of each conversation turn. Turns where no files under `LATEX_DIR` changed are skipped."
-
-The skill is complete. Do not proceed further.
+Report the configured Overleaf project, local directory, resolved synchronization command, and whether a push actually succeeded. Explain that future synchronization uses this explicit command. No restart is needed.
 
 ---
 

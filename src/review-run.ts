@@ -8,7 +8,7 @@
  * - **范围是单条**(design.md §2.2):`buildInput` 只取自己 + 直接证据 + 自己的 warrant,
  *   不递归。
  * - **输入边界**:`ReviewInput` 里没有被审查命题自己的 qualifier(见 review-prompts.ts)。
- * - **跑不成就抛,不降级**:没配模型、子进程失败、只读工具被拒,一律 `ReviewUnavailableError`。
+ * - **跑不成就抛,不降级**:没配模型、子进程失败、必要证据未读到,一律 `ReviewUnavailableError`。
  *   把没跑成的审查记成 `pass` 会在图上造出"已核实"的假象。
  */
 
@@ -44,6 +44,8 @@ interface ReviewExecutionResult {
   rejected: RejectedFinding[];
   /** Model that produced the parsed verdict (may be the configured fallback). */
   actualModel: string;
+  /** Blocked tool calls are diagnostics, not a completion veto. */
+  deniedTools?: string[];
   /** Declared paths with at least one observed successful read in the final attempt. */
   attachmentsRead: string[];
   /** New executors provide these; optional for existing external adapters. */
@@ -267,6 +269,7 @@ async function performReview(
   let inputFingerprint: string | undefined;
   let materialized: ReturnType<typeof materializeReviewAttachments> | undefined;
   const attempts: ReviewAttemptTrace[] = [];
+  const denied: string[] = [];
   let candidateFindings: FindingDraft[] = [];
   let rejectedFindings: RejectedFinding[] = [];
   let recorded = false;
@@ -300,11 +303,13 @@ async function performReview(
       nodeId,
       ...(inputFingerprint ? { inputFingerprint } : {}),
       ...(attempts[0] ? { requestId: attempts[0].requestId } : {}),
+      deniedTools: [...denied],
       attempts: attempts.map((attempt) => ({
         requestId: attempt.requestId,
         attempt: attempt.attempt,
         model: attempt.model,
         status: attempt.status,
+        deniedTools: [...(attempt.deniedTools ?? [])],
         ...(attempt.error ? { error: attempt.error } : {}),
         ...readCoverage(attempt),
       })),
@@ -352,7 +357,6 @@ async function performReview(
     const prompt = buildReviewRequestPrompt(input);
     const protocol = protocolHash(prompt);
 
-    const denied: string[] = [];
     let parsed: Record<string, unknown>;
     const t0 = Date.now();
     log("review", "OK", 0, `START review: #${nodeId}`);
@@ -376,20 +380,11 @@ async function performReview(
     }
 
     // Local validation is independent of completion: preserve candidates before any
-    // boundary, coverage, consistency or final freshness guard can reject this attempt.
+    // coverage, consistency or final freshness guard can reject this attempt.
     const outcome = parsed._parseFailed ? undefined : collectResponse(input, parsed);
     if (outcome) {
       candidateFindings = outcome.accepted;
       rejectedFindings = outcome.rejected;
-    }
-
-    // Any denied tool means the reviewer tried to leave its declared, immutable input boundary.
-    stage = "boundary";
-    if (denied.length > 0) {
-      throw new ReviewUnavailableError(
-        `Review of #${nodeId} had ${denied.length} tool call(s) denied (${denied.join(", ")}), ` +
-          "so its input boundary was not respected. Nothing was recorded."
-      );
     }
 
     // callAndParse 内部已经重试过一次(换 fallbackModel)。到这里还没解析出来,就是
@@ -441,6 +436,7 @@ async function performReview(
       Q2,
       findings: accepted,
       model: verdictAttempt.model,
+      deniedTools: [...denied],
       protocolHash: protocol,
       inputFingerprint: started.inputFingerprint,
       ...(rejected.length > 0 ? { rejected } : {}),
@@ -461,6 +457,7 @@ async function performReview(
       findings,
       rejected,
       actualModel: verdictAttempt.model,
+      deniedTools: [...denied],
       // Keep the public result in declared-path space; audit retains the actual snapshot paths.
       attachmentsRead: coverage.attachmentsRead.map((path) => resolve(reviewContext.root, path)),
       unreadAttachments: coverage.unreadAttachments.map((path) => resolve(reviewContext.root, path)),

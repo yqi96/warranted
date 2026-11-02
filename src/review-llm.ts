@@ -340,16 +340,14 @@ export async function callAgent(
       : successfulReads;
     audit.finish({ status: attemptError === undefined ? "completed" : "failed", error: attemptError,
       raw: finalResult, durationMs: Date.now() - t0, queueMs, readDurationMs,
-      successfulReads: declaredReads, snapshotReads: successfulReads,
+      successfulReads: declaredReads, snapshotReads: successfulReads, deniedTools,
       attachmentReads: [...observedReads.values()].map((read) => {
         const index = attachmentPaths.findIndex((path) => resolve(readRoot, path) === read.path);
         return { ...read, path: auditMetadata?.attachmentSnapshots[index]?.path ?? read.path };
       }) });
   }
   if (deniedTools.length > 0) {
-    // stderr only reaches the server operator, never the calling agent — so the
-    // names are also handed back to the caller, which is what lets a denied
-    // review be reported as "not reviewed" rather than counted as a pass.
+    // Keep denials visible even when the reviewer recovers and completes its evidence checks.
     console.warn(`[review-llm] ${deniedTools.length} tool call(s) denied under dontAsk: ${deniedTools.join(", ")}`);
   }
 
@@ -357,6 +355,7 @@ export async function callAgent(
 }
 
 export interface ReviewAttemptTrace {
+  deniedTools?: string[];
   requestId: string;
   attempt: number;
   model: string;
@@ -500,12 +499,12 @@ export async function callAndParse(
   const requestId = crypto.randomUUID();
   async function callAttempt(attemptConfig: ReviewConfig, attempt: number): Promise<Record<string, unknown>> {
     const trace: ReviewAttemptTrace = {
-      requestId, attempt, model: attemptConfig.model, status: "error", successfulReads: [], attachmentReads: [],
+      requestId, attempt, model: attemptConfig.model, status: "error", successfulReads: [], attachmentReads: [], deniedTools: [],
     };
     traceOut?.push(trace);
     try {
       const raw = await callAgent(
-        attemptConfig, prompt, attachments, cwd, requestId, deniedOut, trace.successfulReads, auditMetadata, attempt, trace.attachmentReads,
+        attemptConfig, prompt, attachments, cwd, requestId, trace.deniedTools, trace.successfulReads, auditMetadata, attempt, trace.attachmentReads,
       );
       const parsed = parseLLMResponse(raw);
       trace.status = parsed._parseFailed ? "unparseable" : "parsed";
@@ -513,6 +512,8 @@ export async function callAndParse(
     } catch (error) {
       trace.error = error instanceof Error ? error.message : String(error);
       throw error;
+    } finally {
+      deniedOut?.push(...trace.deniedTools!);
     }
   }
   const parsed = await callAttempt(config, 1);

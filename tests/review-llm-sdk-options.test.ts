@@ -306,9 +306,7 @@ describe("callAgent SDK call options", () => {
   });
 
   test("permission_denied 的工具名交回调用方，不是只进 console.warn", async () => {
-    // console.warn 走 MCP server 的 stderr，主 agent 从来看不到。只记在那里,
-    // 「被拒 = 没审过」这条防线在生产路径上就没有承载者 —— 消费侧那段
-    // deniedTools 判断永远是死代码，而图上一次被拒的审查与一次真通过完全同形
+    // 调用方需要收到拒绝记录,包括审查随后成功完成的情况。
     mockMessages = [
       { type: "system", subtype: "permission_denied", tool_name: "Read", tool_use_id: "x" },
       { type: "result", subtype: "success", result: "{}" },
@@ -320,26 +318,58 @@ describe("callAgent SDK call options", () => {
     expect(denied).toEqual(["Read"]);
   });
 
-  test("被拒的审查整次作废,不是一次干净通过", async () => {
-    // console.warn 走 MCP server 的 stderr,主 agent 看不到。被拒意味着审查器可能
-    // 从没读到附件,而 review 不产出 pass —— 记一条 "Q1: pass" 会在图上造出
-    // "忠实性已核实"的假象,所以整次抛掉,一条 review 事件都不留。
-    mockMessages = [
-      { type: "system", subtype: "permission_denied", tool_name: "Read", tool_use_id: "x" },
-      { type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' },
-    ];
-    spyOn(console, "warn").mockImplementation(() => {});
-
+  test("denied read followed by sufficient evidence records review and retains denials", async () => {
+    mockPostToolUseInputs = [fullRead("wrong-path.md"), fullRead("attachments/0001.md")];
+    mockMessages = [{ type: "result", subtype: "success", result: '{"status":"completed","Q1":"pass","Q2":"pass","findings":[]}' }];
+    const auditDir = `/tmp/warranted-denied-audit-${crypto.randomUUID()}`;
+    const config = { ...testConfig, auditDir };
     const db = createTestDb();
     try {
-      const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
-      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition", evidence: { attachments: ["evidence.md"] } }])[0]!.id;
+      const result = await runReview(config, db, id, ctx);
+      expect(result.Q1).toBe("pass");
+      expect(result.deniedTools).toEqual(["Read:wrong-path.md"]);
+      expect(result.attachmentsRead).toEqual(["/tmp/warranted-sdk-options/evidence.md"]);
+      const events = svc.getHistory(db, { id }).events.filter(e => e.op === "review");
+      expect(events).toHaveLength(1);
+      expect(events[0]!.payload.deniedTools).toEqual(result.deniedTools);
+      const audit = JSON.parse(readFileSync(`${auditDir}/${readdirSync(auditDir)[0]}`, "utf8"));
+      expect(audit.output.deniedTools).toEqual(result.deniedTools);
+      expect(audit.input.prompt).toBeUndefined();
+      const cached = await runReview(config, db, id, ctx);
+      expect(cached.reused).toBe("completed");
+      expect(cached.deniedTools).toEqual(result.deniedTools);
+    } finally { cleanupDb(db); rmSync(auditDir, { recursive: true, force: true }); }
+  });
+
+  test("denied read without successful evidence access remains incomplete", async () => {
+    mockPostToolUseInputs = [fullRead("wrong-path.md")];
+    mockMessages = [{ type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' }];
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition", evidence: { attachments: ["evidence.md"] } }])[0]!.id;
+      const err = await runReview(testConfig, db, id, ctx).catch(e => e);
       expect(err).toBeInstanceOf(ReviewUnavailableError);
-      expect(err.message).toContain("Read");
-      expect(svc.getHistory(db, { id }).events.some((e) => e.op === "review")).toBe(false);
-    } finally {
-      cleanupDb(db);
-    }
+      expect(err.diagnostics).toMatchObject({ stage: "read", recorded: false, deniedTools: ["Read:wrong-path.md"], attachmentsRead: [] });
+      expect(err.diagnostics.attempts[0].deniedTools).toEqual(["Read:wrong-path.md"]);
+      expect(svc.getHistory(db, { id }).events.some(e => e.op === "review")).toBe(false);
+    } finally { cleanupDb(db); }
+  });
+
+  test("a denial in an unparseable first attempt does not veto a sufficient retry", async () => {
+    mockMessagesPerCall = [
+      [{ type: "result", subtype: "success", result: "not JSON" }],
+      [{ type: "result", subtype: "success", result: '{"Q1":"pass","Q2":"pass","findings":[]}' }],
+    ];
+    mockPostToolUseInputsPerCall = [[fullRead("wrong-path.md")], [fullRead("attachments/0001.md")]];
+    const db = createTestDb();
+    try {
+      const id = svc.createPropositions(db, ctx, [{ content: "A proposition", evidence: { attachments: ["evidence.md"] } }])[0]!.id;
+      const result = await runReview({ ...testConfig, fallbackModel: "fallback" }, db, id, ctx);
+      expect(result.actualModel).toBe("fallback");
+      expect(result.deniedTools).toEqual(["Read:wrong-path.md"]);
+      expect(svc.getHistory(db, { id }).events.filter(e => e.op === "review")).toHaveLength(1);
+    } finally { cleanupDb(db); }
   });
 
   test("仅 success 消息时不调用 console.warn，且正确返回结果", async () => {
@@ -546,10 +576,12 @@ describe("callAgent SDK call options", () => {
       const id = svc.createPropositions(db, ctx, [{ content: "A proposition", evidence: { attachments: ["evidence.md"] } }])[0]!.id;
       await runReview(testConfig, db, id, ctx);
       mockMessages = [{ type: "result", subtype: "success", result: JSON.stringify({ status: "incomplete", reason: "The necessary methods table could not be read", findings: [{ question: "Q1", confidence: "high", content: "A number differs", citation: { attachment: "evidence.md", locator: "line 1", quote: "evidence" } }] }) }];
+      mockMessages.unshift({ type: "system", subtype: "permission_denied", tool_name: "Read", tool_use_id: "missing-table" });
       const err = await runReview(testConfig, db, id, ctx, { refresh: true }).catch(e => e);
       expect(err).toBeInstanceOf(ReviewUnavailableError);
       expect(err.diagnostics).toMatchObject({ status: "incomplete", recorded: false, stage: "read", attachmentsRead: ["evidence.md"], unreadAttachments: [] });
       expect(err.message).toContain("necessary methods table");
+      expect(err.diagnostics.deniedTools).toEqual(["Read"]);
       expect(err.diagnostics.candidateFindings).toHaveLength(1);
       expect(err.diagnostics).not.toHaveProperty("Q1");
       expect(err.diagnostics.attempts).toHaveLength(1);
@@ -1504,7 +1536,7 @@ describe("incomplete review diagnostics", () => {
     } finally { cleanupDb(db); }
   });
 
-  test("tool boundary failure still delivers parsed candidates without formal review", async () => {
+  test("denied tool when no attachments are required does not veto valid findings", async () => {
     const db = createTestDb();
     try {
       const id = svc.createPropositions(db, ctx, [{ content: "A proposition" }])[0]!.id;
@@ -1512,10 +1544,10 @@ describe("incomplete review diagnostics", () => {
         { type: "system", subtype: "permission_denied", tool_name: "Read", tool_use_id: "x" },
         ...reply({ Q1: "n/a", Q2: "fail", findings: [q2(id)] }),
       ];
-      const err = await runReview(testConfig, db, id, ctx).catch((e) => e);
-      expect(err.diagnostics.stage).toBe("boundary");
-      expect(err.diagnostics.candidateFindings).toHaveLength(1);
-      expect(svc.propositionView(db, ctx, id).review.status).toBe("never");
+      const result = await runReview(testConfig, db, id, ctx);
+      expect(result.deniedTools).toEqual(["Read"]);
+      expect(result.findings).toHaveLength(1);
+      expect(svc.propositionView(db, ctx, id).review.status).toBe("current");
     } finally { cleanupDb(db); }
   });
 

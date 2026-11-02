@@ -1198,6 +1198,7 @@ export function recordReview(
         // Never trust caller-supplied attachment provenance: derive it again under the guard.
         attachmentSnapshots: current.attachmentSnapshots,
         findings: outcome.findings,
+        ...(outcome.deniedTools?.length ? { deniedTools: outcome.deniedTools } : {}),
         // 拒收记录进载荷不进表:它不是一条意见,是一次协议违规的证物。
         ...(outcome.rejected?.length ? { rejected: outcome.rejected } : {}),
       },

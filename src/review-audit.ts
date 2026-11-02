@@ -76,6 +76,7 @@ export interface BeginReviewAuditInput {
 }
 
 export interface FinishReviewAuditInput {
+  deniedTools?: string[];
   /** SDK attempt lifecycle only, NOT runReview's semantic/protocol acceptance. */
   status: "completed" | "failed";
   raw?: string;
@@ -174,6 +175,7 @@ export function beginReviewAudit(config: ReviewConfig, input: BeginReviewAuditIn
       readDurationMs: null as number | null,
       successfulReads: [] as string[], snapshotReads: [] as string[],
       attachmentReads: [] as AttachmentRead[],
+      deniedTools: [] as string[],
       error: null as unknown,
       ...(debug ? { raw: null as string | null } : {}),
     },
@@ -287,6 +289,7 @@ export function beginReviewAudit(config: ReviewConfig, input: BeginReviewAuditIn
         record.output.queueMs = finiteNumber(result.queueMs);
         record.output.readDurationMs = finiteNumber(result.readDurationMs);
         record.output.successfulReads = [...result.successfulReads];
+        record.output.deniedTools = [...(result.deniedTools ?? [])];
         record.output.snapshotReads = [...(result.snapshotReads ?? [])];
         record.output.attachmentReads = result.attachmentReads ?? [];
         const error = result.error;

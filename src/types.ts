@@ -229,6 +229,8 @@ export interface AttachmentRead {
 
 /** A completed model attempt, including attempts that cannot support a formal review. */
 export interface ReviewAttemptDiagnostic {
+  /** Observed blocked tool calls; retained independently of review completion. */
+  deniedTools?: string[];
   requestId: string;
   /** One-based within this request; a parse retry is a separate attempt. */
   attempt: number;
@@ -243,6 +245,8 @@ export interface ReviewAttemptDiagnostic {
 
 /** Failure feedback only: it neither records nor supersedes a review or finding. */
 export interface ReviewIncompleteDiagnostics {
+  /** Observed blocked tool calls; retained independently of review completion. */
+  deniedTools?: string[];
   status: "incomplete";
   recorded: false;
   stage: "configuration" | "snapshot" | "input_freshness" | "execution" | "boundary" | "parse" | "read" | "protocol";
@@ -263,6 +267,8 @@ export interface ReviewIncompleteDiagnostics {
 
 /** review 事件的载荷。答"是"也留痕:没有这一层,"从没 review 过"与"review 过且没问题"分不开。 */
 export interface ReviewOutcome {
+  /** Observed blocked tool calls; retained independently of review completion. */
+  deniedTools?: string[];
   nodeId: number;
   /** `n/a` 专给"该命题没有附件型证据、Q1 无所施力"。记成 pass 会造出假象。 */
   Q1: "pass" | "fail" | "n/a";
